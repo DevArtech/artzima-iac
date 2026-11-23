@@ -23,6 +23,8 @@ def verify(owner, name, token):
         raise SystemExit(f"Cannot verify private package {name}: HTTP {error.code}; publication refused") from None
     except Exception as error:
         raise SystemExit(f"Cannot verify package {name}: {type(error).__name__}; publication refused") from None
+    if not isinstance(package, dict):
+        raise SystemExit(f"Cannot verify package {name}: invalid response; publication refused")
     if (package.get("visibility") != "private" or package.get("name") != name or
             (package.get("owner") or {}).get("login", "").lower() != owner.lower()):
         raise SystemExit(f"Package {name} is not a verified private package; publication refused")
