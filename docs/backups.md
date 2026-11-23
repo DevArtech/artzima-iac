@@ -1,11 +1,5 @@
 # Backups
 
-> **Initial rebuild scope (23 November 2026):** no old lab state is migrated. Preserve only
-> the exact NAS rip/personal folders the operator will identify. NAS cleanup stays blocked
-> until that list and an independent copy are verified; never format a volume holding
-> protected files. See [the setup checklist](OPERATOR-SETUP.md#initial-rebuild-retention-decision--23-november-2026).
-> This document describes backups and recovery of the **new** lab after deployment.
-
 Everything that matters exists in **three places**: the live system, a local copy on the NAS
 or PBS, and an **off-site** copy in **Backblaze B2**. The off-site part is code:
 
@@ -324,7 +318,7 @@ according to `backup_nas_media` in `ansible/group_vars/all/backups.yml`:
 
 | Mode | What runs | Notes |
 |---|---|---|
-| **`restic-on-nas`** (default) | **Backrest** (restic plus a web UI) in Docker **on the NAS** (role `nas_backup`, `make nas-backup`). It writes into a **dedicated** bucket (`b2_bucket_nas`) with its own scoped key (`tofu/backblaze`) and its **own** restic password | independent of the lab: it keeps running while the Proxmox machines are wiped. **Replaces the UGOS backup app job**, which proved unreliable ([migration](#migration-from-the-ugos-job)) |
+| **`restic-on-nas`** (default) | **Backrest** (restic plus a web UI) in Docker **on the NAS** (role `nas_backup`, `make nas-backup`). It writes into a **dedicated** bucket (`b2_bucket_nas`) with its own scoped key (`tofu/backblaze`) and its **own** restic password | independent of the compute hosts; verify backup coverage before retiring an existing provider ([migration](#backup-provider-transition)) |
 | `existing` | the old UGOS backup app job (record: `nas_existing_backup` in `backups.yml`) | kept as an option only; the repo creates nothing |
 | `off` | nothing | documented as **not** backed up off-site |
 
@@ -397,7 +391,7 @@ but plans or repos edited in the UI are overwritten by the next `make nas-backup
    the same `compose.yaml`.
 6. **First run:** open the web UI, check that repo `b2-nas` initialized (it is created
    automatically), then start `personal-daily` and `media-daily` by hand (*Backup now*), or wait
-   for the schedule. The first full upload takes days ([estimate](#migration-from-the-ugos-job)).
+   for the schedule. The first full upload takes days ([estimate](#backup-provider-transition)).
 
 #### Alerts: failures and missed runs
 
@@ -442,11 +436,11 @@ but plans or repos edited in the UI are overwritten by the next `make nas-backup
 4. **Spot restore:** restore one recent rip and one personal file into `/restore`, and compare
    `sha256sum` with the originals.
 
-### Migration from the UGOS job
+### Backup-provider transition
 
-The order is fixed. The old copy stays until the new one is **proven**:
+The order is fixed. Keep the existing backup until the new one is **verified**:
 
-1. **Deploy Backrest** (above) while the UGOS job still runs.
+1. **Deploy Backrest** (above) while the existing backup provider still runs.
 2. **Upload to completion.** Watch the web UI until `media-daily` and `personal-daily` have each finished one
    full snapshot. Expect days, and plan around the uplink:
 
@@ -471,13 +465,13 @@ The order is fixed. The old copy stays until the new one is **proven**:
    - Confirm that the healthchecks.io checks are green and that a deliberately broken run alerts.
      For example, pause the bucket key in B2 for one manual run, then restore it.
 4. **Only then, MANUALLY (never automated by this repo):**
-   - disable the UGOS backup job in the UGOS app;
-   - after another week or two of green Backrest runs, delete the old job and the **old B2 data**:
-     its bucket or prefix, in the B2 web UI, and any B2 key UGOS used;
+   - disable the previous backup job in its management interface;
+   - after another week or two of green Backrest runs, review retirement of the previous job and its stored snapshots according to the retention policy:
+     its bucket or prefix, and any provider-specific B2 key;
    - update `nas_existing_backup`'s notes (retired, date). `backup_nas_media` stays `restic-on-nas`.
 5. **Temporary double cost:** while both copies exist, B2 bills both, at about
    `(size of the media + shares in TB) × $6.95` per month **extra**, for the weeks of the
-   migration. A 4 TB library costs about $28/month more until the old data is deleted.
+   migration. A 4 TB library costs about $28/month more until the previous backup copy is retired.
    Remember that B2 keeps hidden files until the lifecycle purges them. The old bucket has its
    own rules; delete the bucket itself to stop billing for it.
 

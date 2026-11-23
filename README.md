@@ -28,6 +28,7 @@ from USB installs through to running apps:
 | Things that can't be automated | Docs | [`docs/manual-steps.md`](docs/manual-steps.md) |
 
 Design rationale: [`docs/decisions.md`](docs/decisions.md). Backups: [`docs/backups.md`](docs/backups.md).
+Server evolution and dated decisions: [`docs/JOURNAL.md`](docs/JOURNAL.md).
 **Total or partial loss: [`docs/disaster-recovery.md`](docs/disaster-recovery.md)**, a runbook the
 operator executes alone from a blank laptop (`scripts/dr-tools.sh`), printed with `make dr-pdf` into the
 emergency kit that must exist outside the lab (`make emergency-kit`).
@@ -98,7 +99,7 @@ scripts/      labdata/render helpers, validate_k8s.py, install-tools.sh, infisic
               eso_bootstrap.py, check_public.sh, install-git-hooks.sh,
               media-adopt.sh (hardlink existing rips into the media layout)
 docs/         OPERATOR-SETUP.md (start here), secrets.md, manual-steps.md, decisions.md, backups.md,
-              disaster-recovery.md
+              disaster-recovery.md, JOURNAL.md (server evolution)
 emergency-kit.yaml, secrets.manifest.yaml   names only: what lives outside the lab / in Infisical
 renovate.json  dependency updates (patch/digest automerge after CI, majors need approval)
 ```
@@ -109,25 +110,12 @@ renovate.json  dependency updates (patch/digest automerge after CI, majors need 
 pre-commit). Everything else, including Infisical and the five root credentials, is in
 [`docs/OPERATOR-SETUP.md`](docs/OPERATOR-SETUP.md) section A.
 
-## What survives the wipe
+## NAS storage and retention
 
-**Initial rebuild decision, 23 November 2026:** start fresh. Wipe the verified install disks
-on host01, node01-03 and pbs. Discard all old lab state, including VMs, containers, app
-settings, databases, Home Assistant configuration, Jellyfin history and old lab backups.
-
-**Only the rips and personal data on the NAS survive.** The operator will identify the exact
-absolute folder paths later. All other old NAS data is to be removed by selective cleanup,
-including old app data under paths that the new lab will reuse.
-
-**NAS cleanup is blocked until the protected-folder list is recorded.** Verify an independent
-copy of those files and review an explicit deletion inventory first. Never delete a protected
-folder or a parent containing one. Do not format a disk, pool or volume holding protected
-files. See [manual steps §11](docs/manual-steps.md#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification).
-Clean old app paths before deployment so that the new apps cannot pick up old state.
-
-The normal deployment still writes only inside the lab export. It does not perform this
-one-off NAS cleanup. Preserved rips are adopted by hardlink, with a dry-run first; original
-files are not moved, renamed or deleted. Future backups and recovery protect the **new** lab.
+The IaC stack creates application storage within the configured NAS export. Persistent
+volumes use `Retain`; deleting a PVC does not delete its files. Media adoption creates
+hardlinks without moving, renaming or deleting source rips. Personal backup sources are
+mounted read-only. Actual NAS paths and source selections belong in private configuration.
 
 **Where this repo writes on the NAS: only inside `/volume1/Artzima`**
 
@@ -150,9 +138,9 @@ The Jellyfin host mount of `data/` is **read-only**. This is enforced, not just 
 - Nothing deletes on the NAS, with narrow exceptions inside its own folders: the Vaultwarden backup
   job rotates its old `vaultwarden-*.gpg` files, the Paperless exporter mirrors deletions into
   `backups/paperless/`, and Paperless empties `consume/`. Deleting a PVC leaves a `Released` PV and its folder
-  ([manual steps §11](docs/manual-steps.md#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification)).
+  ([manual steps §11](docs/manual-steps.md#11-nas-volume-lifecycle)).
 
-## Order of operations: from a wiped lab to running apps
+## Deployment workflow
 
 Four commands; [`docs/OPERATOR-SETUP.md`](docs/OPERATOR-SETUP.md) says what you do around them.
 Every step that changes something shows its plan (`tofu plan`, the playbook's hosts and tasks,
@@ -198,10 +186,7 @@ never by changing the app repos:
 - Details and local builds: [`images/README.md`](images/README.md). Why private GHCR, and the
   fully in-cluster alternative: [decisions](docs/decisions.md#private-app-images-on-ghcr).
 
-### Alexandria and Skyjo: fresh library, weights in the image
-
-Nothing is carried over from the old lab: the old Alexandria memory library is **not kept**, and
-no Skyjo data volume exists any more.
+### Alexandria library and Skyjo model storage
 
 - **Alexandria starts with an empty library.** The server (`alexandria-mcp`) refuses to start
   without an initialized library, and the upstream image has no CLI. So the pod's `init-library`
@@ -330,7 +315,7 @@ copy, the bytes would still be there under the original path, and the arrs' recy
    sudo btrfs subvolume list /volume1 2>/dev/null | head  # UGOS shares are often separate subvolumes
    ```
    Hardlinks only work inside **one** filesystem, and this repo only ever **writes** inside
-   `/volume1/Artzima` ([What survives the wipe](#what-survives-the-wipe)). If the rips are in
+   `/volume1/Artzima` ([NAS storage and retention](#nas-storage-and-retention)). If the rips are in
    another shared folder with a different `%d`, the script refuses. You then decide:
    - **(a)** a **verified copy** straight into `/volume1/Artzima/data/media/{movies,tv}`. It only
      reads the other share, writes only into Artzima, and needs the space twice. The script prints

@@ -2,12 +2,6 @@
 
 **Public reference runbook:** addresses and the project slug below are fictional examples. Restore private configuration in B5 before server recovery. For the emergency kit, print `make dr-pdf`; it uses the private deployment copy with the actual network details.
 
-> **Initial rebuild scope (23 November 2026):** no old lab state is migrated. Preserve only
-> the exact NAS rip/personal folders the operator will identify. NAS cleanup stays blocked
-> until that list and an independent copy are verified; never format a volume holding
-> protected files. See [the setup checklist](OPERATOR-SETUP.md#initial-rebuild-retention-decision--23-november-2026).
-> This document describes backups and recovery of the **new** lab after deployment.
-
 **For the operator, alone.** It assumes the worst: a fire took the apartment, so every machine
 is gone, including the lab, the NAS, the workstation, **Headquarters and G.A.R.T.H.** Nothing
 here needs them, or any machine that was at home. You need:
@@ -108,7 +102,7 @@ codes** (they change when you use one) for the new kit (F5).
 | A3 | **Backblaze** <https://secure.backblaze.com> | log in | *Buckets*: `artzima-nas`, `artzima-restic`, `artzima-pg`, `artzima-pbs` with their usual sizes. **Change nothing.** Fails: the kit's read-all key still works for C |
 | A4 | **GitHub** <https://github.com/login> | log in (2FA recovery code) | repo `devartech/artzima-iac`. Not needed to *read* (it's public); needed to push (D2) and for the Flux token |
 | A5 | **Cloudflare** <https://dash.cloudflare.com> | log in | the zone; *Zero Trust → Networks → Tunnels*: `artzima` (down) |
-| A6 | **Tailscale** <https://login.tailscale.com> | log in through its identity provider | *Machines*: the old lab devices, offline. Remove them now (*… → Remove*) |
+| A6 | **Tailscale** <https://login.tailscale.com> | log in through its identity provider | *Machines*: devices from the failed deployment, offline. Remove them now (*… → Remove*) |
 | A7 | **Vaultwarden** | not reachable until E. The kit has its master password; a phone/laptop **away from home** with the Bitwarden app has an encrypted offline copy | |
 
 ---

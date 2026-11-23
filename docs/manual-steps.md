@@ -44,11 +44,8 @@ shared folder **Artzima** → NFS permissions:
   sudo mkdir -p /volume1/Artzima/backups/vaultwarden
   sudo chown 1000:1000 /volume1/Artzima/backups/vaultwarden && sudo chmod 0700 /volume1/Artzima/backups/vaultwarden
   ```
-- **Initial rebuild:** preserve only the exact rip/personal folders the operator will identify.
-  All other old NAS data is in scope for selective removal before deployment. Cleanup is blocked
-  until the protected list and independent backup are verified; do not format volumes containing
-  protected files. Follow [§11](#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification)
-  before creating new app folders. Normal deployment writes only inside `/volume1/Artzima`.
+- **Storage boundary:** normal deployment writes only inside the configured lab export.
+  Inspect mount paths and permissions before deployment; see [NAS volume lifecycle](#11-nas-volume-lifecycle).
 - **Media data folder** (the media stack, [§10](#10-media-stack-arr--qbittorrent--seerr)):
   one folder for downloads **and** the library, so imports are hardlinks, not copies.
   Its name is `media_data_subdir` and its owner is `media_puid`:`media_pgid` in
@@ -233,7 +230,7 @@ the node), but rescheduled pods on another node can't pull until the Secret is r
 
 ## 8. Alexandria: secrets, library, first login, embedder
 
-**Library: starts fresh, initialized automatically.** The old lab's memory library is not kept.
+**Library: initialised automatically when absent.**
 On the first start, the pod's `init-library` initContainer runs upstream's
 `alexandria init /srv/alexandria` on the empty library PVC (NAS
 `/volume1/Artzima/k8s/alexandria/alexandria-library`). The server needs an initialized library and
@@ -258,9 +255,7 @@ kubectl -n alexandria run alexandria-init --rm -i --restart=Never \
 `LOGIN_USERNAME` (`admin`), `LOGIN_PASSWORD` (hex:16), and `LEGACY_BEARER_TOKEN` and
 `OPENAI_API_KEY` (empty). ESO syncs them into the Secret `alexandria/alexandria`.
 `ALEXANDRIA_MCP_TOKEN` is the bearer that `alexandria-mcp` enforces. The proxy injects it, and
-by default it is also the legacy bearer for Cursor/Codex. To keep the old lab's token instead
-(saves re-configuring the clients), put it into Infisical **before** `make gen-secrets`: existing
-keys are never changed.
+by default it is also the legacy bearer for Cursor/Codex. To use an existing client token, put it into Infisical **before** `make gen-secrets`: existing keys are never changed.
 
 **Don't put `alexandria` in `CLOUDFLARE_ACCESS_APPS`** (Cloudflare Access). Claude's OAuth flow and
 bearer clients can't get past a browser Access login, and the proxy is the auth layer.
@@ -283,7 +278,7 @@ curl -i -X POST https://alexandria.<domain>/mcp                             # 40
 3. *Connect*. The proxy's login page opens. Sign in with `LOGIN_USERNAME` / `LOGIN_PASSWORD`.
 4. If it hangs on "Checking connection…", delete the connector and add it again with only the URL. The OAuth
    signing keys and registered clients live on the `alexandria-oauth-data` PVC. Losing that PVC
-   only means reconnecting. The old lab's registrations are not migrated, so connect again once.
+   requires the clients to register again.
 
 **Cursor / Codex / Claude Desktop with a static bearer** (`ALLOW_LEGACY_STATIC_TOKEN=true` is
 set in the HelmRelease):
@@ -531,37 +526,21 @@ guess. Per artist:
 
 Jellyfin reads the same files at `/data/media/music` (Music library, §10.3).
 
-<a id="11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification"></a>
+## 11. NAS volume lifecycle
 
-## 11. Initial NAS cleanup: preserve only the operator's selected folders
+The IaC stack writes application data only within the configured lab export. Personal
+shares and media-adoption source folders remain outside normal deployment writes.
 
-**Decision, 23 November 2026:** discard all old lab state. Only the operator's rips and
-personal files on the NAS survive. The exact protected paths are **not yet supplied**.
-No cleanup can start until they are recorded. Old app settings, VMs, containers and lab
-backups need no migration. Home Assistant and Jellyfin start fresh.
-
-1. Ask the operator for the exact absolute NAS folders to preserve. Record them in the
-   setup checklist, then configure `media_existing_paths` and `nas_personal_shares` as
-   appropriate. These config lists support adoption/backups; they are not a deletion tool.
-2. Inspect the NAS read-only: actual mount points, nested folders, symlinks, shared files
-   and hardlinks. Resolve the protected paths to their actual storage locations.
-3. Verify an independent copy of the protected files, including a test restore. A snapshot
-   on the same NAS is an extra safeguard, not an independent copy.
-4. Prepare an explicit inventory of proposed deletions across the NAS. Exclude the protected
-   paths, their contents and any parent that contains them. Review overlaps before execution.
-   Do not infer exclusions from names or infer age from timestamps.
-5. Review the exact inventory with the operator before execution. Do not format a NAS
-   disk, pool or volume containing protected files. No broad deletion command is provided
-   here because the protected-folder list is still unknown.
-6. Complete selective removal of old data before new apps use the same folders. This includes
-   old Kubernetes PVCs and old databases under future deployment paths; `Retain` alone does
-   not prevent a fresh app from attaching old files.
-7. Verify the preserved files remain intact. Create the new lab folder layout, deploy fresh
-   apps, adopt the preserved rips with the documented dry-run, and enable new backups.
-
-This is a one-off rebuild procedure. Normal playbooks do not delete other NAS shares.
-After deployment, all newly created app data is live data and must not be included in an
-old-data cleanup inventory. Future catastrophic recovery restores the new lab's backups.
+- NFS persistent volumes and storage classes use `Retain`. Deleting a PVC leaves its
+  data on the NAS; it does not authorise removing the backing directory.
+- Reusing a namespace and PVC name can attach existing application state. Inspect the
+  backing path before deployment and follow the recovery runbook when restoring data.
+- Record media sources and personal backup shares in private configuration. Check
+  mounts, symlinks, permissions and overlapping paths before changing storage.
+- Before removing an application volume, stop its consumers, verify an independent
+  backup and test restore, and review the exact volume and backing directory.
+- Backup rotation and Paperless import/export perform the documented deletions within
+  their own managed directories. They do not grant general deletion access to other shares.
 
 ## 12. Vaultwarden
 
@@ -833,9 +812,9 @@ G.A.R.T.H. uses Paperless' REST API (`http://paperless/api/`) to upload (`POST
 
 The media library (`/volume1/Artzima/data/media`) and the operator's **personal shares** are backed
 up by **restic, run on the NAS by Backrest in Docker** (`backup_nas_media: restic-on-nas`, the
-default; role `nas_backup`). It is independent of the lab and keeps running during a wipe. The
+default; role `nas_backup`). It is independent of the lab and continues running independently of the compute hosts. The
 personal shares are outside the lab: the repo never writes to them, and Backrest mounts them
-**read-only**. Backrest **replaces** the UGOS backup app job, which was unreliable.
+**read-only**. Use a verified backup-provider transition when replacing another backup system.
 
 1. **Prerequisites on the NAS:**
    - the UGOS Docker app is installed;
@@ -854,7 +833,7 @@ personal shares are outside the lab: the repo never writes to them, and Backrest
    ([backups: Backrest on the NAS](backups.md#backrest-on-the-nas)).
 5. **Open the UI** at `http://192.0.2.156:9898` (LAN or Tailscale) and start the first runs.
    Set up healthchecks.io ([alerts](backups.md#alerts-failures-and-missed-runs)).
-6. **Migrate:** let the first full upload finish, verify it (`restic check` plus test restores), and
-   **only then** disable the UGOS job, and later delete its B2 data. Both are manual steps;
-   the repo never does them ([backups: Migration](backups.md#migration-from-the-ugos-job)).
+6. **Verify the backup:** let the first full upload finish, verify it (`restic check` plus test restores), and
+   **only then** review retirement of the previous backup provider according to its retention policy. Both are manual steps;
+   the repo never does them ([backups: Transition](backups.md#backup-provider-transition)).
 7. **Monthly:** [check the last successful run](backups.md#check-the-last-successful-run-monthly-and-in-the-quarterly-test).

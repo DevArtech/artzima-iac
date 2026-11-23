@@ -28,56 +28,23 @@ Background, when you want it: [secrets](secrets.md) (every key and who writes it
 
 ---
 
-## Credential progress — 23 November 2026
-
-- Infisical setup: completed with the operator; existing bootstrap login works.
-- Cloudflare: token active; account/zone/domain settings saved; DNS, tunnel and Access read checks passed.
-- Tailscale: OAuth login, requested Devices Core/Auth Keys/Services scopes and all three credential tags passed; devices/services reads succeeded. The operator tag is exactly `tag:k8s-operator`.
-- Backblaze: dedicated `artzima-tofu` key created, verified and stored at `/tofu/B2_ADMIN_KEY_ID` and `B2_ADMIN_APPLICATION_KEY`, replacing the temporary master credentials. The existing master key was not rotated or revoked.
-- Backblaze's authorization response reports region `us-east-005` and endpoint `s3.us-east-005.backblazeb2.com`; configuration and recovery examples use these.
-- GitHub: classic PAT saved under `/k8s/ghcr/GHCR_PULL_TOKEN`; authentication and `read:packages` / `public_repo` scopes passed. It does not have the broader `repo` scope. The API did not report an expiry; record the chosen expiry separately.
-- All five root credential sets and all required operator settings are present. Admin email and both Surfshark WireGuard values passed format checks. The workstation's existing `~/.ssh/id_ed25519.pub` was saved in `/settings/ADMIN_SSH_KEYS`, preserving any existing keys; private key material was not read or copied.
-- `make preflight PREFLIGHT_ARGS=--accounts-only` passed on 23 November 2026. This checks required operator-secret presence, not a live VPN connection or hardware readiness. Hardware inspection, off-NAS backups, recovery-kit completion and bootstrap/cutover planning remain pending.
-- These checks did not deploy infrastructure or change existing backup jobs.
-
-## Initial rebuild retention decision — 23 November 2026
-
-The operator wants a **fresh lab**, with no migration of old lab state. Wipe the verified
-install disks on host01, node01, node02, node03 and pbs. Discard old VMs, containers,
-databases, app settings, Home Assistant configuration, Jellyfin history and old lab backups.
-
-**Only the operator's rips and personal data on the NAS survive.** The operator will supply
-the exact absolute folder paths later. Until that list is recorded and checked, **NAS cleanup
-must not start**. Do not infer protected paths from folder names. All other old NAS data is
-in scope for removal, including old lab data inside the future deployment paths.
-
-NAS cleanup is selective: do not format a disk, pool or volume containing protected files.
-Before cleanup, verify an independent copy of the protected files, inspect mounts, symlinks
-and nested paths, and prepare an exact deletion inventory for review. Exclude every protected
-path and every parent directory containing one. Complete old-data cleanup before deploying
-new apps into the same paths. Never use file dates alone to decide what to delete.
-
-This decision applies to the **initial rebuild only**. Backups and catastrophic recovery for
-the new lab remain required. No data was deleted when this decision was recorded.
-
-## Remaining readiness gaps — checked 23 November 2026
+## Deployment readiness
 
 See the [public-source security review](PUBLIC-SECURITY-REVIEW.md) for checks, fixes and remaining deployment security requirements. Before deployment, verify trusted Proxmox API TLS, runtime secret access restrictions, first-run app administration before public ingress, installer LAN isolation, tool artifact integrity and built-image vulnerabilities.
 
-The accounts-only check passes. This is **not** permission to wipe.
+The accounts-only check verifies credential presence. Hardware readiness requires the full preflight and installer target checks.
 
 - Install-disk serials for host01, node01, node02, node03 and pbs are placeholders. Collect real serials read-only and confirm each target disk before preparing install answers.
 - `media_existing_paths` and `nas_personal_shares` are empty. Inspect the NAS and record the media roots and personal shares to preserve/back up. Verify NFS, ownership, Docker and sudo prerequisites.
-- No old app-state backups are needed for migration. Identify the exact protected NAS folders and verify an independent copy before any NAS cleanup.
 - Verify the scoped ESO role supports runtime reads and denies administrator-secret reads during cloud bootstrap.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
 - Emergency-kit locations and rotation dates remain unrecorded (`TODO`/empty). Finish the independent recovery credentials and printed kit before destructive work.
 - The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub validation/security checks and the first image builds started; their results and private package visibility still need verification before deployment.
-- Confirm BIOS/network/timezone facts and prepare installer media. The later full hardware preflight is after OS installation and before `make up`; it does not protect data from the installer wipe.
+- Confirm BIOS/network/timezone facts and prepare installer media. The later full hardware preflight is after OS installation and before `make up`; verify installer disk targets separately before installation.
 
-## A. Before the wipe
+## A. Prerequisites
 
-Nothing here touches the running lab. Do it in any spare evening; the old lab keeps running.
+Prepare the workstation, accounts, private inventory and NAS before deployment.
 
 ### A1. Workstation
 
@@ -148,9 +115,8 @@ environment **prod** → the folder → *Add secret*). The folders appear with `
 
 ### A3. Fill Infisical with everything else: `make bootstrap`
 
-- [ ] **The old lab publishes the same hostnames?** Then its DNS records collide with the new
-  tunnel's: delete them in the Cloudflare dashboard (*DNS → Records*) right before this step, or
-  run this step on build day.
+- [ ] **Existing DNS records use the same hostnames?** Review conflicts with the managed
+  tunnel before applying the plan. Schedule any DNS changes for the deployment window.
 - [ ] `make bootstrap`. In order, each with its plan and a `yes`:
   generated secrets (`make gen-secrets`: random passwords, API keys, hashes; only **missing** keys,
   existing ones are never touched) → Tailscale auth keys + the cluster's read-only Infisical
@@ -182,11 +148,11 @@ G.A.R.T.H. are all gone: only the kit and a borrowed laptop remain.
 - [ ] Optional but recommended: try `scripts/dr-tools.sh` once on another laptop (the drill in
   [disaster recovery: Drills](disaster-recovery.md#drills) does the full version twice a year).
 
-### A5. NAS inspection and protected-folder inventory
+### A5. NAS configuration
 
 All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual steps §3](manual-steps.md#3-ugreen-nas-ugos).
 
-- [ ] Record the exact protected rip/personal folder list; verify an independent copy. Review the selective deletion inventory in [manual steps §11](manual-steps.md#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification). Remove old data before creating new app folders; never format a volume containing protected files.
+- [ ] Record the media sources and personal backup shares in private configuration. Verify permissions, mount boundaries and an independent backup before changing storage.
 - [ ] NFS export `/volume1/Artzima` allowed for the lab subnet (no_root_squash where §3 says).
 - [ ] The media data folder and its owner (`/volume1/Artzima/data`, §3).
 - [ ] Where are the existing rips? → `media_existing_paths` in `ansible/group_vars/all/media.yml`
@@ -195,15 +161,14 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
 - [ ] UGOS **Docker** app installed (Backrest runs there); your NAS user can `sudo` (asked once
   per `make up`/`make nas-backup`, the `-K` prompt).
 - [ ] Folders: `sudo mkdir -p /volume1/Artzima/{backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume,homeassistant/backups}`.
-- [ ] Note the old UGOS backup job (name, schedule): it is retired **after** Backrest's first full
-  upload ([backups](backups.md#migration-from-the-ugos-job)).
+- [ ] If a backup provider already exists, retain it until Backrest completes a verified backup and test restore ([backup-provider transition](backups.md#backup-provider-transition)).
 
-### A6. Inventory (non-secret, in this repo)
+### A6. Private deployment inventory
 
 - [ ] [`ansible/hosts.yml`](../ansible/hosts.yml) is an example. Edit `.private/site/ansible/hosts.yml` instead: for every Proxmox/PBS machine `mac` (primary
   NIC), `install_disk` and **`install_disk_serial`**. The answer server only answers machines with
   a known MAC and installs only onto the disk with that serial. <a id="disk-serials"></a>**Disk
-  serials:** on the running old system `udevadm info -q property -n /dev/nvme0n1 | grep ^ID_SERIAL=`
+  serials:** on the target system `udevadm info -q property -n /dev/nvme0n1 | grep ^ID_SERIAL=`
   (or `lsblk -d -o NAME,SERIAL,MODEL`); in the installer's debug shell the same command. A
   unique part of `ID_SERIAL` is enough (the match is `*<serial>*`).
 - [ ] `timezone` in `ansible/group_vars/all/lab.yml`.
@@ -211,11 +176,10 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   (**public**); *Actions → images* builds the private images; then make sure each package is
   **Private** ([manual steps §7](manual-steps.md#7-private-images-ghcr-pat-and-pull-secret) steps 1-2).
 
-### A7. Confirm the fresh-start scope
+### A7. Hardware and network prerequisites
 
-- [ ] No old lab app state needs saving: Home Assistant, Jellyfin and all other apps start fresh.
-- [ ] Protected NAS folders are recorded and independently backed up before selective cleanup.
-- [ ] BIOS settings and DHCP reservations: [manual steps §1-2](manual-steps.md#1-bios--firmware-on-every-machine).
+- [ ] Verify BIOS settings and DHCP reservations: [manual steps §1-2](manual-steps.md#1-bios--firmware-on-every-machine).
+- [ ] Confirm the intended storage paths and independent backup coverage before deployment.
 
 ---
 
@@ -262,8 +226,7 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
 - [ ] **Home Assistant:** configure a fresh installation, `trusted_proxies` = Talos node IPs, network storage
   for backups ([backups](backups.md#setup-order) step 6).
 - [ ] **Backrest on the NAS:** <http://192.0.2.156:9898>, user `admin` / `/operator/BACKREST_PASSWORD`.
-  When the first **full** upload has finished and a test restore worked: **retire the old UGOS
-  backup job by hand** ([backups](backups.md#migration-from-the-ugos-job)).
+  When the first **full** upload has finished and a test restore worked: **review any existing backup-provider transition** ([backups](backups.md#backup-provider-transition)).
 - [ ] **Alerts:** when Headquarters has its endpoint, put the https URL into
   `/k8s/alerts/WEBHOOK_URL`, then `make nas-backup` (Backrest picks it up; Alertmanager within the
   hour). Until then alerts only show in Alertmanager/Grafana and `make verify`.
@@ -273,7 +236,6 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   Patch/digest updates then merge themselves after CI; majors wait for your approval on the
   Dependency Dashboard issue.
 - [ ] **Next morning:** `make verify` → all `PASS`.
-- [ ] Confirm selective NAS cleanup is complete and the protected rips/personal folders remain intact ([manual steps §11](manual-steps.md#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification)).
 
 Self-checks run by themselves from now on: the 1st of each month a restic repository is restored
 and verified, the 2nd each Postgres database is recovered from B2 into a scratch cluster and

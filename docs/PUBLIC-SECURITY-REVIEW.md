@@ -88,8 +88,7 @@ RFC1918 addresses, non-example MAC addresses and non-example project slugs.
    artifact-integrity hardening before treating the tool bootstrap as verified supply chain.
 6. Build the private images, check known dependency/image vulnerabilities and verify GHCR
    package visibility. These checks cannot be completed against images not yet built.
-7. Verify disk serials, the independent backup of protected NAS folders, and the exact
-   cleanup inventory. Repository lint is not evidence that a destructive target is correct.
+7. Verify disk serials, storage boundaries and independent NAS backup coverage. Repository lint is not evidence that a destructive target is correct.
 
 Runtime secrets still include powerful Tailscale operator and backup maintenance keys.
 The ESO role is an improvement over project Viewer, not per-app or per-folder runtime

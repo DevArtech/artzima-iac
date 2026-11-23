@@ -75,7 +75,7 @@
   The internet-facing surface is limited to the app list in `/apps.yaml`.
 - **The tunnel is code** (`tofu/cloudflare`, official `cloudflare/cloudflare` v5
   provider): the tunnel, its ingress rules, the DNS records and Access are reviewed, diffable
-  and rebuildable after a wipe, like everything else. The tunnel is remotely managed
+  and reproducible from its configuration. The tunnel is remotely managed
   (`config_src = "cloudflare"`), so the k8s side is only a token, which `make cf-apply`
   writes into Infisical and ESO syncs into the cluster, and 2 replicas for HA.
 - **One list, `/apps.yaml`.** It generates the Traefik IngressRoutes (`make render`) and feeds the
@@ -346,28 +346,22 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
 
 ## The NAS outlives the lab
 
-- **Rebuilds wipe every Proxmox machine (host01, node01-03, pbs), never the NAS.** The NAS holds
-  the irreplaceable data: the operator's rips, and personal files in other shares. So the repo
-  treats it as **persistent and mostly off-limits**.
-- **Writes go only inside `artnas_export` (`/volume1/Artzima`)**, into a fixed set of folders:
-  `k8s/`, `data/`, and Proxmox's own `dump/`, `template/`, `snippets/`, `import/`.
-  - **Enforced:** `scripts/labdata.py` rejects NAS sub-folders that escape the root, and `make lint`
-    fails on any NFS StorageClass/PV path outside it. The scripts check again before writing
-    (`media-adopt.sh` resolves symlinks on the NAS itself).
-  - **Other shares** are at most *read* (`make media-adopt` reads the rip folders you list).
-  - **When the rips sit on another filesystem**, the options are a verified copy into Artzima or
-    the operator moving them. The data folder never follows them out.
-- **Retain everywhere.** The `nfs-artnas` StorageClass, the static media PV and the snapshot class
-  all retain their data. Losing a PVC, a namespace or the whole cluster never deletes NAS data.
-  The deterministic `<namespace>/<pvc>` folder names let a rebuilt cluster pick the same data up
-  again. The cost is manual clean-up of released
-  volumes, which is acceptable at this scale.
-- **Nothing deletes on the NAS automatically**, except the Vaultwarden backup job rotating its
-  own old `vaultwarden-*.gpg` copies in `backups/vaultwarden/`. Removing the old lab's VM/CT disks and archives
-  under `/volume1/Artzima` is a documented, optional, manual step: only after the new lab is
-  verified, with a dry-run listing, and quarantined before deletion
-  ([manual steps §11](manual-steps.md#11-optional-clean-up-the-old-labs-files-on-the-nas-after-verification)).
-  A wrong `rm` on the NAS is the one mistake this lab can't rebuild its way out of.
+- **Storage is independent of compute.** The NAS holds persistent app data, media and
+  personal backup sources. Replacing compute hosts does not require replacing storage.
+- **Writes stay inside the configured export.** `scripts/labdata.py` rejects paths that
+  escape it, and manifest validation checks NFS storage paths. Media adoption verifies
+  the actual NAS paths before writing library links.
+- **Personal sources are read-only.** Media adoption reads the configured rip sources;
+  Backrest mounts personal shares read-only. A source on another filesystem requires
+  a verified copy or a separately reviewed move before hardlink adoption.
+- **Persistent volumes use Retain.** Removing a PVC or namespace leaves its data on the
+  NAS. Deterministic backing paths allow recovery, but also require inspection before
+  reusing an existing volume for an application.
+- **Deletion stays within documented app behaviour.** Vaultwarden rotates its own
+  encrypted dumps; Paperless consumes import files and mirrors document deletions
+  into its export folder. Other volume retirement requires an independent backup,
+  a test restore and review of the exact backing directory. See
+  [NAS volume lifecycle](manual-steps.md#11-nas-volume-lifecycle).
 
 ## Vaultwarden
 
@@ -555,10 +549,10 @@ Details, schedules and restore runbooks: [backups](backups.md).
   the local datastore into the B2-backed one, which keeps its own prune/GC history, so local mistakes
   are not mirrored. The alternatives were a second PBS off-site (more hardware) or rclone of the
   datastore directory (not consistent, no dedup awareness).
-- **NAS media and personal files: restic on the NAS (Backrest), replacing the UGOS backup app.**
-  The UGOS app proved unreliable, so it is replaced, not duplicated.
+- **NAS media and personal files: restic on the NAS (Backrest).**
+  Ansible manages its configuration, schedules, checks and alert hooks.
   - **Why on the NAS:** restic runs **on the NAS itself**, not in the cluster, so the most
-    irreplaceable data keeps being backed up while the whole lab is wiped or broken. It needs
+    irreplaceable data keeps being backed up while the compute hosts are unavailable. It needs
     nothing but Docker on the NAS and B2.
   - **Why Backrest:** it is a maintained restic front-end (v1.14, November 2026) with a scheduler,
     retention, prune and check policies, hooks (Shoutrrr, healthchecks.io) and a restore UI. Its
