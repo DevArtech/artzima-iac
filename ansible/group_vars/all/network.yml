@@ -1,0 +1,37 @@
+---
+# ---------------------------------------------------------------------------
+# artzima lab network: THE ONLY place network addressing is defined.
+#
+# Consumers:
+#   - Ansible (this file is auto-loaded as group_vars/all)
+#   - OpenTofu (tofu/locals.tf: yamldecode(file(...)))
+#   - install/render_answers.py (Proxmox auto-install answer files)
+#   - scripts/render.py -> k8s/clusters/artzima/cluster-vars.yaml (Flux)
+#
+# RULES: plain YAML only. No Jinja here, because OpenTofu and Python read this
+# file too. Every host IP is computed as cidrhost(lab_subnet, host_index), with
+# host_index set per host in ansible/hosts.yml. To move the lab to another
+# subnet or VLAN, change only the values below (see README "Moving to a VLAN").
+# ---------------------------------------------------------------------------
+
+# Today: Xfinity home LAN, untagged, no VLANs.
+lab_subnet: 192.0.2.0/24
+lab_gateway: 192.0.2.1
+# null = untagged (today). Set e.g. 20 once a managed switch and a lab router exist.
+lab_vlan_id: null
+lab_dns:
+  - 1.1.1.1
+  - 8.8.8.8
+
+lab_domain: artzima.local
+
+# Host offsets inside lab_subnet for addresses that are not machines.
+# Kubernetes API virtual IP (Talos shared VIP across the 3 control planes).
+k8s_api_vip_index: 110
+
+# Kubernetes pod and service networks (Talos defaults, set explicitly in
+# tofu/talos.tf). Rendered into cluster-vars: Traefik trusts X-Forwarded-* from
+# the pod network, and gluetun's kill-switch lets qBittorrent talk to both
+# (k8s/apps/media/qbittorrent.yaml). Changing them on a live cluster means a rebuild.
+k8s_pod_subnet: 198.18.0.0/16
+k8s_service_subnet: 198.19.0.0/16

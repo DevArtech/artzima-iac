@@ -1,0 +1,71 @@
+---
+- name: Add the Tailscale apt key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/debian/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Tailscale apt repo
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://pkgs.tailscale.com/stable/debian
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: main
+      Signed-By: /usr/share/keyrings/tailscale-archive-keyring.gpg
+
+- name: Install tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+
+- name: Enable tailscaled
+  ansible.builtin.service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Enable IP forwarding (subnet routers only)
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_file: /etc/sysctl.d/99-tailscale.conf
+    reload: true
+  loop: [net.ipv4.ip_forward, net.ipv6.conf.all.forwarding]
+  when: tailscale_advertise_routes | length > 0
+
+- name: Read tailscale state
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+- name: Build tailscale up arguments
+  ansible.builtin.set_fact:
+    tailscale_args: >-
+      {{ ['--hostname=' ~ tailscale_hostname,
+          '--ssh=' ~ (tailscale_ssh | lower),
+          '--accept-dns=' ~ (tailscale_accept_dns | lower),
+          '--advertise-routes=' ~ (tailscale_advertise_routes | join(','))]
+         + (['--advertise-tags=' ~ (tailscale_tags | join(','))] if tailscale_tags else [])
+         + tailscale_extra_args }}
+
+- name: Join the tailnet
+  ansible.builtin.command:
+    argv: "{{ ['tailscale', 'up', '--auth-key=' ~ lookup('vars', tailscale_authkey_var)] + tailscale_args }}"
+  when: (tailscale_status.stdout | default('{}') | from_json).BackendState | default('') != 'Running'
+  changed_when: true
+  no_log: true
+
+- name: Apply settings on an already joined node
+  ansible.builtin.command:
+    argv: "{{ ['tailscale', 'set'] + (tailscale_args | reject('match', '--advertise-tags') | list) }}"
+  when: (tailscale_status.stdout | default('{}') | from_json).BackendState | default('') == 'Running'
+  changed_when: false

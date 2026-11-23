@@ -1,0 +1,139 @@
+---
+# Bazarr (subtitles for Sonarr/Radarr), k8s/apps/media. NOT public: tailnet only,
+# via the Tailscale operator (http://bazarr:6767 on the tailnet). Same /data mount
+# as Sonarr/Radarr, so no path mappings. Bazarr has no env var for its API key:
+# the seed-config init container writes Infisical /k8s/media/BAZARR_API_KEY into
+# a NEW config.yaml (first start only); the media-wiring Job then sets the
+# Sonarr/Radarr connections through Bazarr's API.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: bazarr
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${media_puid}
+        runAsGroup: ${media_pgid}
+        fsGroup: ${media_pgid}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      bazarr:
+        replicas: 1
+        strategy: Recreate
+        initContainers:
+          seed-config:
+            image: &seedImage
+              repository: docker.io/library/python
+              tag: 3.14.10-alpine3.24
+            command: ["python3", "-I", "/scripts/seed.py", "bazarr"]
+            env:
+              BAZARR_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: media-apikeys
+                    key: BAZARR_API_KEY
+            securityContext: &containerSecurity
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+        containers:
+          app:
+            image:
+              repository: ghcr.io/home-operations/bazarr
+              tag: "1.6.2"
+            env:
+              TZ: ${timezone}
+              UMASK: "002"
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 6767
+                  periodSeconds: 30
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 6767
+                  periodSeconds: 5
+                  failureThreshold: 60
+            securityContext: *containerSecurity
+            resources:
+              requests:
+                cpu: 25m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+    service:
+      app:
+        controller: bazarr
+        forceRename: bazarr
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: bazarr
+        ports:
+          http:
+            port: 6767
+    persistence:
+      config:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 1Gi
+        globalMounts:
+          - path: /config
+      data:
+        type: persistentVolumeClaim
+        existingClaim: media-data
+        advancedMounts:
+          bazarr:
+            app:
+              - path: /data
+      scripts:
+        type: configMap
+        name: media-scripts
+        advancedMounts:
+          bazarr:
+            seed-config:
+              - path: /scripts
+                readOnly: true
+      tmp:
+        type: emptyDir
+        advancedMounts:
+          bazarr:
+            app:
+              - path: /tmp

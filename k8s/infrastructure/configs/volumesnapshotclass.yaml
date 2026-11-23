@@ -1,0 +1,9 @@
+---
+# Used by CNPG volumeSnapshot backups (csi-driver-nfs snapshots = tarballs of
+# the volume on the same NAS: protects against DB mistakes, not NAS loss).
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: nfs-artnas-snapshot
+driver: nfs.csi.k8s.io
+deletionPolicy: Retain

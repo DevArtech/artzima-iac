@@ -1,0 +1,122 @@
+---
+# Vaultwarden's Postgres: a CloudNativePG Cluster (operator: k8s/infrastructure/
+# controllers/cloudnative-pg.yaml). CNPG generates the credentials itself: Secret
+# vaultwarden-db-app (keys username, password, host, port, dbname, uri, ...), whose
+# `uri` is Vaultwarden's DATABASE_URL. Nothing of it is in git or Infisical.
+#
+# Backups, three layers (restore: docs/manual-steps.md §12; off-site: docs/backups.md):
+#   1. CNPG: nightly ScheduledBackup with method volumeSnapshot (the repo's CNPG
+#      backup approach, docs/decisions.md): a CSI snapshot via nfs-artnas-snapshot =
+#      a tarball of the PGDATA volume on the NAS, deletionPolicy Retain.
+#   2. backup.yaml: nightly encrypted pg_dump + /data tarball to
+#      /volume1/Artzima/backups/vaultwarden (independent of CNPG and Kubernetes).
+#   3. Off-site (B2): WAL archiving + nightly base backups, Barman Cloud plugin
+#      (ObjectStore `b2` + ScheduledBackup *-db-b2 below) = point-in-time recovery.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: vaultwarden-db
+  namespace: vaultwarden
+spec:
+  # One instance: NFS is the only shared storage, and a replica on the same NAS
+  # would add no durability (docs/decisions.md "Postgres via CNPG on NFS").
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: vaultwarden
+      owner: vaultwarden # -> Secret vaultwarden-db-app
+  storage:
+    storageClass: nfs-artnas # Retain: deleting the Cluster keeps the data on the NAS
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  postgresql:
+    parameters:
+      shared_buffers: 64MB
+      max_connections: "50"
+  # Off-site: continuous WAL archiving + base backups to Backblaze B2 through the
+  # Barman Cloud plugin (ObjectStore `b2` below) = point-in-time recovery.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: b2
+  backup:
+    volumeSnapshot:
+      className: nfs-artnas-snapshot
+      # Hot snapshot: CNPG brackets it with pg_backup_start/stop, and pg_wal lives
+      # inside the same volume, so the snapshot is self-consistent on its own. Don't
+      # wait for the off-site WAL archive (B2): a B2 outage must not block local backups.
+      online: true
+      onlineConfiguration:
+        immediateCheckpoint: true
+        waitForArchive: false
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: vaultwarden-db-nightly
+  namespace: vaultwarden
+spec:
+  cluster:
+    name: vaultwarden-db
+  method: volumeSnapshot
+  schedule: "0 15 3 * * *" # 03:15 UTC daily (seconds field first: CNPG cron format)
+  immediate: true # one right after creation, so a backup exists from day one
+  backupOwnerReference: self
+---
+# Off-site base backup (B2), nightly; WAL is archived continuously in between.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: vaultwarden-db-b2
+  namespace: vaultwarden
+spec:
+  cluster:
+    name: vaultwarden-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  schedule: "0 0 4 * * *" # 04:00 UTC daily (seconds field first)
+  immediate: true
+  backupOwnerReference: self
+---
+# Where this cluster's base backups and WAL go: s3://<pg bucket>/vaultwarden/vaultwarden-db/...
+# Credentials: Secret b2-pg (ClusterExternalSecret, k8s/secrets/backups/b2-pg.yaml),
+# the pg bucket's own scoped key (tofu/backblaze). Retention: backups.yml.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: b2
+  namespace: vaultwarden
+spec:
+  # No retentionPolicy: the instance sidecar only ADDS (its key cannot delete).
+  # Retention: CronJob <cluster>-retention with the maintenance key (k8s/apps/backups/maintenance.yaml).
+  configuration:
+    destinationPath: s3://${b2_bucket_pg}/vaultwarden
+    endpointURL: https://${b2_s3_endpoint}
+    s3Credentials:
+      accessKeyId:
+        name: b2-pg
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: b2-pg
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  instanceSidecarConfiguration:
+    # boto3 >= 1.36 sends new checksum headers that several S3-compatible stores
+    # reject; the plugin docs recommend this for non-AWS endpoints such as B2.
+    env:
+      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+        value: when_required
+      - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+        value: when_required

@@ -1,0 +1,7 @@
+---
+# PBS -> Backblaze B2 (after `make b2-apply`, which writes the pbs bucket's key into
+# Infisical /ansible/PBS_B2_*). Not part of site.yml: it depends on tofu/backblaze.
+- name: PBS off-site copy to Backblaze B2
+  hosts: pbs_servers
+  roles:
+    - pbs_offsite

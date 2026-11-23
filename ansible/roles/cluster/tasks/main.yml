@@ -1,0 +1,94 @@
+---
+# Runs against pve_nodes + pbs_servers (pbs only takes part in SSH trust and
+# corosync-qnetd). Joins use `pvecm add --use_ssh` because the API join needs
+# the peer's root password and root here is SSH-key-only.
+- name: Pick the cluster init node
+  ansible.builtin.set_fact:
+    cluster_init_node: >-
+      {{ groups['pve_nodes'] | map('extract', hostvars)
+         | selectattr('lab_roles', 'contains', 'cluster_init')
+         | map(attribute='inventory_hostname') | first }}
+    cluster_is_pve: "{{ 'pve_nodes' in group_names }}"
+
+- name: Ensure a root SSH key exists
+  community.crypto.openssh_keypair:
+    path: /root/.ssh/id_ed25519
+    type: ed25519
+    comment: "root@{{ inventory_hostname }}"
+  register: cluster_root_key
+
+- name: Trust every lab node's root key (needed by pvecm add / qdevice setup)
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ hostvars[item].cluster_root_key.public_key }}"
+    state: present
+  loop: "{{ groups['pve_nodes'] }}"
+
+- name: Pin SSH host keys of all lab nodes in root's known_hosts
+  ansible.builtin.known_hosts:
+    path: /root/.ssh/known_hosts
+    name: "{{ hostvars[item].lab_ip }}"
+    key: "{{ hostvars[item].lab_ip }} ssh-ed25519 {{ hostvars[item].ansible_facts['ssh_host_key_ed25519_public'] }}"
+    state: present
+  loop: "{{ groups['pve_nodes'] + groups['pbs_servers'] }}"
+
+- name: Check cluster membership
+  ansible.builtin.stat:
+    path: /etc/pve/corosync.conf
+  register: cluster_corosync
+  when: cluster_is_pve
+
+- name: Create the cluster on the init node
+  ansible.builtin.command: >-
+    pvecm create {{ pve_cluster_name }} --link0 {{ lab_ip }}
+  args:
+    creates: /etc/pve/corosync.conf
+  when:
+    - cluster_is_pve
+    - inventory_hostname == cluster_init_node
+
+- name: Join the other nodes, one at a time
+  ansible.builtin.command: >-
+    pvecm add {{ hostvars[cluster_init_node].lab_ip }} --use_ssh 1 --link0 {{ lab_ip }}
+  args:
+    creates: /etc/pve/corosync.conf
+  throttle: 1
+  when:
+    - cluster_is_pve
+    - inventory_hostname != cluster_init_node
+
+# ---------------------------------------------------------------- QDevice
+- name: Install corosync-qnetd on the QDevice host
+  ansible.builtin.apt:
+    name: corosync-qnetd
+    state: present
+  when:
+    - cluster_qdevice | bool
+    - inventory_hostname == cluster_qnetd_host
+
+- name: Install corosync-qdevice on cluster nodes
+  ansible.builtin.apt:
+    name: corosync-qdevice
+    state: present
+  when:
+    - cluster_qdevice | bool
+    - cluster_is_pve
+
+- name: Read quorum status
+  ansible.builtin.command: pvecm status
+  register: cluster_status
+  changed_when: false
+  when:
+    - cluster_qdevice | bool
+    - inventory_hostname == cluster_init_node
+
+- name: Set up the QDevice (5th vote) against pbs
+  ansible.builtin.command: >-
+    pvecm qdevice setup {{ hostvars[cluster_qnetd_host].lab_ip }}
+  changed_when: true
+  when:
+    - cluster_qdevice | bool
+    - inventory_hostname == cluster_init_node
+    - "'Qdevice' not in cluster_status.stdout"
+
+# Verify by hand: `pvecm status` -> Expected votes: 5, Flags: Quorate Qdevice

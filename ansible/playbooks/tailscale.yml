@@ -1,0 +1,5 @@
+---
+- name: Tailscale on bare-metal hosts (no routes advertised)
+  hosts: proxmox
+  roles:
+    - tailscale

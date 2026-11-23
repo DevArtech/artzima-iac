@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""media-wiring: wire the arr stack together through its APIs. Idempotent.
+
+Run by the Job k8s/apps/media/wiring.yaml (python stdlib only, pinned image),
+which Flux re-creates on every sync of the `apps` Kustomization. Every step
+reads the current state first and only creates/updates what differs, so it is
+safe to run any number of times. API keys and passwords come from env (ESO
+Secrets from Infisical /k8s/media) and are never printed.
+
+  1. /data tree (TRaSH layout): torrents/{tv,movies}, media/{tv,movies}
+  2. Sonarr + Radarr + Lidarr: root folder, hardlinks on, renaming OFF (Lidarr: and
+     never write audio tags), recycle bin
+     (/data/.recycle), qBittorrent download client (category tv / movies),
+     Jellyfin "Connect" (library refresh on import)
+  2b. existing rips: import unmapped folders of the root folders (only on an
+     unambiguous match), tag `owned-rip`, profile "Owned rip" (no upgrades),
+     unmonitored; re-enforced for every tagged title on every run
+  3. Prowlarr: Sonarr + Radarr + Lidarr as applications (indexer sync); optional
+     FlareSolverr indexer proxy (only if FLARESOLVERR_URL is set)
+  4. Bazarr: Sonarr + Radarr connection
+  5. qBittorrent: default save path, categories tv / movies / music (WebUI password:
+     seeded from Infisical by the qbittorrent pod's init container)
+  6. Seerr: Sonarr + Radarr servers, once the Jellyfin setup wizard is done
+
+Exit code 1 if any step failed (the Job retries); steps are independent.
+"""
+
+from __future__ import annotations
+
+import http.cookiejar
+import json
+import os
+import pathlib
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+MASK = "********"  # how the *arr APIs return stored secrets
+WAIT = int(os.environ.get("WAIT_SECONDS", "900"))
+errors: list[str] = []
+
+
+def env(name: str, default: str | None = None) -> str:
+    val = os.environ.get(name, default)
+    if val is None or val == "":
+        raise SystemExit(f"missing environment variable {name}")
+    return val
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+class Api:
+    def __init__(self, name: str, base: str, headers: dict | None = None, cookies: bool = False,
+                 prefix: str = ""):
+        self.name, self.base = name, base.rstrip("/")
+        self.prefix = prefix  # *arr API root: /api/v3 (Sonarr, Radarr), /api/v1 (Lidarr, Prowlarr)
+        self.headers = {"Accept": "application/json", **(headers or {})}
+        handlers = [urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())] if cookies else []
+        self.opener = urllib.request.build_opener(*handlers)
+
+    def call(self, method: str, path: str, body=None, form: dict | None = None, raw: bool = False):
+        data, headers = None, dict(self.headers)
+        if form is not None:
+            data = urllib.parse.urlencode(form).encode()
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        elif body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        try:
+            with self.opener.open(req, timeout=30) as res:
+                text = res.read().decode() or "null"
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:500]
+            raise RuntimeError(f"{self.name}: {method} {path} -> HTTP {e.code}: {detail}") from None
+        if raw:
+            return text
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, body=None, form=None):
+        return self.call("POST", path, body, form)
+
+    def put(self, path, body):
+        return self.call("PUT", path, body)
+
+
+def wait_for(api: Api, path: str) -> bool:
+    deadline = time.monotonic() + WAIT
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            api.get(path)
+            return True
+        except (RuntimeError, OSError) as e:
+            last = str(e)
+            time.sleep(10)
+    errors.append(f"{api.name}: not reachable after {WAIT}s ({last})")
+    log(f"FAIL {api.name}: not reachable after {WAIT}s ({last})")
+    return False
+
+
+def step(title: str):
+    """Decorator: run a step, record (not raise) its failure."""
+    def deco(fn):
+        def run(*a, **kw):
+            log(f"--- {title}")
+            try:
+                fn(*a, **kw)
+            except Exception as e:  # noqa: BLE001 (report and continue with the next step)
+                errors.append(f"{title}: {e}")
+                log(f"FAIL {title}: {e}")
+        return run
+    return deco
+
+
+# ---------------------------------------------------------------- generic *arr helpers
+def upsert(api: Api, base: str, impl: str, name: str, fields: dict, attrs: dict | None = None,
+           enable_events: list[str] | None = None) -> None:
+    """Create or update the provider `name` (download client, notification,
+    application, ...) of implementation `impl`, starting from the API's schema
+    so fields we don't set keep their defaults."""
+    schema = [s for s in api.get(f"{base}/schema") if s.get("implementation") == impl]
+    if not schema:
+        raise RuntimeError(f"{api.name}: no {impl} in {base}/schema")
+    existing = [x for x in api.get(base) if x.get("name") == name]
+    item = json.loads(json.dumps(existing[0] if existing else schema[0]))
+    known = {f["name"] for f in item["fields"]}
+    unknown = set(fields) - known
+    if unknown:
+        raise RuntimeError(f"{api.name}: {impl} has no field(s) {sorted(unknown)} (API changed?)")
+    desired = dict(attrs or {})
+    for ev in enable_events or []:  # only events this implementation supports
+        if schema[0].get("supports" + ev[0].upper() + ev[1:], False):
+            desired[ev] = True
+    changed = not existing
+    for f in item["fields"]:
+        if f["name"] in fields:
+            want = fields[f["name"]]
+            have = f.get("value")
+            if have != want and have != MASK:
+                changed = True
+            f["value"] = want
+    for k, v in desired.items():
+        if item.get(k) != v:
+            changed = True
+        item[k] = v
+    item.update(name=name, implementation=impl, configContract=schema[0]["configContract"])
+    if not changed:
+        log(f"ok   {api.name}: {base} '{name}' unchanged")
+        return
+    # forceSave: skip the connection test (e.g. Jellyfin or the VPN briefly down);
+    # the app re-tests on use and shows a health warning if it really is broken.
+    if existing:
+        api.put(f"{base}/{item['id']}?forceSave=true", item)
+        log(f"upd  {api.name}: {base} '{name}'")
+    else:
+        item.pop("id", None)
+        api.post(f"{base}?forceSave=true", item)
+        log(f"add  {api.name}: {base} '{name}'")
+
+
+def ensure_root_folder(api: Api, path: str, kind: str = "") -> None:
+    have = {r["path"].rstrip("/") for r in api.get(f"{api.prefix}/rootfolder")}
+    if path.rstrip("/") in have:
+        log(f"ok   {api.name}: root folder {path}")
+        return
+    body = {"path": path}
+    if kind == "lidarr":
+        # Lidarr root folders carry the defaults for artists added under them.
+        quality = api.get(f"{api.prefix}/qualityprofile")
+        meta = api.get(f"{api.prefix}/metadataprofile")
+        pick = (lambda ps, want: next((x for x in ps if x["name"] == want), ps[0])["id"])
+        body.update(name="Music", defaultQualityProfileId=pick(quality, "Any"),
+                    defaultMetadataProfileId=pick(meta, "Standard"),
+                    defaultMonitorOption="all", defaultNewItemMonitorOption="all", defaultTags=[])
+    api.post(f"{api.prefix}/rootfolder", body)
+    log(f"add  {api.name}: root folder {path}")
+
+
+def ensure_config(api: Api, path: str, want: dict, what: str) -> None:
+    cfg = api.get(path)
+    unknown = set(want) - set(cfg)
+    if unknown:
+        raise RuntimeError(f"{api.name}: {path} has no {sorted(unknown)} (API changed?)")
+    if all(cfg.get(k) == v for k, v in want.items()):
+        log(f"ok   {api.name}: {what}")
+        return
+    cfg.update(want)
+    api.put(f"{path}/{cfg['id']}", cfg)
+    log(f"upd  {api.name}: {what}")
+
+
+def ensure_media_management(api: Api, recycle_bin: str, recycle_days: int) -> None:
+    ensure_config(api, f"{api.prefix}/config/mediamanagement", {
+        "copyUsingHardlinks": True,
+        # Never chmod/chown imported files: an adopted rip shares its inode with
+        # the original, so that would change the original too.
+        "setPermissionsLinux": False,
+        # Deleting = moving into the recycle bin on the same volume (not a loss).
+        "recycleBin": recycle_bin,
+        "recycleBinCleanupDays": recycle_days,
+        # TRaSH: let custom formats decide; also no "proper/repack" upgrade path
+        # around the "no upgrades" rule of the Owned rip profile.
+        "downloadPropersAndRepacks": "doNotPrefer",
+    }, f"media management (hardlinks, recycle bin {recycle_bin}, {recycle_days} d)")
+
+
+def ensure_no_rename(api: Api, kind: str) -> None:
+    key = {"sonarr": "renameEpisodes", "radarr": "renameMovies", "lidarr": "renameTracks"}[kind]
+    ensure_config(api, f"{api.prefix}/config/naming", {key: False}, f"naming ({key} off: files keep their names)")
+
+
+def ensure_tag(api: Api, label: str) -> int:
+    tags = {t["label"]: t["id"] for t in api.get(f"{api.prefix}/tag")}
+    if label not in tags:
+        tags[label] = api.post(f"{api.prefix}/tag", {"label": label})["id"]
+        log(f"add  {api.name}: tag {label}")
+    return tags[label]
+
+
+def _allow_all(items: list) -> None:
+    for it in items:
+        it["allowed"] = True
+        _allow_all(it.get("items") or [])
+
+
+def ensure_owned_profile(api: Api, name: str) -> int:
+    """A quality profile that accepts any quality and NEVER upgrades."""
+    existing = [p for p in api.get(f"{api.prefix}/qualityprofile") if p["name"] == name]
+    if existing:
+        prof = existing[0]
+        if prof.get("upgradeAllowed") is False:
+            log(f"ok   {api.name}: quality profile '{name}' (upgrades off)")
+        else:
+            prof["upgradeAllowed"] = False
+            api.put(f"{api.prefix}/qualityprofile/{prof['id']}", prof)
+            log(f"upd  {api.name}: quality profile '{name}': upgrades off")
+        return prof["id"]
+    prof = api.get(f"{api.prefix}/qualityprofile/schema")
+    prof.pop("id", None)
+    _allow_all(prof["items"])
+    top = prof["items"][-1]  # highest quality (item or group)
+    prof.update(name=name, upgradeAllowed=False,
+                cutoff=top["quality"]["id"] if top.get("quality") else top["id"],
+                minFormatScore=0, cutoffFormatScore=0)
+    for fi in prof.get("formatItems") or []:
+        fi["score"] = 0
+    new = api.post(f"{api.prefix}/qualityprofile", prof)
+    log(f"add  {api.name}: quality profile '{name}' (all qualities, upgrades off)")
+    return new["id"]
+
+
+# ---------------------------------------------------------------- steps
+@step("data folders")
+def data_dirs(root: pathlib.Path) -> None:
+    if not root.is_dir():
+        raise RuntimeError(f"{root} is not mounted")
+    for sub in ("torrents/tv", "torrents/movies", "torrents/music", "media/tv", "media/movies", "media/music",
+                ".recycle/sonarr", ".recycle/radarr", ".recycle/lidarr"):
+        d = root / sub
+        if not d.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
+            log(f"add  {d}")
+        if d.stat().st_uid == os.getuid():
+            d.chmod(0o2775)  # setgid: new files keep the media group
+    log(f"ok   {root}: torrents/{{tv,movies,music}} media/{{tv,movies,music}} .recycle/{{sonarr,radarr,lidarr}}")
+
+
+@step("Sonarr / Radarr / Lidarr")
+def arr(api: Api, kind: str, cfg: dict) -> None:
+    if not wait_for(api, f"{api.prefix}/system/status"):
+        return
+    ensure_root_folder(api, cfg["root"], kind)
+    ensure_media_management(api, cfg["recycle_bin"], cfg["recycle_days"])
+    ensure_no_rename(api, kind)
+    if kind == "lidarr":
+        # Never write tags into audio files: an adopted rip shares its inode with
+        # the original, so a retag would change the original file. (metadataSource
+        # is left alone: docs/decisions.md "Lidarr metadata".)
+        ensure_config(api, f"{api.prefix}/config/metadataprovider",
+                      {"writeAudioTags": "no", "scrubAudioTags": False},
+                      "metadata provider (never write/scrub audio tags)")
+    qbt_fields = {
+        "host": cfg["qbt_host"], "port": cfg["qbt_port"], "useSsl": False, "urlBase": "",
+        "username": cfg["qbt_user"], "password": cfg["qbt_pass"],
+        {"sonarr": "tvCategory", "radarr": "movieCategory", "lidarr": "musicCategory"}[kind]: cfg["category"],
+    }
+    upsert(api, f"{api.prefix}/downloadclient", "QBittorrent", "qBittorrent", qbt_fields,
+           {"enable": True, "protocol": "torrent", "priority": 1,
+            "removeCompletedDownloads": True, "removeFailedDownloads": True})
+    events = ["onDownload", "onUpgrade", "onRename", "onImportComplete",
+              "onReleaseImport", "onArtistDelete", "onAlbumDelete", "onTrackRetag",
+              "onSeriesDelete", "onEpisodeFileDelete", "onEpisodeFileDeleteForUpgrade",
+              "onMovieDelete", "onMovieFileDelete", "onMovieFileDeleteForUpgrade"]
+    if not cfg["jf_key"]:
+        # Infisical /k8s/media/JELLYFIN_API_KEY is empty until you create the key in Jellyfin
+        # (docs/OPERATOR-SETUP.md "after"); the next run (re-run the Job) connects it.
+        log(f"skip {kind} -> Jellyfin connect: JELLYFIN_API_KEY is empty")
+        return
+    upsert(api, f"{api.prefix}/notification", "MediaBrowser", "Jellyfin",
+           {"host": cfg["jf_host"], "port": cfg["jf_port"], "useSsl": False,
+            "apiKey": cfg["jf_key"], "notify": False, "updateLibrary": True},
+           enable_events=events)
+
+
+# ---------------------------------------------------------------- adoption of existing rips
+OWNED_TAG = "owned-rip"
+ID_IN_NAME = re.compile(r"[\[{](tmdb|tmdbid|tvdb|tvdbid|imdb|imdbid)-(tt\d+|\d+)[\]}]", re.I)
+TITLE_YEAR = re.compile(r"^(?P<title>.+?)[\s._-]*[(\[](?P<year>(?:19|20)\d{2})[)\]]")
+
+
+def norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def match_folder(api: Api, kind: str, folder: str) -> dict | None:
+    """Look a folder name up; return the candidate only if the match is unambiguous:
+    an id in the name ({tmdb-603}, [tvdbid-79126], {imdb-tt0133093}), or an exact
+    (normalised) title + the year from "Title (Year)", or a unique exact title."""
+    lookup = "/api/v3/series/lookup" if kind == "sonarr" else "/api/v3/movie/lookup"
+    m = ID_IN_NAME.search(folder)
+    if m:
+        src, val = m.group(1).lower().removesuffix("id"), m.group(2)
+        if (kind == "sonarr" and src == "tvdb") or (kind == "radarr" and src in ("tmdb", "imdb")):
+            hits = api.get(f"{lookup}?term={urllib.parse.quote(f'{src}:{val}')}") or []
+            return hits[0] if len(hits) == 1 else None
+    ty = TITLE_YEAR.match(ID_IN_NAME.sub("", folder).strip())
+    title, year = (ty.group("title"), int(ty.group("year"))) if ty else (ID_IN_NAME.sub("", folder).strip(), None)
+    hits = api.get(f"{lookup}?term={urllib.parse.quote(title if year is None else f'{title} {year}')}") or []
+    same = [h for h in hits if norm(title) in (norm(h.get("title")), norm(h.get("originalTitle")))]
+    if year is not None:
+        same = [h for h in same if h.get("year") == year]
+    return same[0] if len(same) == 1 else None
+
+
+@step("Adopt existing rips")
+def adopt(api: Api, kind: str, root: str, owned_profile: str, import_unmapped: bool) -> None:
+    """Existing rips (hardlinked into the root folder by `make media-adopt`) are
+    imported WITHOUT renaming, tagged `owned-rip`, put on the no-upgrade profile
+    and unmonitored, so no download ever replaces or deletes them. Re-applied to
+    every tagged title on every run (remove the tag to release a title)."""
+    if not wait_for(api, f"{api.prefix}/system/status"):
+        return
+    profile_id = ensure_owned_profile(api, owned_profile)
+    tag = ensure_tag(api, OWNED_TAG)
+    items_path = f"{api.prefix}/" + {"sonarr": "series", "radarr": "movie", "lidarr": "artist"}[kind]
+
+    # 1. import folders in the root folder that the app doesn't manage yet.
+    # Lidarr's API has no unmapped-folder list (and its text search is unreliable,
+    # docs/decisions.md): music is imported by hand, then protected by step 2.
+    if kind == "lidarr":
+        log(f"note Lidarr: import existing music by hand (docs/manual-steps.md §10.8): profile "
+            f"'{owned_profile}', monitor none, tag {OWNED_TAG}; step 2 then protects it")
+        import_unmapped = False
+    unmapped = [u for r in api.get(f"{api.prefix}/rootfolder") if r["path"].rstrip("/") == root.rstrip("/")
+                for u in (r.get("unmappedFolders") or [])]
+    if unmapped and not import_unmapped:
+        log(f"skip {api.name}: {len(unmapped)} unmapped folder(s), ADOPT_UNMAPPED is off")
+        unmapped = []
+    manual = []
+    for u in sorted(unmapped, key=lambda x: x["name"]):
+        try:
+            hit = match_folder(api, kind, u["name"])
+        except RuntimeError as e:
+            log(f"warn {api.name}: lookup of '{u['name']}' failed: {e}")
+            hit = None
+        if hit is None:
+            manual.append(u["name"])
+            continue
+        body = {k: v for k, v in hit.items() if k != "id"}
+        body.update(path=u["path"], qualityProfileId=profile_id, tags=[tag], monitored=False)
+        if kind == "sonarr":
+            body.update(seasonFolder=True, seriesType=body.get("seriesType") or "standard",
+                        monitorNewItems="none",
+                        addOptions={"monitor": "none", "searchForMissingEpisodes": False,
+                                    "searchForCutoffUnmetEpisodes": False})
+        else:
+            body.update(minimumAvailability="released",
+                        addOptions={"monitor": "none", "searchForMovie": False})
+        try:
+            api.post(items_path, body)
+        except RuntimeError as e:  # e.g. the title is already in the library under another folder
+            log(f"warn {api.name}: could not add '{u['name']}': {e}")
+            manual.append(u["name"])
+            continue
+        log(f"add  {api.name}: adopted '{u['name']}' as '{hit.get('title')} ({hit.get('year')})'")
+    if manual:
+        log(f"note {api.name}: {len(manual)} folder(s) without an unambiguous match, import them in the UI "
+            f"(Library Import, profile '{owned_profile}', monitor none, tag {OWNED_TAG}): {manual}")
+
+    # 2. protect every tagged title (also ones imported by hand)
+    owned = [x for x in api.get(items_path) if tag in (x.get("tags") or [])]
+    if kind == "radarr":
+        fix = [m["id"] for m in owned if m.get("monitored") or m.get("qualityProfileId") != profile_id]
+        if fix:
+            api.put(f"{api.prefix}/movie/editor", {"movieIds": fix, "monitored": False, "qualityProfileId": profile_id})
+            log(f"upd  Radarr: {len(fix)} owned movie(s) -> unmonitored, profile '{owned_profile}'")
+    elif kind == "lidarr":
+        fix = [a["id"] for a in owned if a.get("qualityProfileId") != profile_id]
+        if fix:
+            api.put(f"{api.prefix}/artist/editor", {"artistIds": fix, "qualityProfileId": profile_id})
+            log(f"upd  Lidarr: {len(fix)} owned artist(s) -> profile '{owned_profile}'")
+        # Albums that HAVE files are frozen (unmonitored); missing albums stay yours to monitor.
+        albums = [al["id"] for a in owned for al in api.get(f"{api.prefix}/album?artistId={a['id']}")
+                  if (al.get("statistics") or {}).get("trackFileCount", 0) > 0 and al.get("monitored")]
+        if albums:
+            api.put(f"{api.prefix}/album/monitor", {"albumIds": albums, "monitored": False})
+            log(f"upd  Lidarr: {len(albums)} owned album(s) with files -> unmonitored")
+    else:
+        fix = [s["id"] for s in owned if s.get("qualityProfileId") != profile_id]
+        if fix:
+            api.put(f"{api.prefix}/series/editor", {"seriesIds": fix, "qualityProfileId": profile_id})
+            log(f"upd  Sonarr: {len(fix)} owned series -> profile '{owned_profile}'")
+        # Episodes that HAVE a file are frozen (unmonitored); missing ones stay
+        # yours to monitor (e.g. by a Seerr request for a missing season).
+        eps = [e["id"] for s in owned for e in api.get(f"{api.prefix}/episode?seriesId={s['id']}")
+               if e.get("hasFile") and e.get("monitored")]
+        if eps:
+            api.put(f"{api.prefix}/episode/monitor", {"episodeIds": eps, "monitored": False})
+            log(f"upd  Sonarr: {len(eps)} owned episode file(s) -> unmonitored")
+    log(f"ok   {api.name}: {len(owned)} owned title(s) protected (tag {OWNED_TAG}, profile '{owned_profile}')")
+
+
+@step("Prowlarr")
+def prowlarr(api: Api, apps: list[dict], flaresolverr: str) -> None:
+    if not wait_for(api, "/api/v1/system/status"):
+        return
+    for a in apps:
+        upsert(api, "/api/v1/applications", a["impl"], a["impl"],
+               {"prowlarrUrl": a["prowlarr_url"], "baseUrl": a["url"], "apiKey": a["key"]},
+               {"syncLevel": "fullSync"})
+    if not flaresolverr:
+        log("skip Prowlarr: FlareSolverr (FLARESOLVERR_URL empty)")
+        return
+    tags = {t["label"]: t["id"] for t in api.get("/api/v1/tag")}
+    if "flaresolverr" not in tags:
+        tags["flaresolverr"] = api.post("/api/v1/tag", {"label": "flaresolverr"})["id"]
+    upsert(api, "/api/v1/indexerProxy", "FlareSolverr", "FlareSolverr",
+           {"host": flaresolverr.rstrip("/") + "/"}, {"tags": [tags["flaresolverr"]]})
+    log("note Prowlarr: give indexers that need it the tag 'flaresolverr'")
+
+
+@step("Bazarr")
+def bazarr(api: Api, targets: dict) -> None:
+    if not wait_for(api, "/api/system/status"):
+        return
+    cur = api.get("/api/system/settings")
+    form = {}
+    for kind, t in targets.items():
+        sect = cur.get(kind, {})
+        want = {"ip": t["host"], "port": t["port"], "apikey": t["key"], "base_url": "/", "ssl": False}
+        if not cur.get("general", {}).get(f"use_{kind}") or any(
+                str(sect.get(k)).lower() != str(v).lower() for k, v in want.items()):
+            form[f"settings-general-use_{kind}"] = "true"
+            for k, v in want.items():
+                form[f"settings-{kind}-{k}"] = str(v).lower() if isinstance(v, bool) else str(v)
+    if not form:
+        log("ok   Bazarr: Sonarr + Radarr connections unchanged")
+        return
+    api.post("/api/system/settings", form=form)
+    log(f"upd  Bazarr: {', '.join(sorted({k.split('-')[1] for k in form if not k.startswith('settings-general')}))}")
+
+
+@step("qBittorrent")
+def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: dict) -> None:
+    # Retry only while it is unreachable (VPN still connecting): a wrong password
+    # fails at once, because qBittorrent bans an IP after repeated failed logins.
+    deadline = time.monotonic() + WAIT
+    while True:
+        try:
+            answer = api.call("POST", "/api/v2/auth/login", form={"username": user, "password": password},
+                              raw=True).strip()
+            break
+        except (RuntimeError, OSError) as e:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"not reachable after {WAIT}s: {e}") from None
+            time.sleep(10)
+    if answer != "Ok.":
+        raise RuntimeError("login refused: check /k8s/media/QBITTORRENT_* and the qbittorrent "
+                           "pod's seed-config init container log")
+    prefs = api.get("/api/v2/app/preferences")
+    want = {
+        "save_path": f"{data_root}/torrents",
+        "temp_path_enabled": False,
+        "auto_tmm_enabled": True,  # category decides the save path
+        "torrent_changed_tmm_enabled": True,
+        "save_path_changed_tmm_enabled": True,
+        "category_changed_tmm_enabled": True,
+        "upnp": False,  # no port forwarding through Surfshark anyway
+        "current_network_interface": "tun0",  # gluetun's VPN_INTERFACE: no traffic without the tunnel
+        "bypass_local_auth": False,
+        "bypass_auth_subnet_whitelist_enabled": False,
+    }
+    diff = {k: v for k, v in want.items() if prefs.get(k) != v}
+    if diff:
+        api.post("/api/v2/app/setPreferences", form={"json": json.dumps(diff)})
+        log(f"upd  qBittorrent: preferences {sorted(diff)}")
+    else:
+        log("ok   qBittorrent: preferences")
+    have = api.get("/api/v2/torrents/categories") or {}
+    for cat, path in categories.items():
+        if cat not in have:
+            api.post("/api/v2/torrents/createCategory", form={"category": cat, "savePath": path})
+            log(f"add  qBittorrent: category {cat} -> {path}")
+        elif have[cat].get("savePath", "").rstrip("/") != path:
+            api.post("/api/v2/torrents/editCategory", form={"category": cat, "savePath": path})
+            log(f"upd  qBittorrent: category {cat} -> {path}")
+        else:
+            log(f"ok   qBittorrent: category {cat}")
+
+
+@step("Seerr")
+def seerr(api: Api, servers: list[dict]) -> None:
+    if not wait_for(api, "/api/v1/settings/public"):
+        return
+    if not api.get("/api/v1/settings/public").get("initialized"):
+        log("skip Seerr: setup wizard not finished (sign in with Jellyfin first, "
+            "docs/manual-steps.md §10); the next run wires Sonarr/Radarr")
+        return
+    for s in servers:
+        conn = {"name": s["name"], "hostname": s["host"], "port": s["port"], "apiKey": s["key"],
+                "useSsl": False, "baseUrl": ""}
+        existing = [x for x in api.get(s["path"]) if x.get("hostname") == s["host"] and not x.get("is4k")]
+        if existing:
+            # Keep what the operator changed in the UI (profile, folder, tags); fix only the connection.
+            cur = existing[0]
+            if all(cur.get(k) == v for k, v in conn.items()):
+                log(f"ok   Seerr: {s['name']}")
+            else:
+                cur.update(conn)
+                api.put(f"{s['path']}/{cur['id']}", cur)
+                log(f"upd  Seerr: {s['name']} connection")
+            continue
+        profiles = s["arr"].get(s["profiles_path"])
+        prof = next((p for p in profiles if p["name"] == s["profile"]), None)
+        if prof is None:
+            log(f"skip Seerr: {s['arr'].name} has no quality profile '{s['profile']}' yet "
+                "(recyclarr creates it; the next run adds the server)")
+            continue
+        api.post(s["path"], {
+            **conn, "activeProfileId": prof["id"], "activeProfileName": prof["name"],
+            "activeDirectory": s["root"], "tags": [], "is4k": False, "isDefault": True,
+            "externalUrl": "", "syncEnabled": True, "preventSearch": False, "tagRequests": False,
+            "overrideRule": [], **s["extra"],
+        })
+        log(f"add  Seerr: {s['name']} (profile '{prof['name']}', {s['root']})")
+
+
+# ---------------------------------------------------------------- main
+def main() -> None:
+    data = env("DATA_ROOT", "/data")
+    ns = env("SERVICE_DOMAIN", "media.svc.cluster.local")
+    host = {a: f"{a}.{ns}" for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "qbittorrent", "seerr")}
+    port = {"sonarr": 8989, "radarr": 7878, "lidarr": 8686, "prowlarr": 9696, "bazarr": 6767,
+            "qbittorrent": 8080, "seerr": 5055}
+    url = {a: f"http://{host[a]}:{port[a]}" for a in host}
+    keys = {a: env(f"{a.upper()}_API_KEY") for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "seerr")}
+    qbt_user, qbt_pass = env("QBITTORRENT_USERNAME"), env("QBITTORRENT_PASSWORD")
+    jf_host, jf_port, jf_key = env("JELLYFIN_HOST"), int(env("JELLYFIN_PORT", "80")), os.environ.get("JELLYFIN_API_KEY", "").strip()
+
+    sonarr = Api("Sonarr", url["sonarr"], {"X-Api-Key": keys["sonarr"]}, prefix="/api/v3")
+    radarr = Api("Radarr", url["radarr"], {"X-Api-Key": keys["radarr"]}, prefix="/api/v3")
+    lidarr = Api("Lidarr", url["lidarr"], {"X-Api-Key": keys["lidarr"]}, prefix="/api/v1")
+
+    recycle_days = int(env("RECYCLE_DAYS", "30d").rstrip("d"))
+    owned_profile = env("OWNED_PROFILE", "Owned rip")
+    import_unmapped = env("ADOPT_UNMAPPED", "true").lower() == "true"
+
+    data_dirs(pathlib.Path(data))
+    common = {"qbt_host": host["qbittorrent"], "qbt_port": port["qbittorrent"], "qbt_user": qbt_user,
+              "qbt_pass": qbt_pass, "jf_host": jf_host, "jf_port": jf_port, "jf_key": jf_key,
+              "recycle_days": recycle_days}
+    arr(sonarr, "sonarr", {**common, "root": f"{data}/media/tv", "category": "tv",
+                           "recycle_bin": f"{data}/.recycle/sonarr"})
+    arr(radarr, "radarr", {**common, "root": f"{data}/media/movies", "category": "movies",
+                           "recycle_bin": f"{data}/.recycle/radarr"})
+    arr(lidarr, "lidarr", {**common, "root": f"{data}/media/music", "category": "music",
+                           "recycle_bin": f"{data}/.recycle/lidarr"})
+    adopt(sonarr, "sonarr", f"{data}/media/tv", owned_profile, import_unmapped)
+    adopt(radarr, "radarr", f"{data}/media/movies", owned_profile, import_unmapped)
+    adopt(lidarr, "lidarr", f"{data}/media/music", owned_profile, import_unmapped)
+    prowlarr(Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}), [
+        {"impl": "Sonarr", "url": url["sonarr"], "key": keys["sonarr"], "prowlarr_url": url["prowlarr"]},
+        {"impl": "Radarr", "url": url["radarr"], "key": keys["radarr"], "prowlarr_url": url["prowlarr"]},
+        {"impl": "Lidarr", "url": url["lidarr"], "key": keys["lidarr"], "prowlarr_url": url["prowlarr"]},
+    ], os.environ.get("FLARESOLVERR_URL", ""))
+    bazarr(Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}), {
+        "sonarr": {"host": host["sonarr"], "port": port["sonarr"], "key": keys["sonarr"]},
+        "radarr": {"host": host["radarr"], "port": port["radarr"], "key": keys["radarr"]},
+    })
+    qbittorrent(Api("qBittorrent", url["qbittorrent"], cookies=True), qbt_user, qbt_pass, data,
+                {"tv": f"{data}/torrents/tv", "movies": f"{data}/torrents/movies",
+                 "music": f"{data}/torrents/music"})
+    seerr(Api("Seerr", url["seerr"], {"X-Api-Key": keys["seerr"]}), [
+        {"name": "Sonarr", "arr": sonarr, "profiles_path": "/api/v3/qualityprofile",
+         "profile": env("SEERR_SONARR_PROFILE", "WEB-1080p"), "host": host["sonarr"], "port": port["sonarr"],
+         "key": keys["sonarr"], "root": f"{data}/media/tv", "path": "/api/v1/settings/sonarr",
+         "extra": {"seriesType": "standard", "animeSeriesType": "anime", "enableSeasonFolders": True,
+                   "monitorNewItems": "all"}},
+        {"name": "Radarr", "arr": radarr, "profiles_path": "/api/v3/qualityprofile",
+         "profile": env("SEERR_RADARR_PROFILE", "HD Bluray + WEB"), "host": host["radarr"],
+         "port": port["radarr"], "key": keys["radarr"], "root": f"{data}/media/movies",
+         "path": "/api/v1/settings/radarr", "extra": {"minimumAvailability": "released"}},
+    ])
+
+    if errors:
+        log(f"\n{len(errors)} step(s) failed:")
+        for e in errors:
+            log(f"  - {e}")
+        sys.exit(1)
+    log("\nall wired")
+
+
+if __name__ == "__main__":
+    main()

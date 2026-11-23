@@ -1,0 +1,305 @@
+---
+# Alexandria: shared MCP memory server (github.com/DevArtech/alexandria).
+#
+#   internet -> Cloudflare -> Traefik -> Service alexandria:8081  (OAuth proxy, public)
+#                                     -> Service alexandria-mcp:8080 (ClusterIP only, no route)
+#
+# - mcp:   alexandria-mcp, uid 10001, library PVC at /srv/alexandria (SQLite index
+#          .alexandria/index.db lives in it, so: RWO, 1 replica, Recreate).
+#          Embedder: in-process fastembed (default); models cached on a PVC.
+#          OpenAI-compatible endpoint instead: docs/manual-steps.md §8.
+# - proxy: alexandria-oauth-proxy, uid 1000 (node), OAuth (DCR + PKCE) for Claude
+#          plus legacy static bearer for Cursor/Codex; keys + clients on a PVC at /data.
+#
+# Images: PRIVATE ghcr.io/devartech/* built by .github/workflows/images.yml,
+# pulled with the `ghcr-pull` Secret (ESO ClusterExternalSecret k8s/secrets/ghcr-pull.yaml).
+# Secrets: `alexandria` (ESO, Infisical /k8s/alexandria: k8s/secrets/alexandria/alexandria.yaml).
+# Library: starts FRESH (the old lab's library is not migrated). The init-library
+# initContainer runs upstream's `alexandria init` on the empty PVC once (the
+# server refuses to start without an initialized library), and never again.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alexandria
+  namespace: alexandria
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      imagePullSecrets:
+        - name: ghcr-pull
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # (pod securityContext is set per controller: it replaces, not merges)
+
+    controllers:
+      # ------------------------------------------------------------ MCP server
+      mcp:
+        replicas: 1 # SQLite index: never more than one writer
+        strategy: Recreate # RWO volume: old pod must stop before the new one starts
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 10001 # the image's `alexandria` user
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+        initContainers:
+          # `alexandria init` ONLY if the PVC has no library yet (upstream's init
+          # errors on an existing one; it creates .alexandria/config.toml with
+          # the default fastembed embedder plus the tier folders). An existing
+          # library is never touched. Image: upstream's release CLI, same commit
+          # as the server (images/alexandria-cli).
+          init-library:
+            image:
+              # TODO(after the first CI run): same tag rule as the images below.
+              repository: ghcr.io/devartech/alexandria-cli
+              tag: d4834470902654e0fffaf4e4af3f5bcf2a62d780
+              pullPolicy: IfNotPresent
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                if [ -d /srv/alexandria/.alexandria ]; then
+                  echo "library exists at /srv/alexandria: not touched"
+                else
+                  exec alexandria init /srv/alexandria
+                fi
+            env:
+              HOME: /tmp
+            securityContext: &containerSecurity
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 256Mi # 52 MB binary
+        containers:
+          app:
+            image:
+              # TODO(after the first CI run): this tag exists once images.yml has
+              # pushed it (tag = upstream SHA in images/alexandria/upstream.env).
+              repository: ghcr.io/devartech/alexandria-mcp
+              tag: d4834470902654e0fffaf4e4af3f5bcf2a62d780
+              pullPolicy: IfNotPresent
+            # Image CMD: --transport http --bind 0.0.0.0:8080 --library /srv/alexandria
+            workingDir: /cache
+            env:
+              ALEXANDRIA_MCP_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: ALEXANDRIA_MCP_TOKEN
+              # Only used if the library's embedder is "openai" with a keyed
+              # endpoint. Empty in the Secret = unset (keyless endpoints work).
+              OPENAI_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: OPENAI_API_KEY
+              # fastembed downloads its ONNX model on first start: keep it on the
+              # cache PVC instead of the (read-only) root filesystem.
+              FASTEMBED_CACHE_DIR: /cache/fastembed
+              HF_HOME: /cache/huggingface
+              HOME: /tmp
+              RUST_LOG: info
+            probes:
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  periodSeconds: 10
+                  failureThreshold: 60 # first start downloads the model + builds the index
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+            securityContext: *containerSecurity
+            resources:
+              requests:
+                cpu: 100m
+                memory: 384Mi
+              limits:
+                memory: 1536Mi
+
+      # ------------------------------------------------------------ OAuth proxy
+      proxy:
+        replicas: 1 # signing keys + DCR clients are files in /data
+        strategy: Recreate
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 1000 # the node image's `node` user
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+        containers:
+          app:
+            image:
+              # TODO(after the first CI run): see the mcp image above.
+              repository: ghcr.io/devartech/alexandria-oauth-proxy
+              tag: d4834470902654e0fffaf4e4af3f5bcf2a62d780
+              pullPolicy: IfNotPresent
+            env:
+              OAUTH_MODE: self
+              PORT: "8081"
+              HOST: 0.0.0.0
+              DATA_DIR: /data
+              UPSTREAM_URL: http://alexandria-mcp.alexandria.svc.cluster.local:8080
+              # Public URL (no path; MCP is at /mcp). public_domain = /apps.yaml `domain`.
+              RESOURCE_URL: https://alexandria.${public_domain}
+              # Behind Cloudflare -> cloudflared -> Traefik, which set X-Forwarded-For.
+              TRUST_PROXY: "true"
+              # Cursor/Codex/Claude Desktop use the static bearer; Claude web uses OAuth.
+              ALLOW_LEGACY_STATIC_TOKEN: "true"
+              ALLOW_LOCALHOST_REDIRECTS: "false"
+              LOG_LEVEL: info
+              ALEXANDRIA_MCP_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: ALEXANDRIA_MCP_TOKEN
+              LOGIN_USERNAME:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: LOGIN_USERNAME
+              LOGIN_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: LOGIN_PASSWORD
+              # Separate token for legacy clients. Empty in the Secret = reuse
+              # ALEXANDRIA_MCP_TOKEN (the proxy treats "" as unset).
+              LEGACY_BEARER_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: alexandria
+                    key: LEGACY_BEARER_TOKEN
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8081
+                  periodSeconds: 30
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8081
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+            securityContext: *containerSecurity
+            resources:
+              requests:
+                cpu: 20m
+                memory: 64Mi
+              limits:
+                memory: 256Mi
+
+    service:
+      # Public: /apps.yaml routes alexandria.<domain> here. Name forced to
+      # `alexandria` to match the apps.yaml entry.
+      proxy:
+        controller: proxy
+        forceRename: alexandria
+        ports:
+          http:
+            port: 8081
+      # Internal only (no apps.yaml entry, no route). Still bearer-protected.
+      mcp:
+        controller: mcp
+        forceRename: alexandria-mcp
+        ports:
+          http:
+            port: 8080
+
+    persistence:
+      # The library (plain-text engrams = the truth; index.db = rebuildable cache).
+      # SQLite on NFS: fine for ONE process with NFSv4.1 locking (hard mount);
+      # never run two pods against it. NAS path:
+      #   /volume1/Artzima/k8s/alexandria/alexandria-library
+      library:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 5Gi
+        advancedMounts:
+          mcp:
+            init-library:
+              - path: /srv/alexandria
+            app:
+              - path: /srv/alexandria
+      # fastembed / Hugging Face model cache (re-downloadable).
+      cache:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 2Gi
+        advancedMounts:
+          mcp:
+            app:
+              - path: /cache
+      # OAuth proxy: RS256 signing keys + DCR-registered clients. Losing it only
+      # forces OAuth clients (Claude) to reconnect.
+      oauth-data:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 256Mi
+        advancedMounts:
+          proxy:
+            app:
+              - path: /data
+      tmp:
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 64Mi
+        globalMounts:
+          - path: /tmp

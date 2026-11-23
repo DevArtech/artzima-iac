@@ -1,0 +1,15 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - repositories.yaml
+  - storageclass-nfs.yaml
+  - traefik.yaml
+  - cloudflared.yaml
+  - cert-manager.yaml
+  - csi-driver-nfs.yaml
+  - cloudnative-pg.yaml
+  - plugin-barman-cloud.yaml # CNPG off-site backups (B2)
+  - volsync.yaml # PVC off-site backups (restic -> B2)
+  - kube-prometheus-stack.yaml
+  - tailscale-operator.yaml

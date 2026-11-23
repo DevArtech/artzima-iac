@@ -1,0 +1,69 @@
+---
+# Inside the Jellyfin LXC (Debian 13): NVIDIA userspace matching host01's
+# Debian driver, plus Jellyfin from the official repo.
+- name: Bootstrap python3 in fresh Debian LXCs
+  hosts: jellyfin
+  gather_facts: false
+  tasks:
+    - name: Install python3 if missing
+      ansible.builtin.raw: test -x /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+      register: lxc_py
+      changed_when: "'Setting up python3' in lxc_py.stdout"
+
+- name: Jellyfin with NVENC
+  hosts: jellyfin
+  vars:
+    jellyfin_nvidia_userspace:
+      - nvidia-smi
+      - libnvidia-encode1
+      - libcuda1
+      - libnvcuvid1
+  tasks:
+    - name: Enable contrib/non-free in debian.sources
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list.d/debian.sources
+        regexp: '^Components: .*$'
+        replace: 'Components: main contrib non-free non-free-firmware'
+
+    - name: Jellyfin apt key
+      ansible.builtin.get_url:
+        url: https://repo.jellyfin.org/jellyfin_team.gpg.key
+        dest: /etc/apt/keyrings/jellyfin.asc
+        mode: "0644"
+
+    - name: Jellyfin repo
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/jellyfin.sources
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: https://repo.jellyfin.org/debian
+          Suites: {{ ansible_facts['distribution_release'] }}
+          Components: main
+          Signed-By: /etc/apt/keyrings/jellyfin.asc
+
+    - name: Install NVIDIA userspace and Jellyfin
+      ansible.builtin.apt:
+        name: "{{ jellyfin_nvidia_userspace + ['jellyfin', 'nfs-common'] }}"
+        state: present
+        update_cache: true
+
+    - name: Enable Jellyfin
+      ansible.builtin.service:
+        name: jellyfin
+        enabled: true
+        state: started
+    # Media library: /data/media (read-only bind mount of the NAS media data
+    # folder, set by `make lxc-devices` from lxc_mounts in hosts.yml). Libraries
+    # /data/media/tv and /data/media/movies, NVENC under Dashboard > Playback >
+    # Transcoding, and the API key for Sonarr/Radarr: docs/manual-steps.md §10.
+
+    - name: Check the media library mount
+      ansible.builtin.stat:
+        path: /data/media
+      register: jellyfin_media
+
+    - name: Warn if the media library is not mounted yet
+      ansible.builtin.debug:
+        msg: "/data/media is missing: run `make lxc-devices` (after the NAS data folder exists, docs/manual-steps.md §3)"
+      when: not jellyfin_media.stat.exists

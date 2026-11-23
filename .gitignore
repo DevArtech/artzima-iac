@@ -1,0 +1,71 @@
+# --- secrets: NONE belong in this public repo, not even encrypted ones ------
+# They live in Infisical (docs/secrets.md). Your machine-identity credentials
+# and private overrides live in these local, gitignored files:
+local.env
+local.yml
+local.yaml
+*.env
+!*.env.example
+!images/*/upstream.env
+.env*
+!.env.example
+.envrc
+.infisical.json
+# leftovers from the SOPS era / key material
+*.agekey
+keys.txt
+*.dec.*
+*.decrypted.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# --- install/ -------------------------------------------------------------
+# Answers are rendered in memory; only install webhook reports land here.
+install/answers/
+install/iso/
+*.iso
+
+# --- OpenTofu (state is encrypted, and still never committed) --------------
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+terraform.tfstate.d/
+crash.log
+tofu/out/
+*.tfvars
+!*.tfvars.example
+# The provider lock file is committed on purpose.
+
+# --- Kubernetes / Talos client configs ------------------------------------
+kubeconfig
+kubeconfig*
+talosconfig
+talosconfig*
+*.kubeconfig
+
+# --- Ansible --------------------------------------------------------------
+ansible/collections/
+*.retry
+.ansible/
+
+# --- misc -----------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Rendered NAS Backrest files (contain secrets): ansible role nas_backup, render-only mode
+ansible/out/
+
+# --- CI: pinned tools installed into the workspace (.github/workflows/ci.yml)
+.tools/
+
+# --- make dr-pdf output (print it; the PDF itself is not versioned)
+dist/
+
+# Private deployment inventory, runtime copy, state and generated operator documents
+.private/

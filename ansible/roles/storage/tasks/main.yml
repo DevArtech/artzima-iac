@@ -1,0 +1,68 @@
+---
+# Storage config lives in /etc/pve (cluster-wide): run once, on the init node.
+- name: Read configured storages
+  ansible.builtin.command: pvesh get /storage --output-format json
+  register: storage_list
+  changed_when: false
+
+- name: Set storage facts
+  ansible.builtin.set_fact:
+    storage_ids: "{{ storage_list.stdout | from_json | map(attribute='storage') | list }}"
+
+- name: Allow import/iso/templates on local
+  ansible.builtin.command: pvesm set local --content {{ storage_local_content }}
+  changed_when: false
+
+- name: Add NFS storage artnas
+  ansible.builtin.command: >-
+    pvesm add nfs {{ storage_nfs_id }}
+    --server {{ artnas_ip }}
+    --export {{ artnas_export }}
+    --content {{ storage_nfs_content }}
+    --options {{ storage_nfs_options }}
+  when: storage_nfs_id not in storage_ids
+  changed_when: true
+
+- name: Add PBS storage
+  ansible.builtin.command: >-
+    pvesm add pbs {{ storage_pbs_id }}
+    --server {{ pbs_ip }}
+    --datastore {{ pbs_datastore_name }}
+    --username {{ storage_pbs_user }}
+    --password {{ pbs_pve_user_password }}
+    --fingerprint {{ pbs_fingerprint }}
+    --content backup
+  when: storage_pbs_id not in storage_ids
+  changed_when: true
+  no_log: true
+
+- name: Keep the PBS fingerprint current
+  ansible.builtin.command: >-
+    pvesm set {{ storage_pbs_id }} --fingerprint {{ pbs_fingerprint }}
+  when: storage_pbs_id in storage_ids
+  changed_when: false
+  no_log: true
+
+- name: Read backup jobs
+  ansible.builtin.command: pvesh get /cluster/backup --output-format json
+  register: storage_backup_list
+  changed_when: false
+
+- name: Create backup jobs
+  ansible.builtin.command: >-
+    pvesh create /cluster/backup
+    --id {{ item.id }}
+    --schedule '{{ item.schedule }}'
+    --storage {{ item.storage }}
+    --mode {{ item.mode }}
+    --all {{ item.all }}
+    --exclude '{{ item.exclude }}'
+    --compress {{ item.compress }}
+    --notes-template '{{ item.notes_template }}'
+    --prune-backups '{{ item.prune_backups }}'
+    --enabled 1
+  loop: "{{ storage_backup_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when: item.id not in (storage_backup_list.stdout | from_json | map(attribute='id') | list)
+  changed_when: true

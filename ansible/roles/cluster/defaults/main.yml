@@ -1,0 +1,4 @@
+---
+# The cluster is created on the pve node whose lab_roles contain 'cluster_init'.
+cluster_qdevice: true
+cluster_qnetd_host: pbs

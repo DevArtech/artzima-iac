@@ -1,0 +1,13 @@
+---
+# Values derived from network.yml + hosts.yml. Ansible-only (Jinja allowed).
+lab_prefix: "{{ lab_subnet | ansible.utils.ipaddr('prefix') }}"
+lab_ip: "{{ lab_subnet | ansible.utils.nthhost(host_index | int) }}"
+lab_cidr: "{{ lab_ip }}/{{ lab_prefix }}"
+ansible_host: "{{ lab_ip }}"
+ansible_user: root
+
+# Handy lookups of other machines' addresses.
+host01_ip: "{{ lab_subnet | ansible.utils.nthhost(hostvars['host01'].host_index | int) }}"
+pbs_ip: "{{ lab_subnet | ansible.utils.nthhost(hostvars['pbs'].host_index | int) }}"
+artnas_ip: "{{ lab_subnet | ansible.utils.nthhost(hostvars['artnas'].host_index | int) }}"
+k8s_api_vip: "{{ lab_subnet | ansible.utils.nthhost(k8s_api_vip_index | int) }}"

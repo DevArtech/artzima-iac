@@ -1,0 +1,71 @@
+---
+# One PVE API token -> one Infisical secret. Lookups and the Infisical modules
+# run on the controller with the artzima-admin identity from the environment.
+- name: Check whether Infisical already holds the token
+  ansible.builtin.set_fact:
+    proxmox_api_in_infisical: >-
+      {{ proxmox_api_tok.dest.name in (query('infisical.vault.read_secrets', url=artzima_infisical_url,
+      project_id=artzima_infisical_project, env_slug=artzima_infisical_env,
+      path=proxmox_api_tok.dest.path, as_dict=True)[0] | default({}, true)) }}
+  no_log: true
+
+- name: Read existing tokens
+  ansible.builtin.command: pveum user token list {{ proxmox_api_tok.user }} --output-format json
+  register: proxmox_api_tokens
+  changed_when: false
+
+- name: Decide whether to (re)issue
+  ansible.builtin.set_fact:
+    proxmox_api_exists: "{{ proxmox_api_tok.token in (proxmox_api_tokens.stdout | from_json | map(attribute='tokenid') | list) }}"
+    # A token secret is only shown once: if Infisical doesn't have it, re-issue.
+    proxmox_api_issue: "{{ proxmox_api_rotate | bool or not proxmox_api_in_infisical | bool }}"
+
+- name: Delete the old token
+  ansible.builtin.command: pveum user token remove {{ proxmox_api_tok.user }} {{ proxmox_api_tok.token }}
+  when: proxmox_api_exists and proxmox_api_issue
+  changed_when: true
+
+- name: Issue the token (privsep off, so it inherits the user ACLs)
+  ansible.builtin.command: >-
+    pveum user token add {{ proxmox_api_tok.user }} {{ proxmox_api_tok.token }}
+    --privsep 0 --output-format json
+  when: proxmox_api_issue
+  register: proxmox_api_new
+  changed_when: true
+  no_log: true
+
+# If this push fails, the new token is lost (pveum shows it once): fix the
+# Infisical access and re-run with -e proxmox_api_rotate=true.
+- name: Push the token to Infisical
+  vars:
+    proxmox_api_value: >-
+      {{ ((proxmox_api_new.stdout | from_json)['full-tokenid'] ~ '=' ~ (proxmox_api_new.stdout | from_json).value)
+      if proxmox_api_tok.dest.format == 'full' else (proxmox_api_new.stdout | from_json).value }}
+    proxmox_api_auth: &proxmox_api_auth
+      url: "{{ artzima_infisical_url }}"
+      universal_auth_client_id: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_ID') }}"
+      universal_auth_client_secret: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET') }}"
+  when: proxmox_api_issue
+  delegate_to: localhost
+  become: false
+  no_log: true
+  block:
+    - name: Create the Infisical secret
+      infisical.vault.create_secret:
+        <<: *proxmox_api_auth
+        project_id: "{{ artzima_infisical_project }}"
+        env_slug: "{{ artzima_infisical_env }}"
+        path: "{{ proxmox_api_tok.dest.path }}"
+        secret_name: "{{ proxmox_api_tok.dest.name }}"
+        secret_value: "{{ proxmox_api_value }}"
+        secret_comment: "PVE API token {{ proxmox_api_tok.user }}!{{ proxmox_api_tok.token }} (ansible proxmox_api role)"
+      when: not proxmox_api_in_infisical | bool
+    - name: Update the Infisical secret
+      infisical.vault.update_secret:
+        <<: *proxmox_api_auth
+        project_id: "{{ artzima_infisical_project }}"
+        env_slug: "{{ artzima_infisical_env }}"
+        path: "{{ proxmox_api_tok.dest.path }}"
+        secret_name: "{{ proxmox_api_tok.dest.name }}"
+        secret_value: "{{ proxmox_api_value }}"
+      when: proxmox_api_in_infisical | bool

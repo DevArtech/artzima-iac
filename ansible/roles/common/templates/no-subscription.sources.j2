@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+Types: deb
+URIs: http://download.proxmox.com/debian/{{ common_product }}
+Suites: {{ ansible_facts['distribution_release'] }}
+Components: {{ common_product }}-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg

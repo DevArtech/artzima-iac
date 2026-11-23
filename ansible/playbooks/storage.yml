@@ -1,0 +1,8 @@
+---
+- name: Cluster storage and backup jobs
+  hosts: pve_nodes
+  tasks:
+    - name: Apply storage role once (cluster-wide config)
+      ansible.builtin.include_role:
+        name: storage
+      when: "'cluster_init' in lab_roles"

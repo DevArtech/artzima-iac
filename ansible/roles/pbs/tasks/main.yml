@@ -1,0 +1,130 @@
+---
+- name: Read datastores
+  ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
+  register: pbs_ds
+  changed_when: false
+
+- name: Set datastore facts
+  ansible.builtin.set_fact:
+    pbs_has_datastore: "{{ pbs_datastore_name in (pbs_ds.stdout | from_json | map(attribute='name') | list) }}"
+
+- name: Create datastore on a dedicated disk (FORMATS the disk)
+  ansible.builtin.command: >-
+    proxmox-backup-manager disk fs create {{ pbs_datastore_name }}
+    --disk {{ pbs_datastore_disk }} --filesystem ext4 --add-datastore true
+  when:
+    - not pbs_has_datastore
+    - pbs_datastore_disk is not none
+  changed_when: true
+
+- name: Ensure datastore directory exists
+  ansible.builtin.file:
+    path: "{{ pbs_datastore_path }}"
+    state: directory
+    owner: backup
+    group: backup
+    mode: "0750"
+  when:
+    - not pbs_has_datastore
+    - pbs_datastore_disk is none
+
+- name: Create datastore on an existing path
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
+  when:
+    - not pbs_has_datastore
+    - pbs_datastore_disk is none
+  changed_when: true
+
+- name: Set GC schedule
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore update {{ pbs_datastore_name }} --gc-schedule '{{ pbs_gc_schedule }}'
+  changed_when: false
+
+- name: Read users
+  ansible.builtin.command: proxmox-backup-manager user list --output-format json
+  register: pbs_users
+  changed_when: false
+
+- name: Create the user PVE logs in with
+  ansible.builtin.command: >-
+    proxmox-backup-manager user create {{ pbs_pve_user }} --password {{ pbs_pve_user_password }}
+  when: pbs_pve_user not in (pbs_users.stdout | from_json | map(attribute='userid') | list)
+  changed_when: true
+  no_log: true
+
+- name: Grant DatastoreBackup on the datastore
+  ansible.builtin.command: >-
+    proxmox-backup-manager acl update /datastore/{{ pbs_datastore_name }} DatastoreBackup --auth-id {{ pbs_pve_user }}
+  changed_when: false
+
+- name: Read prune jobs
+  ansible.builtin.command: proxmox-backup-manager prune-job list --output-format json
+  register: pbs_prune
+  changed_when: false
+
+- name: Create prune jobs
+  ansible.builtin.command: >-
+    proxmox-backup-manager prune-job create {{ item.id }}
+    --store {{ pbs_datastore_name }} --schedule '{{ item.schedule }}'
+    --keep-last {{ item.keep_last }} --keep-daily {{ item.keep_daily }}
+    --keep-weekly {{ item.keep_weekly }} --keep-monthly {{ item.keep_monthly }}
+  loop: "{{ pbs_prune_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when: item.id not in (pbs_prune.stdout | from_json | map(attribute='id') | list)
+  changed_when: true
+
+- name: Read verify jobs
+  ansible.builtin.command: proxmox-backup-manager verify-job list --output-format json
+  register: pbs_verify
+  changed_when: false
+
+- name: Create verify jobs
+  ansible.builtin.command: >-
+    proxmox-backup-manager verify-job create {{ item.id }}
+    --store {{ pbs_datastore_name }} --schedule '{{ item.schedule }}'
+    --outdated-after {{ item.outdated_after }} --ignore-verified {{ item.ignore_verified | lower }}
+  loop: "{{ pbs_verify_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when: item.id not in (pbs_verify.stdout | from_json | map(attribute='id') | list)
+  changed_when: true
+
+- name: Read the certificate fingerprint
+  ansible.builtin.command: proxmox-backup-manager cert info
+  register: pbs_cert
+  changed_when: false
+
+# The PVE nodes pin PBS by this fingerprint (role storage). It is not secret, but it
+# lives next to the other PBS values in Infisical /ansible/PBS_FINGERPRINT: written
+# here (created, or updated when the certificate changed), so nobody copies it by hand.
+- name: Store the fingerprint in Infisical /ansible/PBS_FINGERPRINT
+  vars:
+    pbs_fp: "{{ pbs_cert.stdout | regex_findall('[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){31}') | first | lower }}"
+    pbs_inf_now: >-
+      {{ query('infisical.vault.read_secrets', url=artzima_infisical_url, project_id=artzima_infisical_project,
+      env_slug=artzima_infisical_env, path='/ansible', as_dict=True)[0] | default({}, true) }}
+    pbs_inf_auth: &pbs_inf_auth
+      url: "{{ artzima_infisical_url }}"
+      universal_auth_client_id: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_ID') }}"
+      universal_auth_client_secret: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET') }}"
+      project_id: "{{ artzima_infisical_project }}"
+      env_slug: "{{ artzima_infisical_env }}"
+      path: /ansible
+      secret_name: PBS_FINGERPRINT
+  delegate_to: localhost
+  become: false
+  no_log: true # the lookup reads the whole /ansible folder
+  block:
+    - name: Create the Infisical secret
+      infisical.vault.create_secret:
+        <<: *pbs_inf_auth
+        secret_value: "{{ pbs_fp }}"
+        secret_comment: PBS certificate fingerprint (ansible pbs role)
+      when: "'PBS_FINGERPRINT' not in pbs_inf_now"
+    - name: Update the Infisical secret (certificate changed)
+      infisical.vault.update_secret:
+        <<: *pbs_inf_auth
+        secret_value: "{{ pbs_fp }}"
+      when: "'PBS_FINGERPRINT' in pbs_inf_now and pbs_inf_now['PBS_FINGERPRINT'] | lower != pbs_fp"

@@ -1,0 +1,106 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+  labels:
+    # hostPort 80/443 DaemonSet
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-secrets # ESO + its ONE bootstrap Secret (make eso-bootstrap)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflared
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    # node-exporter needs hostNetwork/hostPID
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale
+  labels:
+    # proxies need NET_ADMIN
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external # Services/EndpointSlices for apps outside k8s
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wizarr
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alexandria
+  labels:
+    artzima.io/ghcr-pull: "true" # gets the ghcr-pull Secret (k8s/secrets/ghcr-pull.yaml)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skyjo
+  labels:
+    artzima.io/ghcr-pull: "true" # gets the ghcr-pull Secret (k8s/secrets/ghcr-pull.yaml)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: media # arr stack + qBittorrent/gluetun + Seerr (k8s/apps/media)
+  labels:
+    # The gluetun sidecar needs NET_ADMIN and the /dev/net/tun hostPath device,
+    # which Talos' default "baseline" Pod Security level rejects. Every other
+    # media pod still runs non-root with all capabilities dropped.
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vaultwarden # Vaultwarden + its CNPG Postgres + nightly NAS backup (k8s/apps/vaultwarden)
+  labels:
+    artzima.io/cnpg-offsite: "true" # gets Secret b2-pg (CNPG barman-cloud -> B2), k8s/secrets/backups
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paperless # Paperless-ngx (tailnet only) + CNPG Postgres + Valkey/Tika/Gotenberg (k8s/apps/paperless)
+  labels:
+    artzima.io/cnpg-offsite: "true" # gets Secret b2-pg (CNPG barman-cloud -> B2), k8s/secrets/backups
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: volsync-system # VolSync controller
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup # VolSync sources for plain NAS folders (Home Assistant backups, optional media)
+  annotations:
+    # Movers here run as root (uid 0 in backups.yml) so they can read files of any
+    # owner in those NAS folders; read-only use, docs/backups.md.
+    volsync.backube/privileged-movers: "true"

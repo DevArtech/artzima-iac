@@ -1,0 +1,9 @@
+---
+profile: production
+exclude_paths:
+  - collections/
+mock_modules: []
+skip_list:
+  # pvecm / pveum / proxmox-backup-manager have no modules; each command task
+  # carries its own changed_when / creates guard instead.
+  - command-instead-of-shell

@@ -1,0 +1,12 @@
+---
+- name: GPU host prep (NVIDIA for the Jellyfin LXC) and HAOS image
+  hosts: pve_nodes
+  tasks:
+    - name: NVIDIA driver
+      ansible.builtin.include_role:
+        name: nvidia
+      when: gpu is defined
+    - name: Guest images for HAOS
+      ansible.builtin.include_role:
+        name: guest_images
+      when: inventory_hostname == hostvars['haos'].proxmox_node

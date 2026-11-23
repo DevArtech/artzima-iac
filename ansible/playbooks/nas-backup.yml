@@ -1,0 +1,12 @@
+---
+# Backrest (restic) on the UGREEN NAS: media + personal shares -> Backblaze B2
+# (backups.yml backup_nas_media=restic-on-nas). Connects as devartech with sudo:
+#   make nas-backup          (lists the tasks, asks "yes", then the sudo password: -K)
+# Render-only, without SSH to the NAS (then follow the one-time manual steps):
+#   make nas-backup NAS_ANSIBLE_ARGS= ANSIBLE_ARGS="-e nas_backup_deploy=false"
+# docs/backups.md "Backrest on the NAS".
+- name: Backrest on the NAS
+  hosts: artnas
+  gather_facts: false # UGOS: only what the tasks need; no fact gathering
+  roles:
+    - nas_backup

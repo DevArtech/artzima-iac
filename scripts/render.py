@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""Render public example manifests, or private deployment outputs in the private runtime.
+
+  examples/cluster-vars.yaml              fictional validation substitutions
+  (private runtime: cluster-vars ConfigMap outside the public tree)
+  docs/addresses.md                       address / MAC table (DHCP reservations)
+  k8s/apps/routes/routes.yaml             one Traefik IngressRoute per /apps.yaml entry
+
+Run `make render` after changing ansible/hosts.yml or group_vars/all/*.yml.
+`make lint` runs `render.py --check` and fails if the committed file is stale.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import os
+import sys
+
+import yaml
+
+import labdata
+
+class _Dumper(yaml.SafeDumper):
+    def increase_indent(self, flow=False, indentless=False):  # indent "- " under keys
+        return super().increase_indent(flow, False)
+
+    def ignore_aliases(self, data):  # no &id001 anchors in generated manifests
+        return True
+
+
+def _str(dumper, value: str):
+    # Multi-line strings (scripts) as readable literal blocks.
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
+
+
+_Dumper.add_representer(str, _str)
+
+
+def dump(doc) -> str:
+    return yaml.dump(doc, Dumper=_Dumper, sort_keys=False)
+
+
+OUT = labdata.REPO / ("k8s/clusters/artzima/cluster-vars.yaml" if os.environ.get("ARTZIMA_PRIVATE_RUNTIME") == "1" else "examples/cluster-vars.yaml")
+VOLSYNC = labdata.REPO / "k8s/apps/backups/volsync.yaml"
+RESTIC_SECRETS = labdata.REPO / "k8s/secrets/backups/restic.yaml"
+MAINT = labdata.REPO / "k8s/apps/backups/maintenance.yaml"
+NUT = yaml.safe_load((labdata.REPO / "ansible/roles/nut/defaults/main.yml").read_text())
+DOC = labdata.REPO / "docs/addresses.md"
+ROUTES = labdata.REPO / "k8s/apps/routes/routes.yaml"
+
+
+def render() -> str:
+    d = labdata.load()
+    h = d["hosts"]
+    data = {
+        "lab_domain": d["net"]["lab_domain"],
+        "lab_subnet": str(d["subnet"]),
+        "lab_gateway": d["net"]["lab_gateway"],
+        "k8s_api_vip": d["k8s_api_vip"],
+        "artnas_ip": h["artnas"]["ip"],
+        "artnas_k8s_path": labdata.nas_path(d, d["lab"]["artnas_k8s_subdir"]),
+        "pve_api_host": h["host01"]["ip"],
+        # UPS status for alerts (k8s/infrastructure/configs/nut-exporter.yaml)
+        "nut_server_ip": h[NUT["nut_server_host"]]["ip"],
+        "nut_ups_name": NUT["nut_ups_name"],
+        "pbs_ip": h["pbs"]["ip"],
+        "cluster_name": d["lab"]["pve_cluster_name"],
+        # public_domain is NOT here: it comes from Infisical via the ESO Secret
+        # flux-system/cluster-secret-vars (k8s/secrets/flux-system).
+        # Infisical (ESO ClusterSecretStore, k8s/secrets/cluster-secret-store.yaml)
+        "infisical_host": d["infisical"]["infisical_host"],
+        "infisical_project_slug": d["infisical"]["infisical_project_slug"],
+        "infisical_env": d["infisical"]["infisical_env"],
+        "timezone": d["lab"]["timezone"],
+        # Kubernetes networks (Talos, tofu/talos.tf): Traefik trustedIPs, gluetun kill-switch
+        "k8s_pod_subnet": d["net"]["k8s_pod_subnet"],
+        "k8s_service_subnet": d["net"]["k8s_service_subnet"],
+        # Media stack (group_vars/all/media.yml, k8s/apps/media)
+        "artnas_media_data_path": labdata.nas_path(d, d["media"]["media_data_subdir"]),
+        "media_puid": d["media"]["media_puid"],
+        "media_pgid": d["media"]["media_pgid"],
+        "vpn_server_countries": d["media"]["vpn_server_countries"],
+        "media_recycle_days": d["media"]["media_recycle_days"],
+        "media_owned_profile": d["media"]["media_owned_profile"],
+        # App backups on the NAS (k8s/apps/vaultwarden/backup.yaml)
+        "artnas_backups_path": labdata.nas_path(d, d["lab"]["artnas_backups_subdir"]),
+        "vaultwarden_backup_keep": d["lab"]["vaultwarden_backup_keep"],
+        "artnas_paperless_path": labdata.nas_path(d, d["lab"]["artnas_paperless_subdir"]),
+        # Off-site backups to Backblaze B2 (group_vars/all/backups.yml, docs/backups.md)
+        "b2_region": d["backups"]["b2_region"],
+        "b2_s3_endpoint": d["backups"]["b2_s3_endpoint"],
+        "b2_bucket_pg": d["backups"]["b2_buckets"]["pg"],
+        "b2_bucket_restic": d["backups"]["b2_buckets"]["restic"],
+        "backup_pg_retention": d["backups"]["backup_pg_retention"],
+        "artnas_homeassistant_backups_path": labdata.nas_path(
+            d, d["backups"]["artnas_homeassistant_backups_subdir"]),
+        # Apps outside k8s, proxied by Traefik (k8s/apps/external)
+        "jellyfin_ip": h["jellyfin"]["ip"],
+        "jellyfin_port": h["jellyfin"]["http_port"],
+        "haos_ip": h["haos"]["ip"],
+        "haos_port": h["haos"]["http_port"],
+    }
+    doc = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "cluster-vars", "namespace": "flux-system"},
+        "data": {k: str(v) for k, v in data.items()},
+    }
+    header = (
+        "---\n# GENERATED by scripts/render.py from ansible/hosts.yml and\n"
+        "# ansible/group_vars/all/*.yml. DO NOT EDIT; run `make render`.\n"
+    )
+    return header + dump(doc)
+
+
+def render_doc() -> str:
+    if os.environ.get("ARTZIMA_PRIVATE_RUNTIME") != "1":
+        return "# Private deployment addresses\n\nActual IP addresses, MACs and device-role assignments are not published.\nRun `make private-prepare` and open `.private/runtime/docs/addresses.md` locally.\nThe inventory under `ansible/` is a fictional CI fixture, not deployment data.\n"
+    d = labdata.load()
+    rows = sorted(d["hosts"].values(), key=lambda h: int(h["host_index"]))
+    lines = [
+        "# Lab addresses",
+        "",
+        "GENERATED by `scripts/render.py` from `ansible/hosts.yml` + "
+        "`ansible/group_vars/all/network.yml`. Do not edit; run `make render`.",
+        "",
+        f"Subnet `{d['subnet']}`, gateway `{d['net']['lab_gateway']}`, "
+        f"VLAN `{d['net']['lab_vlan_id'] if d['net']['lab_vlan_id'] is not None else 'untagged'}`, "
+        f"DNS `{', '.join(d['net']['lab_dns'])}`, domain `{d['net']['lab_domain']}`.",
+        "",
+        "| Host | IP | MAC | Kind | On | Roles |",
+        "|---|---|---|---|---|---|",
+    ]
+    for h in rows:
+        kind = h.get("guest_kind") or h.get("hw", "")
+        lines.append(f"| {h['name']} | {h['ip']} | {h['mac']} | {kind} | "
+                     f"{h.get('proxmox_node', '')} | {', '.join(h.get('lab_roles', []))} |")
+    lines.append(f"| *(k8s API VIP)* | {d['k8s_api_vip']} | n/a | Talos L2 VIP | | |")
+    talos_ips = [h["ip"] for h in rows if "talos" in h["groups"]]
+    t = d["apps"]["traefik"]
+    origin = f"http://{t['service']}.{t['namespace']}.svc.cluster.local:{t['port']}"
+    lines += [
+        "",
+        "## Public hostnames (Cloudflare Tunnel -> Traefik)",
+        "",
+        "From `/apps.yaml`; `<domain>` is the Infisical secret /settings/PUBLIC_DOMAIN.",
+        "Each host is a Cloudflare DNS CNAME + tunnel rule to Traefik",
+        f"(`{origin}`), then a Traefik IngressRoute to the backend.",
+        "",
+        "| Hostname | Traefik backend |",
+        "|---|---|",
+    ]
+    lines += [f"| {a['host'].replace(labdata.DOMAIN_VAR, '<domain>')} | {a['namespace']}/{a['service']}:{a['port']} |"
+              for a in d["apps"]["apps"]]
+    lines += [
+        "",
+        "## Reverse-proxy source addresses (for apps outside k8s)",
+        "",
+        "Traefik pods reach the LAN through the Talos nodes (SNAT to the node IP), so",
+        "apps outside the cluster see these addresses as their proxy:",
+        "",
+        "```yaml",
+        "# Home Assistant: configuration.yaml",
+        "http:",
+        "  use_x_forwarded_for: true",
+        "  trusted_proxies:",
+    ] + [f"    - {ip}" for ip in talos_ips] + [
+        "```",
+        "",
+        f"Jellyfin: Dashboard > Networking > Known proxies: `{', '.join(talos_ips)}`.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_routes() -> str:
+    apps = labdata.load_apps()
+    docs = []
+    for a in apps["apps"]:
+        deny = a.get("deny_paths") or []
+        if deny:
+            # A Traefik ipAllowList that matches no client: every request on these
+            # paths gets 403 Forbidden, whatever is behind it.
+            docs.append({
+                "apiVersion": "traefik.io/v1alpha1",
+                "kind": "Middleware",
+                "metadata": {
+                    "name": f"public-{a['name']}-deny",
+                    "namespace": a["namespace"],
+                    "labels": {"app.kubernetes.io/managed-by": "artzima-render",
+                               "artzima.io/public-app": a["name"]},
+                },
+                "spec": {"ipAllowList": {"sourceRange": ["127.0.0.1/32"]}},
+            })
+        routes = []
+        if deny:
+            paths = " || ".join(f"PathPrefix(`{x}`)" for x in deny)
+            routes.append({
+                "kind": "Rule",
+                "match": f"Host(`{a['host']}`) && ({paths})",
+                "priority": 10000,  # always before the catch-all route of the same host
+                "middlewares": [{"name": f"public-{a['name']}-deny"}],
+                "services": [{"name": a["service"], "port": a["port"]}],
+            })
+        routes.append({
+            "kind": "Rule",
+            "match": f"Host(`{a['host']}`)",
+            "services": [{"name": a["service"], "port": a["port"]}],
+        })
+        docs.append({
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "IngressRoute",
+            "metadata": {
+                "name": f"public-{a['name']}",
+                "namespace": a["namespace"],
+                "labels": {"app.kubernetes.io/managed-by": "artzima-render",
+                           "artzima.io/public-app": a["name"]},
+            },
+            "spec": {
+                "entryPoints": ["web"],
+                "routes": routes,
+            },
+        })
+    header = (
+        "# GENERATED by scripts/render.py from /apps.yaml. DO NOT EDIT; run `make render`.\n"
+        "# The ONLY public routes: cloudflared -> Traefik (entrypoint web) -> these.\n"
+    )
+    return header + "".join("---\n" + dump(x) for x in docs)
+
+
+def backup_volumes() -> list[dict]:
+    b = labdata.load()["backups"]
+    vols = [{**v, "bucket": "restic"} for v in b["backup_volumes"]]
+    # NAS media + personal files are NOT backed up from the cluster: Backrest on the NAS
+    # does it (backup_nas_media=restic-on-nas, Ansible role nas_backup, docs/backups.md).
+    seen = set()
+    for v in vols:
+        key = (v["namespace"], v["pvc"])
+        if key in seen:
+            raise SystemExit(f"backups.yml: {key} listed twice")
+        seen.add(key)
+    return vols
+
+
+GEN = ("# GENERATED by scripts/render.py from ansible/group_vars/all/backups.yml.\n"
+       "# DO NOT EDIT; run `make render`. Off-site backups: docs/backups.md.\n")
+
+
+def render_restic_secrets() -> str:
+    """One restic repository secret per volume (VolSync restic mover format)."""
+    docs = []
+    for v in backup_volumes():
+        docs.append({
+            "apiVersion": "external-secrets.io/v1",
+            "kind": "ExternalSecret",
+            "metadata": {"name": f"{v['pvc']}-restic", "namespace": v["namespace"]},
+            "spec": {
+                "refreshInterval": "1h",
+                "secretStoreRef": {"kind": "ClusterSecretStore", "name": "infisical"},
+                "target": {
+                    "name": f"{v['pvc']}-restic",
+                    "creationPolicy": "Owner",
+                    "template": {
+                        "engineVersion": "v2",
+                        "data": {
+                            # One repository per volume in the restic bucket; ${...} = Flux cluster-vars.
+                            "RESTIC_REPOSITORY": (f"s3:https://${{b2_s3_endpoint}}/${{b2_bucket_{v['bucket']}}}/"
+                                                  f"{v['namespace']}/{v['pvc']}"),
+                            "RESTIC_PASSWORD": "{{ .password }}",
+                            "AWS_ACCESS_KEY_ID": "{{ .keyId }}",
+                            "AWS_SECRET_ACCESS_KEY": "{{ .key }}",
+                            "AWS_DEFAULT_REGION": "${b2_region}",
+                        },
+                    },
+                },
+                "data": [
+                    {"secretKey": "password", "remoteRef": {"key": "/k8s/backup/RESTIC_PASSWORD"}},
+                    {"secretKey": "keyId", "remoteRef": {"key": f"/k8s/backup/{v['bucket'].upper()}_B2_KEY_ID"}},
+                    {"secretKey": "key", "remoteRef": {"key": f"/k8s/backup/{v['bucket'].upper()}_B2_APPLICATION_KEY"}},
+                ],
+            },
+        })
+    return GEN + "".join("---\n" + dump(x) for x in docs)
+
+
+def render_volsync() -> str:
+    b = labdata.load()["backups"]
+    docs, minute = [], {}
+    for v in backup_volumes():
+        m = minute.get(v["hour"], 0)
+        minute[v["hour"]] = m + 7  # stagger sources that start in the same hour
+        docs.append({
+            "apiVersion": "volsync.backube/v1alpha1",
+            "kind": "ReplicationSource",
+            "metadata": {"name": f"{v['pvc']}-b2", "namespace": v["namespace"]},
+            "spec": {
+                # Disaster recovery: no backups of empty, rebuilt volumes (backups.yml).
+                "paused": bool(b.get("backup_volsync_paused", False)),
+                "sourcePVC": v["pvc"],
+                "trigger": {"schedule": f"{m % 60} {v['hour']} * * *"},
+                "restic": {
+                    "repository": f"{v['pvc']}-restic",
+                    # Direct: the mover mounts the live volume (NFS: no snapshot needed).
+                    # Apps with databases keep their DB elsewhere (CNPG) or write their
+                    # own consistent backup files (the arrs' /config/Backups).
+                    "copyMethod": "Direct",
+                    # No `retain` (= no forget) and practically no prune here: the mover's
+                    # key only ADDS data. Retention runs separately with the maintenance
+                    # key (CronJob backup/restic-maintenance, maintenance.yaml).
+                    "pruneIntervalDays": 3650,
+                    "cacheCapacity": "2Gi",
+                    "cacheStorageClassName": "nfs-artnas",
+                    "cacheAccessModes": ["ReadWriteOnce"],
+                    "moverSecurityContext": {
+                        "runAsUser": v["uid"],
+                        "runAsGroup": v["gid"],
+                        "fsGroup": v["gid"],
+                    },
+                },
+            },
+        })
+    return GEN + "".join("---\n" + dump(x) for x in docs)
+
+
+# ---------------------------------------------------------------- maintenance + self-checks
+# Pinned images (Renovate bumps them; renovate.json regex manager "render.py images").
+RESTIC_IMAGE = "docker.io/restic/restic:0.20.0"
+KUBECTL_IMAGE = "docker.io/alpine/k8s:1.37.2"
+BARMAN_IMAGE = "ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0"  # = plugin v0.16.0
+SELF_CHECK = {"artzima.io/self-check": "true"}  # verify.py + the RestoreTestFailed alert
+
+# Shell scripts below run under Flux substitution: never write ${...} in them, only $VAR.
+RESTIC_MAINT_SH = """set -u
+fail=0
+for repo in $REPOS; do
+  echo "== forget + prune $repo"
+  export RESTIC_REPOSITORY="$BASE/$repo"
+  restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" \\
+    --prune --max-unused 10% || fail=1
+done
+[ "$fail" = 0 ] && echo "RESULT: PASS" || { echo "RESULT: FAIL (see above)"; exit 1; }
+"""
+
+# Month N tests repo N (mod count): every repository gets a full test regularly.
+RESTIC_TEST_SH = """set -u
+n=$(echo $REPOS | wc -w)
+m=$(date +%m | sed 's/^0//')
+repo=$(echo $REPOS | awk -v i=$(( (m - 1) % n + 1 )) '{print $i}')
+export RESTIC_REPOSITORY="$BASE/$repo"
+echo "restore test of $repo"
+fail() { echo "RESULT: FAIL $repo: $1"; exit 1; }
+restic snapshots latest >/dev/null || fail "no snapshot / repository unreadable"
+restic check --read-data-subset=5% || fail "restic check found damaged data"
+size=$(restic stats latest --mode restore-size --json | sed -n 's/.*"total_size":\\([0-9]*\\).*/\\1/p')
+max=$((MAX_GIB * 1024 * 1024 * 1024))
+if [ "$size" -gt "$max" ]; then
+  echo "RESULT: PASS $repo (check only: $size bytes > MAX_GIB=$MAX_GIB, no full restore)"; exit 0
+fi
+restic restore latest --target /scratch --verify || fail "restore/verify failed"
+files=$(find /scratch -type f | wc -l)
+[ "$files" -gt 0 ] || fail "latest snapshot restored 0 files"
+echo "RESULT: PASS $repo ($files files restored and verified)"
+"""
+
+# Recover the cluster's B2 backups into a SCRATCH CNPG cluster (no WAL archiving, scratch
+# storage), run a query, delete it. PASS = recovery worked and the database has tables.
+PG_TEST_SH = """set -u
+T="$CLUSTER-restore-test"
+fail() { echo "RESULT: FAIL $CLUSTER: $1"; exit 1; }
+cleanup() { kubectl -n "$NS" delete clusters.postgresql.cnpg.io "$T" --ignore-not-found --wait=false; }
+trap cleanup EXIT
+kubectl -n "$NS" delete clusters.postgresql.cnpg.io "$T" --ignore-not-found --wait=true
+cat <<EOF | kubectl apply -f - || fail "could not create $T"
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: $T
+  namespace: $NS
+  labels: { artzima.io/self-check: "true" }
+spec:
+  instances: 1
+  imageName: $PG_IMAGE
+  storage: { storageClass: nfs-artnas-scratch, size: $PG_SIZE }
+  bootstrap:
+    recovery: { source: origin }
+  externalClusters:
+    - name: origin
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters: { barmanObjectName: b2, serverName: $SERVER }
+EOF
+kubectl -n "$NS" wait "clusters.postgresql.cnpg.io/$T" --for=condition=Ready --timeout=90m \\
+  || fail "recovery did not become Ready in 90 min (kubectl -n $NS describe cluster $T)"
+tables=$(kubectl -n "$NS" exec "$T-1" -c postgres -- psql -tAq -d "$DB" \\
+  -c "select count(*) from information_schema.tables where table_schema not in ('pg_catalog','information_schema')") \\
+  || fail "query failed"
+[ "$tables" -gt 0 ] || fail "restored database $DB has no tables"
+echo "RESULT: PASS $CLUSTER ($tables tables in $DB, recovered from B2)"
+"""
+
+
+def cnpg_clusters() -> list[dict]:
+    """Every CNPG Cluster archiving to B2 (k8s/apps/*/database.yaml)."""
+    out = []
+    for f in sorted((labdata.REPO / "k8s/apps").glob("*/database.yaml")):
+        for doc in yaml.safe_load_all(f.read_text()):
+            if not doc or doc.get("kind") != "Cluster" or "cnpg.io" not in doc.get("apiVersion", ""):
+                continue
+            plugin = next((pl for pl in doc["spec"].get("plugins", [])
+                           if pl.get("name") == "barman-cloud.cloudnative-pg.io"), None)
+            if not plugin:
+                continue
+            boot = doc["spec"]["bootstrap"]
+            name = doc["metadata"]["name"]
+            out.append({"name": name, "namespace": doc["metadata"]["namespace"],
+                        # where it archives NOW: after a disaster recovery <name>-dr1 (docs/disaster-recovery.md)
+                        "server": (plugin.get("parameters") or {}).get("serverName", name),
+                        "db": (boot.get("initdb") or boot.get("recovery") or {}).get("database", name.removesuffix("-db")),
+                        "image": doc["spec"]["imageName"], "size": doc["spec"]["storage"]["size"]})
+    return out
+
+
+def pg_retention_policy(value: str) -> str:
+    """backups.yml backup_pg_retention (e.g. 30d, 4w, 6m) -> barman's policy string."""
+    unit = {"d": "DAYS", "w": "WEEKS", "m": "MONTHS"}.get(value[-1:])
+    if not unit or not value[:-1].isdigit():
+        raise SystemExit(f"backups.yml backup_pg_retention {value!r}: use <N>d, <N>w or <N>m")
+    return f"RECOVERY WINDOW OF {value[:-1]} {unit}"
+
+
+def cronjob(name: str, ns: str, schedule: str, container: dict, *, labels: dict | None = None,
+            sa: str | None = None, volumes: list | None = None, deadline: int = 6 * 3600,
+            suspend: bool = False) -> dict:
+    pod = {"restartPolicy": "Never", "containers": [container]}
+    if sa:
+        pod["serviceAccountName"] = sa
+    if volumes:
+        pod["volumes"] = volumes
+    return {
+        "apiVersion": "batch/v1", "kind": "CronJob",
+        "metadata": {"name": name, "namespace": ns, **({"labels": labels} if labels else {})},
+        "spec": {
+            "schedule": schedule, "timeZone": "Etc/UTC", "concurrencyPolicy": "Forbid", "suspend": suspend,
+            "successfulJobsHistoryLimit": 1, "failedJobsHistoryLimit": 2,
+            "jobTemplate": {"spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline,
+                                     "template": {**({"metadata": {"labels": labels}} if labels else {}), "spec": pod}}},
+        },
+    }
+
+
+def render_maintenance() -> str:
+    b = labdata.load()["backups"]
+    # DISASTER RECOVERY: while backup_volsync_paused, retention is suspended too, so no
+    # old snapshot/base backup ages out while the restores are still being verified.
+    paused = bool(b.get("backup_volsync_paused", False))
+    repos = " ".join(f"{v['namespace']}/{v['pvc']}" for v in backup_volumes())
+    base = "s3:https://${b2_s3_endpoint}/${b2_bucket_restic}"
+    restic_env = [{"name": "REPOS", "value": repos}, {"name": "BASE", "value": base},
+                  {"name": "RESTIC_CACHE_DIR", "value": "/cache"}]
+    restic_from = [{"secretRef": {"name": "restic-maint"}}]
+    cache = {"name": "cache", "emptyDir": {"sizeLimit": "5Gi"}}
+    docs = [
+        # Retention for every VolSync repository, with the MAINTENANCE key (never the movers').
+        cronjob("restic-maintenance", "backup", b["backup_restic_maint_cron"], {
+            "name": "restic", "image": RESTIC_IMAGE, "command": ["/bin/sh", "-c", RESTIC_MAINT_SH],
+            "env": restic_env + [
+                {"name": "KEEP_DAILY", "value": str(b["backup_restic_keep_daily"])},
+                {"name": "KEEP_WEEKLY", "value": str(b["backup_restic_keep_weekly"])},
+                {"name": "KEEP_MONTHLY", "value": str(b["backup_restic_keep_monthly"])}],
+            "envFrom": restic_from, "volumeMounts": [{"name": "cache", "mountPath": "/cache"}],
+        }, volumes=[cache], suspend=paused),
+        # Monthly self-check: restore one repository (rotating) and verify it.
+        cronjob("restic-restore-test", "backup", b["self_check_restic_cron"], {
+            "name": "restic", "image": RESTIC_IMAGE, "command": ["/bin/sh", "-c", RESTIC_TEST_SH],
+            "env": restic_env + [{"name": "MAX_GIB", "value": str(b["self_check_restic_max_gib"])}],
+            "envFrom": restic_from,
+            "volumeMounts": [{"name": "cache", "mountPath": "/cache"}, {"name": "scratch", "mountPath": "/scratch"}],
+        }, labels=SELF_CHECK, volumes=[cache, {"name": "scratch", "emptyDir": {
+            "sizeLimit": f"{b['self_check_restic_max_gib'] + 1}Gi"}}]),
+    ]
+    policy = pg_retention_policy(b["backup_pg_retention"])
+    for i, c in enumerate(cnpg_clusters()):
+        ns, name = c["namespace"], c["name"]
+        aws = [{"name": k, "valueFrom": {"secretKeyRef": {"name": "b2-pg-maint", "key": v}}}
+               for k, v in (("AWS_ACCESS_KEY_ID", "ACCESS_KEY_ID"), ("AWS_SECRET_ACCESS_KEY", "ACCESS_SECRET_KEY"))]
+        docs.append(cronjob(f"{name}-retention", ns, b["backup_pg_maint_cron"], {
+            "name": "barman", "image": BARMAN_IMAGE,
+            "command": ["/venv/bin/barman-cloud-backup-delete"],
+            "args": ["--cloud-provider", "aws-s3", "--endpoint-url", "https://${b2_s3_endpoint}",
+                     "--retention-policy", policy, f"s3://${{b2_bucket_pg}}/{ns}", c["server"]],
+            "env": aws + [{"name": "AWS_DEFAULT_REGION", "value": "${b2_region}"},
+                          {"name": "AWS_REQUEST_CHECKSUM_CALCULATION", "value": "when_required"},
+                          {"name": "AWS_RESPONSE_CHECKSUM_VALIDATION", "value": "when_required"}],
+        }, deadline=2 * 3600, suspend=paused))
+        sa = f"{name}-restore-test"
+        docs += [
+            {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": sa, "namespace": ns}},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+             "metadata": {"name": sa, "namespace": ns},
+             "rules": [
+                 {"apiGroups": ["postgresql.cnpg.io"], "resources": ["clusters"],
+                  "verbs": ["get", "list", "watch", "create"]},
+                 # delete/patch/exec only the scratch cluster, never the real one
+                 {"apiGroups": ["postgresql.cnpg.io"], "resources": ["clusters"],
+                  "resourceNames": [f"{name}-restore-test"], "verbs": ["patch", "delete"]},
+                 {"apiGroups": [""], "resources": ["pods/exec"],
+                  "resourceNames": [f"{name}-restore-test-1"], "verbs": ["create"]},
+                 {"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]},
+             ]},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+             "metadata": {"name": sa, "namespace": ns},
+             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": sa},
+             "subjects": [{"kind": "ServiceAccount", "name": sa, "namespace": ns}]},
+            cronjob(sa, ns, f"0 {7 + i} {b['self_check_pg_day']} * *", {
+                "name": "test", "image": KUBECTL_IMAGE, "command": ["/bin/sh", "-c", PG_TEST_SH],
+                "env": [{"name": "NS", "value": ns}, {"name": "CLUSTER", "value": name},
+                        {"name": "SERVER", "value": c["server"]},
+                        {"name": "DB", "value": c["db"]}, {"name": "PG_IMAGE", "value": c["image"]},
+                        {"name": "PG_SIZE", "value": c["size"]}],
+            }, labels=SELF_CHECK, sa=sa, deadline=3 * 3600),
+        ]
+    return GEN + "".join("---\n" + dump(x) for x in docs)
+
+
+def main() -> None:
+    outputs = {OUT: render(), DOC: render_doc(), ROUTES: render_routes(),
+               VOLSYNC: render_volsync(), RESTIC_SECRETS: render_restic_secrets(),
+               MAINT: render_maintenance()}
+    if "--check" in sys.argv:
+        stale = [p for p, t in outputs.items() if not p.exists() or p.read_text() != t]
+        if stale:
+            sys.exit("stale: " + ", ".join(str(p.relative_to(labdata.REPO)) for p in stale)
+                     + ": run `make render`")
+        print("rendered files up to date")
+        return
+    for path, text in outputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        print(f"wrote {path.relative_to(labdata.REPO)}")
+
+
+if __name__ == "__main__":
+    main()

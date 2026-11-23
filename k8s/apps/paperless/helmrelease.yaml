@@ -1,0 +1,325 @@
+---
+# Paperless-ngx (document management, OCR). SENSITIVE documents: TAILNET ONLY.
+# No /apps.yaml entry, no Traefik route, no tunnel: the Service `paperless` is
+# exposed by the Tailscale operator as http://paperless (MagicDNS), and nothing else.
+#
+#   paperless  ghcr.io/paperless-ngx/paperless-ngx (s6 init starts as root, then runs
+#              as USERMAP_UID/GID 1000), web UI + REST API on :8000 (Service port 80)
+#   valkey     task broker (Redis protocol), ephemeral: no persistence needed
+#   tika       text/metadata extraction for Office documents and e-mail
+#   gotenberg  converts Office documents and .eml to PDF
+# Versions: paperless 3.5.1; Tika and Gotenberg pinned to what upstream's own
+# docker-compose (v3.5.1) uses: apache/tika 3.3.1.0, gotenberg 8.38.
+#
+# Database: CNPG Cluster paperless-db (database.yaml), credentials from the
+# CNPG-generated Secret paperless-db-app. Secrets: Infisical /k8s/paperless
+# (k8s/secrets/paperless). Files: static NFS PVs (storage.yaml).
+# API access for Headquarters (G.A.R.T.H.): a per-user API token, created by the
+# operator in Paperless and stored in HQ's own credential store, NOT here.
+# Steps: docs/manual-steps.md §13.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: paperless
+  namespace: paperless
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      # ------------------------------------------------------------ Paperless
+      paperless:
+        replicas: 1 # one consumer/worker set; index + classifier live on /data
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/paperless-ngx/paperless-ngx
+              tag: 3.5.1
+            env:
+              PAPERLESS_PORT: "8000"
+              # Tailnet name: http://paperless. Sets ALLOWED_HOSTS + CSRF origins;
+              # localhost (probes, below) is always accepted. Using the MagicDNS FQDN
+              # instead: add it to PAPERLESS_ALLOWED_HOSTS (docs/manual-steps.md §13).
+              PAPERLESS_URL: http://paperless
+              PAPERLESS_TIME_ZONE: ${timezone}
+              PAPERLESS_OCR_LANGUAGE: eng
+              USERMAP_UID: "1000"
+              USERMAP_GID: "1000"
+              PAPERLESS_DATA_DIR: /usr/src/paperless/data
+              PAPERLESS_MEDIA_ROOT: /usr/src/paperless/media
+              PAPERLESS_CONSUMPTION_DIR: /usr/src/paperless/consume
+              # NFS has no inotify: poll the consume folder (seconds).
+              PAPERLESS_CONSUMER_POLLING_INTERVAL: "30"
+              PAPERLESS_CONSUMER_RECURSIVE: "true"
+              PAPERLESS_REDIS: redis://paperless-valkey:6379
+              PAPERLESS_DBENGINE: postgresql
+              PAPERLESS_DBHOST: paperless-db-rw # CNPG read-write Service
+              PAPERLESS_DBPORT: "5432"
+              PAPERLESS_DBNAME: paperless
+              PAPERLESS_DBUSER:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperless-db-app
+                    key: username
+              PAPERLESS_DBPASS:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperless-db-app
+                    key: password
+              PAPERLESS_TIKA_ENABLED: "1"
+              PAPERLESS_TIKA_ENDPOINT: http://paperless-tika:9998
+              PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://paperless-gotenberg:3000
+              PAPERLESS_SECRET_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperless
+                    key: SECRET_KEY
+              # Creates the superuser on first start (ignored once it exists).
+              PAPERLESS_ADMIN_USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperless
+                    key: ADMIN_USER
+              PAPERLESS_ADMIN_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperless
+                    key: ADMIN_PASSWORD
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 8000
+                    httpHeaders:
+                      - name: Host
+                        value: localhost
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 8000
+                    httpHeaders:
+                      - name: Host
+                        value: localhost
+                  periodSeconds: 10
+                  failureThreshold: 90 # first start: migrations + chown of the folders
+            securityContext:
+              allowPrivilegeEscalation: false # s6 drops to USERMAP_UID via setuid/setgid caps, not suid binaries
+            resources:
+              requests:
+                cpu: 200m
+                memory: 768Mi
+              limits:
+                memory: 3Gi # OCR of large scans
+      # ------------------------------------------------------------ Valkey (broker)
+      valkey:
+        replicas: 1
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999 # the image's `valkey` user (group valkey = gid 1000)
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: docker.io/valkey/valkey
+              tag: 9.2.0-alpine3.24
+            args: ["--save", "", "--appendonly", "no"] # queue only: nothing to persist
+            probes:
+              liveness: &tcp6379
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 6379
+                  periodSeconds: 30
+              readiness: *tcp6379
+            securityContext: &locked
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 256Mi
+      # ------------------------------------------------------------ Tika
+      tika:
+        replicas: 1
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 35002 # the image's `tika` user
+            runAsGroup: 35002
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: docker.io/apache/tika
+              tag: 3.3.1.0
+            probes:
+              liveness: &tcp9998
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 9998
+                  periodSeconds: 30
+              readiness: *tcp9998
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 20m
+                memory: 384Mi
+              limits:
+                memory: 1Gi
+      # ------------------------------------------------------------ Gotenberg
+      gotenberg:
+        replicas: 1
+        pod:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001 # the image's `gotenberg` user
+            runAsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: docker.io/gotenberg/gotenberg
+              tag: 8.38.1
+            # As upstream's compose: e-mail (.eml) rendering through Chromium,
+            # without JavaScript and only for local files.
+            command:
+              - gotenberg
+              - --chromium-disable-javascript=true
+              - --chromium-allow-list=^file:///tmp/.*
+            probes:
+              liveness: &health3000
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 3000
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+              readiness: *health3000
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 20m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+    service:
+      # Tailnet ONLY (Tailscale operator): http://paperless. No route, no tunnel.
+      app:
+        controller: paperless
+        forceRename: paperless
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: paperless
+        ports:
+          http:
+            port: 80
+            targetPort: 8000
+      valkey:
+        controller: valkey
+        forceRename: paperless-valkey
+        ports:
+          redis:
+            port: 6379
+      tika:
+        controller: tika
+        forceRename: paperless-tika
+        ports:
+          http:
+            port: 9998
+      gotenberg:
+        controller: gotenberg
+        forceRename: paperless-gotenberg
+        ports:
+          http:
+            port: 3000
+    persistence:
+      data:
+        type: persistentVolumeClaim
+        existingClaim: paperless-data
+        advancedMounts:
+          paperless:
+            app:
+              - path: /usr/src/paperless/data
+      media:
+        type: persistentVolumeClaim
+        existingClaim: paperless-media
+        advancedMounts:
+          paperless:
+            app:
+              - path: /usr/src/paperless/media
+      consume:
+        type: persistentVolumeClaim
+        existingClaim: paperless-consume
+        advancedMounts:
+          paperless:
+            app:
+              - path: /usr/src/paperless/consume
+      export:
+        type: persistentVolumeClaim
+        existingClaim: paperless-export
+        advancedMounts:
+          paperless:
+            app:
+              - path: /usr/src/paperless/export
+      tmp:
+        type: emptyDir
+        advancedMounts:
+          valkey:
+            app:
+              - path: /data # valkey's workdir (read-only root fs)
+          tika:
+            app:
+              - path: /tmp
+          gotenberg:
+            app:
+              - path: /tmp

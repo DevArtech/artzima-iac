@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+maxretry = 3
+
+[{{ nut_ups_name }}]
+{% for k, v in nut_ups.items() %}
+	{{ k }} = {{ '"%s"' % v if k == 'desc' else v }}
+{% endfor %}
+
+# Alias for the UGREEN NAS, which polls "{{ nut_alias_name }}" (its "Network
+# UPS slave" mode) and cannot be told another name.
+[{{ nut_alias_name }}]
+	driver = dummy-ups
+	port = {{ nut_ups_name }}@localhost
+	desc = "Alias of {{ nut_ups_name }} for the UGREEN NAS"

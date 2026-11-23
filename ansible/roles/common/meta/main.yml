@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: artzima
+  description: "Base config for Proxmox VE / PBS hosts"
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies: []

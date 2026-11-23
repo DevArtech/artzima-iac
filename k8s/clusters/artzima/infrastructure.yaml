@@ -1,0 +1,103 @@
+---
+# Order: namespaces -> external-secrets (ESO) -> secrets (Infisical via ESO)
+#        -> controllers (Helm) -> configs (CRs)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: namespaces
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./k8s/infrastructure/namespaces
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# External Secrets Operator (CRDs + controller). Needs only the bootstrap Secret
+# external-secrets/infisical-universal-auth (make eso-bootstrap).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: external-secrets
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: namespaces
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./k8s/infrastructure/external-secrets
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# The ClusterSecretStore (Infisical) and every ExternalSecret. No secret
+# material in git: only names of Infisical paths/keys (docs/secrets.md).
+# wait: true = Ready only once ESO has synced every Secret from Infisical.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: secrets
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: external-secrets
+  interval: 30m
+  retryInterval: 2m
+  timeout: 5m
+  path: ./k8s/secrets
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-controllers
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: secrets
+  interval: 1h
+  retryInterval: 2m
+  timeout: 15m
+  path: ./k8s/infrastructure/controllers
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-configs
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infra-controllers
+  interval: 1h
+  retryInterval: 2m
+  path: ./k8s/infrastructure/configs
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars

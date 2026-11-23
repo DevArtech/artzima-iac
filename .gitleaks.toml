@@ -1,0 +1,98 @@
+# gitleaks config for this PUBLIC repo: the default rules (API keys, private
+# keys, GitHub/Cloudflare tokens, ...) plus lab-specific patterns.
+# Used by `make check-public`, the pre-commit hook (scripts/install-git-hooks.sh)
+# and .github/workflows/security.yml. No secret, encrypted or not, belongs in git:
+# every secret lives in Infisical (docs/secrets.md).
+title = "artzima-iac"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "proxmox-api-token"
+description = "Proxmox VE/PBS API token (user@realm!name=uuid)"
+regex = '''[a-z0-9._-]+@(?:pve|pam|pbs)![A-Za-z0-9_-]+=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+keywords = ["@pve!", "@pam!", "@pbs!"]
+
+[[rules]]
+id = "tailscale-key"
+description = "Tailscale auth key / OAuth client secret / API key"
+regex = '''tskey-(?:auth|client|api)-[A-Za-z0-9]{8,}-[A-Za-z0-9]{16,}'''
+keywords = ["tskey-"]
+
+[[rules]]
+id = "cloudflared-tunnel-token"
+description = "Cloudflare Tunnel token (base64 JSON {\"a\":account,\"t\":tunnel,\"s\":secret})"
+regex = '''eyJhIjoi[A-Za-z0-9+/=]{60,}'''
+keywords = ["eyjhijoi"]
+
+[[rules]]
+id = "crypt-password-hash"
+description = "crypt(3) password hash (sha512/sha256/yescrypt/bcrypt), e.g. a root-password-hashed"
+regex = '''\$(?:6|5|y|2[aby])\$[./A-Za-z0-9$]{20,}'''
+keywords = ["$6$", "$5$", "$y$", "$2a$", "$2b$", "$2y$"]
+
+[[rules]]
+id = "github-classic-pat"
+description = "GitHub classic PAT (e.g. the GHCR read:packages token)"
+regex = '''ghp_[A-Za-z0-9]{36}'''
+keywords = ["ghp_"]
+
+[[rules]]
+id = "sops-encrypted-value"
+description = "SOPS leftover: encrypted values do not belong in this repo either"
+regex = '''ENC\[(?:AES256_GCM|AES256),data:'''
+keywords = ["enc[aes256"]
+
+[[rules]]
+id = "age-secret-key"
+description = "age private key"
+regex = '''AGE-SECRET-KEY-1[0-9A-Z]{58}'''
+keywords = ["age-secret-key-1"]
+
+[[rules]]
+id = "backblaze-b2-application-key"
+description = "Backblaze B2 application key (secret part, K + 3 digits + 27 chars): Infisical only"
+regex = '''\bK00[0-9][A-Za-z0-9+/]{27}\b'''
+keywords = ["k00"]
+
+[[rules]]
+id = "argon2-phc-hash"
+description = "Argon2 PHC hash (e.g. Vaultwarden's ADMIN_TOKEN): lives in Infisical only"
+regex = '''\$argon2(?:id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]{16,}\$[A-Za-z0-9+/]{16,}'''
+keywords = ["$argon2"]
+
+[[rules]]
+id = "wireguard-private-key"
+description = "WireGuard private key (e.g. Surfshark's, for gluetun) assigned in config"
+regex = '''(?i)(?:wireguard_private_key|privatekey)\s*[:=]\s*["']?[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]='''
+keywords = ["wireguard_private_key", "privatekey"]
+
+[[rules]]
+id = "arr-api-key"
+description = "Sonarr/Radarr/Prowlarr/Bazarr/Seerr API key or qBittorrent password assigned in config"
+regex = '''(?i)(?:(?:sonarr|radarr|prowlarr|bazarr|seerr)_*(?:auth_*)?api_?key|qbittorrent_password)\s*[:=]\s*["']?[0-9a-f]{32,64}\b'''
+keywords = ["api_key", "apikey", "qbittorrent_password"]
+
+[[rules]]
+id = "personal-email"
+description = "An email address: personal data goes in Infisical /settings, not in the public repo"
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'''
+keywords = ["@"]
+[rules.allowlist]
+# Documentation/test domains (RFC 2606/6761), the lab's internal domain, noreply addresses.
+regexes = [
+  '''@(?:[A-Za-z0-9-]+\.)*(?:example\.(?:com|org|net|test)|example|test|invalid|localhost|local)$''',
+  '''@users\.noreply\.github\.com$''',
+  '''^noreply@''',
+  '''^git@github\.com$''',
+]
+
+[allowlist]
+description = "gitignored/generated paths (never committed)"
+paths = [
+  '''(^|/)\.terraform/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)\.ansible/''',
+  '''(^|/)node_modules/''',
+]

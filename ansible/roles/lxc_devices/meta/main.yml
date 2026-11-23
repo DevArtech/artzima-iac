@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: artzima
+  description: "Add devN passthrough and mpN bind-mount lines to LXCs (API tokens cannot)"
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies: []

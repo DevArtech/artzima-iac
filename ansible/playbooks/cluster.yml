@@ -1,0 +1,5 @@
+---
+- name: Proxmox cluster and QDevice
+  hosts: proxmox
+  roles:
+    - cluster

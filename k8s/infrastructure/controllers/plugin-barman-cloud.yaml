@@ -1,0 +1,35 @@
+---
+# CloudNativePG Barman Cloud plugin: off-site base backups + WAL archiving of every
+# CNPG Cluster to Backblaze B2 (S3 API). The current CNPG approach: the in-tree
+# `barmanObjectStore` is deprecated since CNPG 1.26 and removed in 1.32.
+# Needs CNPG >= 1.30 (we run 1.30.2) and cert-manager (for its gRPC TLS); lives in
+# the operator's namespace. Per cluster: an ObjectStore + spec.plugins (database.yaml
+# of each app), credentials via the ClusterExternalSecret b2-pg (k8s/secrets/backups).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: plugin-barman-cloud
+  namespace: cnpg-system
+spec:
+  interval: 1h
+  dependsOn:
+    - name: cloudnative-pg
+      namespace: cnpg-system
+    - name: cert-manager
+      namespace: cert-manager
+  chart:
+    spec:
+      chart: plugin-barman-cloud
+      version: "0.9.0" # plugin v0.16.0
+      sourceRef:
+        kind: HelmRepository
+        name: cnpg
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

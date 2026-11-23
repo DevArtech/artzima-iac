@@ -1,0 +1,268 @@
+---
+# qBittorrent, routed EXCLUSIVELY through Surfshark (WireGuard) by a gluetun
+# sidecar in the same pod (one network namespace). NOT public: tailnet only
+# (http://qbittorrent:8080 via the Tailscale operator); Sonarr/Radarr use the
+# ClusterIP Service. Design and caveats: docs/decisions.md "Media stack";
+# verification (public IP is Surfshark's): docs/manual-steps.md §10.
+#
+# Kill-switch: gluetun's firewall (default DROP, on by default) allows only
+#   - the VPN tunnel (everything else qBittorrent sends goes through it),
+#   - FIREWALL_OUTBOUND_SUBNETS = Talos pod + service CIDRs (cluster-vars), so
+#     replies to Sonarr/Radarr/the Tailscale proxy work; NOT the LAN,
+#   - FIREWALL_INPUT_PORTS 8080 (WebUI) and 9999 (gluetun health, for kubelet).
+# Order: seed-config -> gluetun (native sidecar, restartPolicy Always; its
+# startupProbe must pass, i.e. the tunnel is up, before qBittorrent starts at
+# all) -> qBittorrent. qBittorrent's readiness IS gluetun's health: the pod
+# leaves the Service while the VPN is down. iptables rules live in the pod's
+# network namespace and gluetun does not remove them on exit, so they stay in
+# force across a gluetun container restart. Second guard: qBittorrent itself is
+# bound to the tunnel interface tun0 (no tunnel, no BitTorrent traffic).
+# DNS: the whole pod resolves via gluetun's DNS on 127.0.0.1 (through the tunnel),
+# so tracker lookups don't leak to the cluster DNS / ISP either.
+#
+# Talos: /dev/net/tun exists (tun is built into the Talos kernel, no module or
+# extension needed); it is passed in as a hostPath char device, and runc's
+# default device allowlist includes tun (10:200). WireGuard itself runs in the
+# kernel (also built in); WIREGUARD_IMPLEMENTATION=auto falls back to userspace.
+# NET_ADMIN + hostPath is why namespace `media` is PSA "privileged".
+#
+# Surfshark has NO port forwarding: no incoming peer connections, so seeding
+# and some swarms are limited (expected, docs/decisions.md).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: qbittorrent
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+    controllers:
+      qbittorrent:
+        replicas: 1
+        strategy: Recreate # gluetun wiki: never two VPN pods during a rollout
+        pod:
+          # gluetun runs as root, so no pod-wide runAsNonRoot: set per container.
+          securityContext:
+            fsGroup: ${media_pgid}
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          dnsPolicy: None
+          dnsConfig:
+            nameservers:
+              - 127.0.0.1 # gluetun's DNS server (DoT through the tunnel)
+            options:
+              - name: ndots
+                value: "1"
+        initContainers:
+          # 1. WebUI user + password hash from Infisical; image's LAN auth bypass off.
+          seed-config:
+            image:
+              repository: docker.io/library/python
+              tag: 3.14.10-alpine3.24
+            command: ["python3", "-I", "/scripts/seed.py", "qbittorrent"]
+            env:
+              QBITTORRENT_USERNAME:
+                valueFrom:
+                  secretKeyRef:
+                    name: qbittorrent
+                    key: QBITTORRENT_USERNAME
+              QBITTORRENT_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: qbittorrent
+                    key: QBITTORRENT_PASSWORD
+            securityContext: &nonRoot
+              runAsNonRoot: true
+              runAsUser: ${media_puid}
+              runAsGroup: ${media_pgid}
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+          # 2. The VPN (native sidecar: runs for the pod's whole life).
+          gluetun:
+            image:
+              repository: docker.io/qmcgaw/gluetun
+              tag: v3.41.3
+            restartPolicy: Always
+            dependsOn: seed-config # render order: seed-config, gluetun
+            # gluetun wiki (Kubernetes): a restarted gluetun container finds the
+            # previous instance's policy rule in the shared netns and fails;
+            # drop it first, then exec the normal entrypoint.
+            command: ["/bin/sh", "-c"]
+            args:
+              - ip rule del table 51820 2>/dev/null; ip -6 rule del table 51820 2>/dev/null; exec /gluetun-entrypoint
+            env:
+              TZ: ${timezone}
+              VPN_SERVICE_PROVIDER: surfshark
+              VPN_TYPE: wireguard
+              WIREGUARD_PRIVATE_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: surfshark
+                    key: WIREGUARD_PRIVATE_KEY
+              WIREGUARD_ADDRESSES:
+                valueFrom:
+                  secretKeyRef:
+                    name: surfshark
+                    key: WIREGUARD_ADDRESSES
+              # OpenVPN fallback (docs/manual-steps.md §10): VPN_TYPE=openvpn plus
+              # OPENVPN_USER / OPENVPN_PASSWORD (Surfshark "service credentials").
+              SERVER_COUNTRIES: ${vpn_server_countries} # group_vars/all/media.yml (not secret)
+              VPN_INTERFACE: tun0 # qBittorrent is bound to it (seed.py, wire.py): second leak guard
+              FIREWALL_OUTBOUND_SUBNETS: ${k8s_pod_subnet},${k8s_service_subnet}
+              FIREWALL_INPUT_PORTS: "8080,9999"
+              HEALTH_SERVER_ADDRESS: ":9999" # default is loopback-only; kubelet probes need the pod IP
+              HTTP_CONTROL_SERVER_ADDRESS: "127.0.0.1:8000" # unused; keep it off the pod IP
+              DNS_KEEP_NAMESERVER: "off"
+              UPDATER_PERIOD: "0" # use the server list baked into the pinned image
+            probes:
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 9999
+                  periodSeconds: 5
+                  failureThreshold: 60 # 5 min to connect
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 9999
+                  periodSeconds: 10
+                  failureThreshold: 3
+              liveness:
+                enabled: false # gluetun reconnects by itself (HEALTH_RESTART_VPN)
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                add: ["NET_ADMIN"]
+            resources:
+              requests:
+                cpu: 20m
+                memory: 48Mi
+              limits:
+                memory: 256Mi
+        containers:
+          app:
+            image:
+              repository: ghcr.io/home-operations/qbittorrent
+              tag: "5.3.0"
+            env:
+              TZ: ${timezone}
+              UMASK: "002"
+              QBT_WEBUI_PORT: "8080"
+            probes:
+              # Ready only while the VPN is healthy (gluetun's health endpoint,
+              # same network namespace).
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 9999
+                  periodSeconds: 10
+                  failureThreshold: 3
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 8080
+                  periodSeconds: 30
+                  failureThreshold: 5
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 8080
+                  periodSeconds: 5
+                  failureThreshold: 60
+            securityContext: *nonRoot
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 2Gi
+    service:
+      app:
+        controller: qbittorrent
+        forceRename: qbittorrent
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: qbittorrent
+        ports:
+          http:
+            port: 8080
+    persistence:
+      config:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 1Gi
+        advancedMounts:
+          qbittorrent:
+            seed-config:
+              - path: /config
+            app:
+              - path: /config
+      data:
+        type: persistentVolumeClaim
+        existingClaim: media-data
+        advancedMounts:
+          qbittorrent:
+            app:
+              - path: /data
+      scripts:
+        type: configMap
+        name: media-scripts
+        advancedMounts:
+          qbittorrent:
+            seed-config:
+              - path: /scripts
+                readOnly: true
+      tun:
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        advancedMounts:
+          qbittorrent:
+            gluetun:
+              - path: /dev/net/tun
+      tmp:
+        type: emptyDir
+        advancedMounts:
+          qbittorrent:
+            app:
+              - path: /tmp

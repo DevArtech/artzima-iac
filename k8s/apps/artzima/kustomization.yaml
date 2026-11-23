@@ -1,0 +1,13 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../routes # generated from /apps.yaml: the only public routes
+  - ../external
+  - ../wizarr
+  - ../alexandria
+  - ../skyjo
+  - ../media
+  - ../vaultwarden
+  - ../paperless
+  - ../backups

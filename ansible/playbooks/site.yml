@@ -1,0 +1,20 @@
+---
+# Full bare-metal bring-up, in order. Each playbook also runs standalone.
+- name: Base config
+  ansible.builtin.import_playbook: common.yml
+- name: Networking
+  ansible.builtin.import_playbook: network.yml
+- name: Cluster and QDevice
+  ansible.builtin.import_playbook: cluster.yml
+- name: PBS
+  ansible.builtin.import_playbook: pbs.yml
+- name: Storage and backup jobs
+  ansible.builtin.import_playbook: storage.yml
+- name: UPS
+  ansible.builtin.import_playbook: nut.yml
+- name: Tailscale on hosts
+  ansible.builtin.import_playbook: tailscale.yml
+- name: GPU host and guest images
+  ansible.builtin.import_playbook: host-prep.yml
+- name: API token for OpenTofu
+  ansible.builtin.import_playbook: proxmox-api.yml

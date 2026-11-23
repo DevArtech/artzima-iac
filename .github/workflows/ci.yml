@@ -1,0 +1,42 @@
+---
+# Every PR (and main): the same checks as `make lint`, with the same pinned tools
+# (`make deps`): gitleaks + public-repo guard, yamllint, Python + render freshness +
+# secrets manifest, ansible syntax + ansible-lint, tofu fmt/validate/test (mocked
+# providers, no credentials), kustomize + kubeconform + helm template, flux build,
+# hadolint/actionlint/shellcheck. No secrets, read-only token: fork PRs run it too.
+# Renovate automerges patch/digest updates only after this passes (renovate.json).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {} # nothing by default
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      ARTZIMA_TOOLS: ${{ github.workspace }}/.tools
+    steps:
+      - name: Checkout (full history, gitleaks scans it)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+
+      - name: Install the pinned tools (scripts/install-tools.sh)
+        run: make deps
+
+      - name: make lint
+        run: make lint

@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: artzima
+  description: "OpenTofu/exporter users, role and API tokens (pushed to Infisical)"
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies: []

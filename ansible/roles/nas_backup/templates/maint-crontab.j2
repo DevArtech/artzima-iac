@@ -1,0 +1,6 @@
+# Managed by Ansible (role nas_backup). Retention of the NAS restic repo, container time (UTC).
+{% if nas_backup_paused | bool %}
+# PAUSED (backups.yml nas_backup_paused): no forget/prune while restores are verified.
+{% else %}
+{{ nas_backup_prune_cron }} /maint/maint.sh > /proc/1/fd/1 2>&1
+{% endif %}

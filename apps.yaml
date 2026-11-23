@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# PUBLIC APPS: the ONE list of everything published to the internet.
+#
+# Optional per entry:
+#   deny_paths: [/admin]  -> a generated route answers 403 for these path prefixes on
+#                            the public host (Traefik ipAllowList that matches nobody)
+#   access: never         -> Cloudflare Access may NOT be put in front (tofu/cloudflare
+#                            fails the plan); default "optional"
+#
+# Each entry becomes, with no other edit:
+#   - a Traefik IngressRoute  <name>.<domain> -> <namespace>/<service>:<port>
+#     (generated: k8s/apps/routes/routes.yaml, by `make render`)
+#   - a Cloudflare Tunnel ingress rule  <name>.<domain> -> Traefik
+#   - a proxied DNS CNAME  <name>.<domain> -> <tunnel-id>.cfargotunnel.com
+#     (tofu/cloudflare reads this file)
+#   - optionally a Cloudflare Access app + policy (tofu/cloudflare var.access_apps)
+#
+# Adding an app = add an entry here + `make render` + `make cf-plan cf-apply`.
+# `make lint` checks every route's Service/port exists in the rendered manifests
+# and that no other Ingress/IngressRoute publishes anything.
+# Plain YAML only (read by Python and OpenTofu).
+# ---------------------------------------------------------------------------
+# The domain (your Cloudflare zone) is NOT in this public repo: it is the
+# Infisical secret /settings/PUBLIC_DOMAIN (docs/secrets.md). Hostnames below
+# are <name>.<that domain>; generated routes use the Flux variable
+# ${public_domain}, filled in the cluster from Infisical by ESO.
+
+# The tunnel's single origin (every rule points here).
+traefik:
+  namespace: traefik
+  service: traefik
+  port: 80
+
+apps:
+  # --- Kubernetes apps -----------------------------------------------------
+  - name: wizarr
+    namespace: wizarr
+    service: wizarr
+    port: 5690
+  - name: alexandria # the OAuth proxy only; alexandria-mcp:8080 stays internal
+    namespace: alexandria
+    service: alexandria
+    port: 8081
+  - name: skyjo # one service: API (/api) + frontend on one origin
+    namespace: skyjo
+    service: skyjo
+    port: 8080
+  - name: grafana
+    namespace: monitoring
+    service: kube-prometheus-stack-grafana
+    port: 80
+  # Vaultwarden: the Bitwarden apps need DIRECT access, so `access: never` (tofu/cloudflare
+  # refuses Cloudflare Access for it). /admin is answered 403 on the public host by a
+  # generated Traefik route; the admin page is tailnet-only (k8s/apps/vaultwarden).
+  - name: vault
+    namespace: vaultwarden
+    service: vaultwarden
+    port: 80
+    access: never
+    deny_paths: [/admin]
+  - name: seerr # media requests (Jellyfin sign-in). The rest of the media stack is tailnet-only.
+    namespace: media
+    service: seerr
+    port: 5055
+  # --- outside Kubernetes (Service + EndpointSlice in k8s/apps/external) ---
+  - name: jellyfin
+    namespace: external
+    service: jellyfin
+    port: 80
+  - name: homeassistant
+    namespace: external
+    service: homeassistant
+    port: 80

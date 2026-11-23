@@ -1,0 +1,139 @@
+---
+# Nightly, encrypted, independent backup of Vaultwarden to the NAS:
+#   ${artnas_backups_path}/vaultwarden/vaultwarden-<UTC ts>-db.dump.gpg   pg_dump (custom format)
+#   ${artnas_backups_path}/vaultwarden/vaultwarden-<UTC ts>-data.tar.gpg  the /data dir
+# gpg symmetric AES256, passphrase = Infisical /k8s/vaultwarden/BACKUP_PASSPHRASE.
+# Keeps the newest vaultwarden_backup_keep (ansible/group_vars/all/lab.yml) of each.
+# Script: backup.sh (ConfigMap vaultwarden-backup-script). Restore: docs/manual-steps.md §12.
+# Run now: kubectl -n vaultwarden create job --from=cronjob/vaultwarden-backup vw-backup-now
+#
+# Static PV (not the StorageClass): a fixed NAS folder outside k8s/, Retain. The
+# folder is created by hand, owned by 1000:1000 (docs/manual-steps.md §3).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: vaultwarden-backups
+spec:
+  capacity:
+    storage: 20Gi # informational for NFS
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: vaultwarden
+    name: vaultwarden-backups
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - noatime
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: ${artnas_ip}#${artnas_backups_path}/vaultwarden##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_backups_path}/vaultwarden
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vaultwarden-backups
+  namespace: vaultwarden
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: vaultwarden-backups
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vaultwarden-backup
+  namespace: vaultwarden
+spec:
+  schedule: "45 3 * * *" # after the CNPG snapshot (03:15)
+  timeZone: ${timezone}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vaultwarden-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000 # same uid as Vaultwarden: reads /data, owns the NAS folder
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # Same major as the CNPG cluster (pg_dump must be >= the server); has gpg + tar.
+              image: docker.io/library/postgres:18.7-trixie
+              command: ["/bin/sh", "/scripts/backup.sh"]
+              args: ["--keep=${vaultwarden_backup_keep}"]
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: vaultwarden-db-app # CNPG-generated
+                      key: uri
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: passphrase
+                  mountPath: /secrets
+                  readOnly: true
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: scripts
+              configMap:
+                name: vaultwarden-backup-script
+            - name: passphrase
+              secret:
+                secretName: vaultwarden-backup
+                items:
+                  - key: BACKUP_PASSPHRASE
+                    path: BACKUP_PASSPHRASE
+            - name: data
+              persistentVolumeClaim:
+                claimName: vaultwarden-data
+                readOnly: true
+            - name: backups
+              persistentVolumeClaim:
+                claimName: vaultwarden-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

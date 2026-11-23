@@ -1,0 +1,7 @@
+---
+# PVE nodes get a VLAN-aware bridge; PBS gets a plain interface.
+network_bridge: "{{ 'pve_nodes' in group_names }}"
+network_bridge_name: vmbr0
+network_bridge_vids: "2-4094"
+# Apply with ifreload -a (ifupdown2). Set false to only write the file.
+network_apply: true

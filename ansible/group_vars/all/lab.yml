@@ -1,0 +1,44 @@
+---
+# Non-network lab facts. Plain YAML (no Jinja): also read by OpenTofu and the
+# render scripts. Secrets: Infisical (secrets.yml next to this file, docs/secrets.md).
+
+pve_cluster_name: artzima
+pbs_datastore_name: artzima
+timezone: America/New_York # TODO: confirm the lab's timezone
+keyboard: en-us
+country: us
+# Personal data is NOT in this public repo. In Infisical /settings:
+#   ADMIN_EMAIL     mailbox for Proxmox notifications (answer files)
+#   ADMIN_SSH_KEYS  root SSH public keys, one per line (hosts, LXCs, answer files)
+# Ansible reads them in secrets.yml, OpenTofu in tofu/infisical.tf, the answer
+# server from the environment (`make answer-server`).
+
+# NFS share on the UGREEN NAS (configured by hand, see docs/manual-steps.md).
+artnas_export: /volume1/Artzima
+artnas_k8s_subdir: k8s # -> /volume1/Artzima/k8s for the k8s StorageClass
+# App-level backups written by CronJobs (static NFS PVs, Retain), e.g.
+# /volume1/Artzima/backups/vaultwarden. Create the folders by hand (docs/manual-steps.md §3).
+artnas_backups_subdir: backups
+# Paperless-ngx documents (static NFS PVs, Retain): <artnas_export>/paperless/{data,media,consume}.
+artnas_paperless_subdir: paperless
+
+# Vaultwarden nightly encrypted backup (k8s/apps/vaultwarden/backup.yaml): how many
+# timestamped copies of each kind (data dir, pg_dump) to keep on the NAS.
+vaultwarden_backup_keep: 14
+
+# NTP pools for chrony.
+ntp_servers:
+  - 0.debian.pool.ntp.org
+  - 1.debian.pool.ntp.org
+  - 2.debian.pool.ntp.org
+  - 3.debian.pool.ntp.org
+
+# Name of the pinned primary NIC (installer interface-name pinning by MAC).
+primary_nic_name: lan0
+
+# Guest images (read by Ansible guest_images and by OpenTofu).
+# HAOS 18.5 is a Raspberry-Pi-only release; 18.4 is the current x86 OVA.
+haos_version: "18.4"
+
+# Public apps, the public domain and the Cloudflare Tunnel hostnames live in
+# ONE file: /apps.yaml (repo root). Not here.

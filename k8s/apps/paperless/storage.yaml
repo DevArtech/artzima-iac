@@ -1,0 +1,121 @@
+---
+# Paperless-ngx storage: fixed NAS folders (static NFS PVs, Retain), NOT the
+# dynamic StorageClass. The documents must outlive any cluster rebuild and stay
+# where the operator can find them:
+#   ${artnas_paperless_path}/data      search index, classifier, logs
+#   ${artnas_paperless_path}/media     originals + archived (OCR'd) PDFs + thumbnails
+#   ${artnas_paperless_path}/consume   drop folder (polled: inotify doesn't work on NFS)
+#   ${artnas_backups_path}/paperless   nightly document_exporter target (export.yaml)
+# Create the folders on the NAS first (docs/manual-steps.md §13). Paperless' own init
+# chowns its folders to USERMAP_UID/GID (1000) at start.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: paperless-data
+spec:
+  capacity:
+    storage: 10Gi # informational for NFS
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef: { namespace: paperless, name: paperless-data }
+  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: ${artnas_ip}#${artnas_paperless_path}/data##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_paperless_path}/data
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: paperless-media
+spec:
+  capacity:
+    storage: 200Gi
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef: { namespace: paperless, name: paperless-media }
+  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: ${artnas_ip}#${artnas_paperless_path}/media##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_paperless_path}/media
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: paperless-consume
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef: { namespace: paperless, name: paperless-consume }
+  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: ${artnas_ip}#${artnas_paperless_path}/consume##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_paperless_path}/consume
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: paperless-export
+spec:
+  capacity:
+    storage: 200Gi
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef: { namespace: paperless, name: paperless-export }
+  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: ${artnas_ip}#${artnas_backups_path}/paperless##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_backups_path}/paperless
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: paperless-data, namespace: paperless }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: paperless-data
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: paperless-media, namespace: paperless }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: paperless-media
+  resources: { requests: { storage: 200Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: paperless-consume, namespace: paperless }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: paperless-consume
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: paperless-export, namespace: paperless }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: paperless-export
+  resources: { requests: { storage: 200Gi } }

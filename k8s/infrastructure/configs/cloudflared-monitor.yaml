@@ -1,0 +1,15 @@
+---
+# Lives in configs (after controllers) because the ServiceMonitor CRD comes
+# from kube-prometheus-stack.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  endpoints:
+    - port: metrics
+      interval: 60s

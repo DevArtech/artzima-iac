@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: artzima
+  description: "NUT: host01 netserver (GOLDENMATE UPS), lab netclients"
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies: []

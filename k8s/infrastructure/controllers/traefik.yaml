@@ -1,0 +1,77 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: traefik
+  namespace: traefik
+spec:
+  interval: 1h
+  dependsOn: # its ServiceMonitor/PodMonitor CRDs come from kube-prometheus-stack
+    - name: kube-prometheus-stack
+      namespace: monitoring
+  chart:
+    spec:
+      chart: traefik
+      version: "42.4.1"
+      sourceRef:
+        kind: HelmRepository
+        name: traefik
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  # Traefik is THE reverse proxy for every app, in and outside the cluster.
+  # It is only reachable inside the cluster (ClusterIP). The single way in from
+  # outside is the Cloudflare Tunnel (cloudflared.yaml), whose only origin is
+  # http://traefik.traefik.svc.cluster.local:80. TLS terminates at Cloudflare.
+  #
+  # OPTIONAL (off): LAN access without the tunnel. Needs a LoadBalancer
+  # implementation (e.g. MetalLB/Cilium L2) and then:
+  #   service: { spec: { type: LoadBalancer, loadBalancerIP: <lab IP> } }
+  # or, without one, `ports.web.hostPort: 80` on each node. Either exposes Traefik
+  # to the whole LAN: see docs/decisions.md before enabling.
+  values:
+    deployment:
+      kind: Deployment
+      replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    service:
+      enabled: true
+      spec:
+        type: ClusterIP # chart default is LoadBalancer: keep it cluster-internal
+    ingressClass:
+      enabled: true
+      isDefaultClass: true
+    ports:
+      web:
+        # Plain HTTP from cloudflared. Do NOT redirect to https here:
+        # Cloudflare already redirects at the edge, so a redirect here loops.
+        forwardedHeaders:
+          # Trust X-Forwarded-* only from pods (cloudflared). Talos pod CIDR
+          # (network.yml k8s_pod_subnet, via cluster-vars).
+          trustedIPs:
+            - ${k8s_pod_subnet}
+      websecure:
+        expose:
+          default: false # nothing outside needs 443 on Traefik
+    providers:
+      kubernetesIngress:
+        enabled: true
+        publishedService:
+          enabled: false
+      kubernetesCRD:
+        enabled: true
+        allowExternalNameServices: false
+    metrics:
+      prometheus:
+        serviceMonitor:
+          enabled: true
+    accessLog:
+      enabled: true

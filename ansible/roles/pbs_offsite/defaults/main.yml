@@ -1,0 +1,10 @@
+---
+# Settings live in ansible/group_vars/all/backups.yml (pbs_b2_*, b2_*).
+pbs_offsite_endpoint_id: b2
+pbs_offsite_sync_job_id: "{{ pbs_b2_datastore }}-sync"
+pbs_offsite_prune_job_id: "{{ pbs_b2_datastore }}-prune"
+# Re-creating PBS after losing the box: true attaches the EXISTING datastore in the
+# bucket instead of initializing a new one (docs/backups.md "PBS restore from B2").
+pbs_offsite_reuse_datastore: false
+# PBS 4.2 made S3 datastores fully supported (tech preview before).
+pbs_offsite_min_version: "4.2"

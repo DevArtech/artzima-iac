@@ -1,0 +1,8 @@
+---
+- name: Rebuild initramfs
+  ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true
+
+- name: Reboot reminder
+  ansible.builtin.debug:
+    msg: "Reboot {{ inventory_hostname }}, then check `nvidia-smi` and `ls -l /dev/nvidia*` against lxc_devices in hosts.yml."

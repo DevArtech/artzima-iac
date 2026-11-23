@@ -1,0 +1,109 @@
+---
+- name: Install NUT
+  ansible.builtin.apt:
+    name: "{{ ['nut'] if nut_is_server else ['nut-client'] }}"
+    state: present
+
+- name: Write nut.conf (netserver on the UPS host, netclient elsewhere)
+  ansible.builtin.copy:
+    dest: /etc/nut/nut.conf
+    owner: root
+    group: nut
+    mode: "0640"
+    content: |
+      # {{ ansible_managed }}
+      MODE={{ 'netserver' if nut_is_server else 'netclient' }}
+  notify: Restart nut
+
+- name: Server config
+  when: nut_is_server
+  block:
+    - name: Write ups.conf, upsd.conf, upsd.users, upssched.conf
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/nut/{{ item }}"
+        owner: root
+        group: nut
+        mode: "0640"
+      loop: [ups.conf, upsd.conf, upsd.users, upssched.conf]
+      notify: Restart nut
+
+    - name: Install the upssched command script
+      ansible.builtin.template:
+        src: upssched-cmd.j2
+        dest: /usr/local/sbin/upssched-cmd
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Enable driver and server
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [nut-driver.target, nut-server]
+
+- name: Write upsmon.conf
+  ansible.builtin.template:
+    src: upsmon.conf.j2
+    dest: /etc/nut/upsmon.conf
+    owner: root
+    group: nut
+    mode: "0640"
+  notify: Restart nut
+
+- name: Enable upsmon
+  ansible.builtin.service:
+    name: nut-monitor
+    enabled: true
+    state: started
+
+# ---------------------------------------------------------------------------
+# TODO (2026-11-22): after the forced shutdown the UPS did NOT cut its outlets,
+# i.e. killpower never fired. Possible causes to check:
+#   1. POWERDOWNFLAG missing in upsmon.conf, so upsmon -K returns false.
+#   2. The systemd-shutdown hook (nutshutdown) is missing or not executable.
+#   3. The UPS ignores usbhid-ups shutdown commands (cheap HID UPSes often
+#      need offdelay/ondelay tuning or don't support shutdown.return).
+# The tasks below only CHECK and report; they never power anything off.
+# ---------------------------------------------------------------------------
+- name: Killpower checks (primary only)
+  when: nut_is_server
+  tags: [nut_check]
+  block:
+    - name: Check POWERDOWNFLAG in upsmon.conf
+      ansible.builtin.command: grep -E '^POWERDOWNFLAG' /etc/nut/upsmon.conf
+      register: nut_pdf
+      changed_when: false
+      failed_when: false
+
+    - name: Find the nut-shutdown hook
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/lib/systemd/system-shutdown/nutshutdown
+        - /lib/systemd/system-shutdown/nutshutdown
+      register: nut_hook
+
+    - name: List instant commands the UPS supports
+      ansible.builtin.command: upscmd -l {{ nut_ups_name }}@localhost
+      register: nut_cmds
+      changed_when: false
+      failed_when: false
+
+    - name: Dry-run the driver shutdown (prints, does not cut power)
+      ansible.builtin.command: upsdrvctl -t shutdown {{ nut_ups_name }}
+      register: nut_dry
+      changed_when: false
+      failed_when: false
+
+    - name: Report killpower readiness
+      ansible.builtin.debug:
+        msg:
+          powerdownflag_set: "{{ nut_pdf.rc == 0 }}"
+          shutdown_hook_present: "{{ nut_hook.results | selectattr('stat.exists') | list | length > 0 }}"
+          ups_supports_shutdown_cmds: "{{ nut_cmds.stdout is search('shutdown\\.(return|stayoff)|load\\.off\\.delay') }}"
+          dry_run: "{{ nut_dry.stdout_lines + nut_dry.stderr_lines }}"
+          next_step: >-
+            If all true and outlets still stay on, test on a non-critical load:
+            `upsmon -c fsd` with a lamp plugged in, then check `journalctl -b -1 -u nut-*`.

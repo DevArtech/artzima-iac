@@ -1,0 +1,86 @@
+---
+# FlareSolverr: OPTIONAL. Only some (Cloudflare-protected) public indexers need
+# it. Off by default (`suspend: true` = Flux never installs it; `make lint`
+# still renders and validates it). To turn it on:
+#   1. set `suspend: false` below, commit, push;
+#   2. set FLARESOLVERR_URL in k8s/apps/media/wiring.yaml to
+#      http://flaresolverr.media.svc.cluster.local:8191 (the media-wiring Job then
+#      adds it to Prowlarr as an indexer proxy with the tag `flaresolverr`);
+#   3. in Prowlarr, give the indexers that need it the tag `flaresolverr`.
+# Note: its traffic does NOT go through the VPN (only qBittorrent does).
+# Internal only: no Tailscale or public exposure.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flaresolverr
+  namespace: media
+spec:
+  suspend: true
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # the image's `flaresolverr` user
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      flaresolverr:
+        containers:
+          app:
+            image:
+              repository: ghcr.io/flaresolverr/flaresolverr
+              tag: v3.5.2
+            env:
+              TZ: ${timezone}
+              LOG_LEVEL: info
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 8191
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+              readiness: *probe
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                memory: 1Gi # headless Chromium
+    service:
+      app:
+        controller: flaresolverr
+        forceRename: flaresolverr
+        ports:
+          http:
+            port: 8191
+    persistence:
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

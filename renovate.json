@@ -1,0 +1,95 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Everything in this repo is pinned; Renovate proposes the bumps. Patch + digest updates automerge once CI (.github/workflows/ci.yml) is green; minor updates wait for a human merge; MAJOR updates need an explicit approval on the Dependency Dashboard first. docs/OPERATOR-SETUP.md 'later'.",
+  "extends": ["config:recommended", ":dependencyDashboard", ":disableRateLimiting"],
+  "timezone": "Etc/UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 10,
+  "rebaseWhen": "conflicted",
+  "flux": { "managerFilePatterns": ["/^k8s/.+\\.ya?ml$/"] },
+  "kubernetes": { "managerFilePatterns": ["/^k8s/.+\\.ya?ml$/"] },
+  "helm-values": { "managerFilePatterns": ["/^k8s/.+\\.ya?ml$/"] },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tool pins with a '# renovate:' annotation (scripts/install-tools.sh)",
+      "managerFilePatterns": ["/^scripts/install-tools\\.sh$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( extractVersion=(?<extractVersion>\\S+))?\\n[A-Z0-9_]+=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Images pinned in the generator (scripts/render.py) and its output: bumped together in one PR, so `make render --check` stays green",
+      "managerFilePatterns": ["/^scripts/render\\.py$/"],
+      "matchStrings": ["\"(?<depName>(?:docker\\.io|ghcr\\.io)/[^:\"]+):(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "NAS containers (Backrest + restic maintenance), ansible/group_vars/all/backups.yml",
+      "managerFilePatterns": ["/^ansible/group_vars/all/backups\\.yml$/"],
+      "matchStrings": [
+        "nas_backrest_image: (?<depName>\\S+)\\nnas_backrest_tag: (?<currentValue>\\S+)",
+        "nas_restic_image: (?<depName>\\S+)\\nnas_restic_tag: \"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Groups: one PR per area",
+      "matchManagers": ["flux"],
+      "groupName": "flux helm charts"
+    },
+    {
+      "matchManagers": ["kubernetes", "helm-values"],
+      "groupName": "container images"
+    },
+    {
+      "matchFileNames": ["scripts/render.py", "k8s/apps/backups/maintenance.yaml"],
+      "groupName": "backup maintenance images"
+    },
+    {
+      "matchManagers": ["terraform"],
+      "groupName": "opentofu providers"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "matchManagers": ["ansible-galaxy"],
+      "groupName": "ansible collections"
+    },
+    {
+      "matchFileNames": ["scripts/install-tools.sh"],
+      "groupName": "workstation tools"
+    },
+    {
+      "description": "Patch + digest: automerge after CI passes",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Minor: PR, a human merges",
+      "matchUpdateTypes": ["minor"],
+      "automerge": false
+    },
+    {
+      "description": "Major: needs approval on the Dependency Dashboard, never automerged",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "Talos, Kubernetes, Proxmox-facing tools: never automerge (cluster upgrades are a manual runbook)",
+      "matchPackageNames": ["siderolabs/talos", "kubernetes/kubernetes", "ghcr.io/siderolabs/**"],
+      "automerge": false
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+---
+- name: NUT server on host01
+  hosts: host01
+  roles:
+    - nut
+
+- name: NUT clients
+  hosts: proxmox:!host01
+  roles:
+    - nut

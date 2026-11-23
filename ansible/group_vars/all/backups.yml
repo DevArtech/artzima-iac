@@ -1,0 +1,172 @@
+---
+# Off-site backups to Backblaze B2: THE one list of what goes where.
+# Plain YAML (no Jinja): read by
+#   - tofu/backblaze          (buckets, lifecycle rules, scoped keys -> Infisical)
+#   - scripts/render.py        (cluster-vars + the generated VolSync/restic manifests:
+#                               k8s/apps/backups/volsync.yaml, k8s/secrets/backups/restic.yaml)
+#   - Ansible pbs_offsite role (PBS S3 datastore + sync job)
+# Everything, schedules, retention and restore runbooks: docs/backups.md.
+
+# ---------------------------------------------------------------- Backblaze B2
+# Region of your B2 account (it decides the S3 endpoint; shown in the B2 web UI
+# next to the bucket, e.g. us-east-005, eu-central-003).
+b2_region: us-east-005
+b2_s3_endpoint: s3.us-east-005.backblazeb2.com
+
+# Bucket names are GLOBAL across all of B2: if one is taken, pick another suffix.
+b2_buckets:
+  pg: artzima-pg # CNPG base backups + WAL (barman-cloud plugin)
+  restic: artzima-restic # VolSync/restic repositories of app volumes and NAS folders
+  pbs: artzima-pbs # Proxmox Backup Server S3 datastore
+
+# B2 keeps every version: a delete only "hides" a file. Hidden files are purged
+# after this many days (the tools' own retention decides what gets hidden).
+b2_days_hidden_to_deleted: 7
+
+# Object Lock (governance mode): every uploaded version is undeletable for N days,
+# even by a leaked key or the lifecycle rule (0 = off). Only for NEW buckets (B2 can't
+# add it later). restic, barman and Backrest work with it: their deletes are "hides"
+# (docs/backups.md "Immutability"). PBS: off until verified.
+b2_object_lock_days:
+  pg: 30
+  restic: 30
+  nas: 30
+  pbs: 0
+
+# ---------------------------------------------------------------- Postgres (CNPG)
+# Retention of base backups + WAL (point-in-time recovery window): <N>d, <N>w or <N>m.
+# Enforced by the <cluster>-retention CronJobs with the MAINTENANCE key (maintenance.yaml).
+backup_pg_retention: 30d
+
+# ---------------------------------------------------------------- restic (VolSync)
+backup_restic_keep_daily: 7
+backup_restic_keep_weekly: 4
+backup_restic_keep_monthly: 6
+# Retention (forget + prune) runs with the separate MAINTENANCE key, never the movers'
+# (CronJob backup/restic-maintenance, generated; UTC; outside the backup hours).
+backup_restic_maint_cron: "0 9 * * 0"
+# Same for Postgres: barman-cloud-backup-delete per CNPG cluster (backup_pg_retention).
+backup_pg_maint_cron: "30 9 * * 0"
+
+# ---------------------------------------------------------------- monthly self-checks
+# PASS/FAIL CronJobs (label artzima.io/self-check; a FAIL alerts, `make verify` shows it):
+#   backup/restic-restore-test   restores ONE VolSync repository (a different one each
+#                                month), `restic check` 5% + full restore with --verify
+#   <ns>/<cluster>-restore-test  recovers each CNPG cluster from B2 into a scratch
+#                                cluster (storage nfs-artnas-scratch), queries it, deletes it
+self_check_restic_cron: "0 7 1 * *"
+self_check_restic_max_gib: 20 # bigger snapshots: check only (scratch is node-local emptyDir)
+self_check_pg_day: 2 # day of month; clusters start at 07:00, 08:00, ... UTC
+
+# DISASTER RECOVERY switch (docs/disaster-recovery.md): true pauses EVERY VolSync
+# source (spec.paused), so a rebuilt cluster can't back up its still-EMPTY volumes into
+# the existing repos (retention would then push the last good snapshots out). Set true
+# before the first Flux sync of a rebuild; back to false once all restores are verified.
+backup_volsync_paused: false
+
+# App volumes and NAS folders backed up with VolSync's restic mover (one restic
+# repository per entry: s3:<endpoint>/<restic bucket>/<namespace>/<pvc>).
+# hour = start hour in UTC (VolSync cron); entries in the same hour are staggered by 7 minutes.
+# uid/gid = who the mover runs as (must be able to read the files).
+backup_volumes:
+  - { namespace: vaultwarden, pvc: vaultwarden-data, uid: 1000, gid: 1000, hour: 1 }
+  - { namespace: paperless, pvc: paperless-media, uid: 1000, gid: 1000, hour: 1 }
+  - { namespace: paperless, pvc: paperless-data, uid: 1000, gid: 1000, hour: 1 }
+  - { namespace: paperless, pvc: paperless-export, uid: 1000, gid: 1000, hour: 3 }
+  - { namespace: alexandria, pvc: alexandria-library, uid: 10001, gid: 10001, hour: 1 }
+  - { namespace: monitoring, pvc: kube-prometheus-stack-grafana, uid: 472, gid: 472, hour: 1 }
+  - { namespace: media, pvc: sonarr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: radarr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: lidarr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: prowlarr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: bazarr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: qbittorrent, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: seerr, uid: 1000, gid: 1000, hour: 4 }
+  # Home Assistant backups: HA writes its own backups to this NAS folder (network
+  # storage in HA, docs/backups.md); a static PV in namespace `backup` exposes it.
+  # read_only: the PV is mounted read-only; `make dr-volsync-restore` skips it (restore
+  # HA backups into a scratch folder by hand, docs/disaster-recovery.md).
+  - { namespace: backup, pvc: homeassistant-backups, uid: 0, gid: 0, hour: 5, read_only: true }
+
+# The NAS media library (/volume1/Artzima/data/media) and the operator's PERSONAL
+# shares (outside the lab, never written by this repo) go to B2 one of three ways:
+#   restic-on-nas (DEFAULT) restic, run ON THE NAS by Backrest in Docker (Ansible role
+#             nas_backup, `make nas-backup`): independent of the lab, keeps running during
+#             a wipe. Its own bucket (b2_bucket_nas) + scoped key from tofu/backblaze, its own
+#             restic password; shares mounted READ-ONLY. Replaces the unreliable UGOS job
+#             (migration: docs/backups.md "NAS media and personal files").
+#   existing  the old UGOS backup app job (kept as an option; record: nas_existing_backup).
+#   off       nothing, documented as not backed up off-site.
+backup_nas_media: restic-on-nas
+
+# The dedicated bucket (tofu/backblaze creates it only in mode restic-on-nas).
+b2_bucket_nas: artzima-nas
+
+# Personal shares to back up, READ-ONLY (they live outside /volume1/Artzima; the repo
+# never writes there). TODO: fill in after inspecting the NAS (`ls /volume1`).
+# Example: - { name: photos, path: /volume1/Photos }
+nas_personal_shares: []
+
+# ---- Backrest on the NAS (mode restic-on-nas; Ansible role nas_backup)
+# Everything Backrest writes lives here (config, data, cache, restores): inside the lab
+# share, like every other NAS write of this repo.
+nas_backrest_subdir: backrest # -> /volume1/Artzima/backrest
+nas_backrest_image: ghcr.io/garethgeorge/backrest
+nas_backrest_tag: v1.14.1
+# restic for the maintenance container (forget/prune with the maintenance key)
+nas_restic_image: docker.io/restic/restic
+nas_restic_tag: "0.20.0"
+# Web UI: published on the NAS LAN address only (reachable on the LAN and over the
+# Tailscale subnet routers; never port-forwarded). Login: Infisical /ansible/NAS_BACKREST_*.
+nas_backrest_port: 9898
+# Schedules (cron, NAS local time). restic is ALWAYS incremental (only changes are
+# uploaded); "daily" is the normal run, "weekly" re-reads every file (--force) to catch
+# changes that size/mtime don't show. Start times = the schedule window.
+nas_backup_media_daily_cron: "0 1 * * *"
+nas_backup_media_weekly_cron: "0 3 * * 0"
+nas_backup_personal_cron: "30 0 * * *"
+nas_backup_check_cron: "0 5 1 * *" # monthly `restic check --read-data-subset=5%`
+nas_backup_check_percent: 5
+nas_backup_prune_cron: "0 6 * * 6" # forget + prune (maintenance container, UTC)
+nas_backup_keep_daily: 7
+nas_backup_keep_weekly: 4
+nas_backup_keep_monthly: 12
+# Upload limit in KiB/s for ALL runs (0 = unlimited). Keeps the first multi-TB upload
+# from saturating the apartment uplink; e.g. 2500 KiB/s ~ 20 Mbit/s.
+nas_backup_upload_limit_kib: 2500
+# DISASTER RECOVERY switch: true disables every Backrest plan schedule (the container and
+# UI still run, for restores). Keep true on a NEW NAS until its data is restored from B2,
+# or the empty NAS would become the "latest" snapshot (docs/disaster-recovery.md).
+nas_backup_paused: false
+# Optional hard window: stop a still-running backup at this hour (UGOS task scheduler
+# restarts the container; restic resumes from already-uploaded data next run).
+# null = no hard stop. Documented in docs/backups.md.
+nas_backup_window_stop_hour: null
+
+# ---- mode "existing" only: the old UGOS job, for the record (placeholders)
+nas_existing_backup:
+  app: "UGOS backup app (TODO: exact app name)"
+  job_name: "TODO: job name in UGOS"
+  bucket: "TODO: B2 bucket name"
+  prefix: "TODO: folder/prefix in the bucket, if any"
+  schedule: "TODO: e.g. daily 02:00"
+  sources: "TODO: e.g. /volume1/Artzima/data/media, /volume1/Photos"
+  versions_kept: "TODO"
+  encryption: "TODO: client-side encryption on/off (password kept where?)"
+  notes: "TODO: unreliable per the operator; to be retired after the Backrest migration"
+
+# Home Assistant's backup folder on the NAS (inside artnas_export).
+artnas_homeassistant_backups_subdir: homeassistant/backups
+
+# ---------------------------------------------------------------- PBS -> B2
+# PBS 4.2+ S3 datastore on the B2 bucket, filled by a local sync job from the
+# local datastore (Ansible: make pbs-offsite).
+pbs_b2_datastore: b2 # also the object prefix in the bucket: keep it stable
+# Local cache for the S3 datastore (PBS wants 64-128 GiB, NOT on the local datastore).
+pbs_b2_cache_path: /mnt/datastore-cache/b2
+pbs_b2_sync_schedule: "04:30"
+pbs_b2_prune_schedule: "daily"
+pbs_b2_gc_schedule: "sat 06:00"
+pbs_b2_keep_daily: 7
+pbs_b2_keep_weekly: 4
+pbs_b2_keep_monthly: 6

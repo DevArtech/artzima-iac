@@ -1,0 +1,26 @@
+---
+nut_server_host: host01 # inventory host with the UPS on USB
+nut_is_server: "{{ inventory_hostname == nut_server_host }}"
+nut_port: 3493
+
+nut_ups_name: goldenmate
+nut_ups:
+  driver: usbhid-ups
+  port: auto
+  vendorid: "075d"
+  productid: "0300"
+  offdelay: 120
+  ondelay: 150
+  desc: "GOLDENMATE 1000VA (USB on host01)"
+
+# Alias the UGREEN NAS polls. It only knows the name "ups0".
+nut_alias_name: ups0
+
+nut_hostsync: 15
+nut_onbatt_timer: 30 # seconds on battery before upssched forces FSD
+nut_powerdownflag: /etc/killpower
+
+# The NAS logs in as monuser/secret (UGOS default; cannot be changed there).
+# Read-only secondary: it can only watch and shut itself down.
+nut_nas_user: monuser
+nut_nas_password: secret # noqa: no-hardcoded-secrets  (fixed by UGOS)

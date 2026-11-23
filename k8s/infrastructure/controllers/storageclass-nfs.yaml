@@ -1,0 +1,56 @@
+---
+# Plain StorageClass (no CRDs needed), so PVCs of the charts in this same
+# Kustomization can bind on first install. `$${...}` is Flux's escape: the
+# driver receives ${pvc.metadata.namespace} etc. and templates the subdir.
+#
+# reclaimPolicy Retain: deleting a PVC (or a whole namespace, or the cluster)
+# NEVER deletes data on the NAS; the PV goes "Released" and its folder stays.
+# The NAS survives lab rebuilds (README "What survives the wipe"), and a rebuilt
+# cluster finds the same <namespace>/<pvc> folders again. Cleaning up a released
+# PV is a manual step (docs/manual-steps.md §11). StorageClass fields are
+# immutable: the force annotation lets Flux re-create it if this ever changes
+# (existing PVs keep their own policy; `kubectl patch pv` them if needed).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-artnas
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+    kustomize.toolkit.fluxcd.io/force: enabled
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: ${artnas_ip}
+  share: ${artnas_k8s_path}
+  subDir: $${pvc.metadata.namespace}/$${pvc.metadata.name}
+  onDelete: retain # only used if a PV is ever deleted by the driver: keep the folder
+mountOptions:
+  - nfsvers=4.1
+  - hard
+  - noatime
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+# SCRATCH only: the monthly Postgres restore tests (k8s/apps/backups/maintenance.yaml)
+# recover into throw-away CNPG clusters here. reclaimPolicy Delete + onDelete delete:
+# the folder under <k8s share>/_scratch/ is removed together with the test cluster.
+# The ONE exception to "Retain" (make lint allows Delete only for this class, only
+# under _scratch/). Never use it for real data.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-artnas-scratch
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: ${artnas_ip}
+  share: ${artnas_k8s_path}
+  subDir: _scratch/$${pvc.metadata.namespace}/$${pvc.metadata.name}
+  onDelete: delete
+mountOptions:
+  - nfsvers=4.1
+  - hard
+  - noatime
+reclaimPolicy: Delete
+volumeBindingMode: Immediate

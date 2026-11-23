@@ -1,0 +1,22 @@
+---
+storage_nfs_id: artnas
+storage_nfs_content: backup,iso,vztmpl,snippets,import
+storage_nfs_options: vers=4.1
+storage_pbs_id: pbs
+storage_pbs_user: pve@pbs
+
+# Cluster-wide backup job to PBS (PBS does pruning: see the pbs role).
+storage_backup_jobs:
+  - id: artzima-nightly
+    schedule: "02:30"
+    storage: pbs
+    mode: snapshot
+    all: 1
+    # Talos nodes are cattle (rebuilt by OpenTofu); etcd is backed up separately.
+    exclude: "{{ groups['talos'] | map('extract', hostvars, 'host_index') | join(',') }}"
+    compress: zstd
+    notes_template: "{{ '{{guestname}}' }}"
+    prune_backups: keep-all=1
+
+# Enable the "import" content on local storage (HAOS qcow2 import, PVE >= 8.4).
+storage_local_content: iso,vztmpl,backup,import

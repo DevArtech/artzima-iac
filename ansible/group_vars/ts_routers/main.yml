@@ -1,0 +1,9 @@
+---
+# Subnet routers: advertise the lab subnet. Two routers advertising the same
+# route = Tailscale HA failover (only one is primary at a time).
+tailscale_authkey_var: tailscale_router_authkey
+tailscale_advertise_routes:
+  - "{{ lab_subnet }}"
+tailscale_accept_dns: false
+tailscale_tags:
+  - tag:subnet-router

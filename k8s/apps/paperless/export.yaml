@@ -1,0 +1,105 @@
+---
+# Nightly `document_exporter` (Paperless' own portable backup: documents + thumbnails
+# + manifest.json with all metadata) into ${artnas_backups_path}/paperless, mounted in
+# the Paperless pod at /usr/src/paperless/export (storage.yaml).
+# It is INCREMENTAL MIRROR mode: --compare-checksums rewrites only changed files,
+# --delete removes files of documents deleted in Paperless. Versions/history come
+# from the off-site restic backup of this folder (docs/backups.md).
+# Runs inside the live container (the exporter wrapper needs its s6 environment),
+# via `kubectl exec` with a ServiceAccount that may ONLY exec into pods here.
+# Restore: `document_importer` (docs/manual-steps.md §13.4).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: paperless-exporter
+  namespace: paperless
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: paperless-exporter
+  namespace: paperless
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["paperless"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: paperless-exporter
+  namespace: paperless
+subjects:
+  - kind: ServiceAccount
+    name: paperless-exporter
+    namespace: paperless
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: paperless-exporter
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: paperless-export
+  namespace: paperless
+spec:
+  schedule: "30 2 * * *"
+  timeZone: ${timezone}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 14400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: paperless-export
+        spec:
+          restartPolicy: Never
+          serviceAccountName: paperless-exporter
+          automountServiceAccountToken: true # kubectl needs it
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: export
+              image: registry.k8s.io/kubectl:v1.36.6
+              command:
+                - kubectl
+                - --namespace=paperless
+                - exec
+                - deploy/paperless
+                - --container=app
+                - --
+                - document_exporter
+                - /usr/src/paperless/export
+                - --compare-checksums
+                - --delete
+                - --no-progress-bar
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi

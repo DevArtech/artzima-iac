@@ -1,0 +1,12 @@
+---
+common_upgrade: true # apt dist-upgrade on each run (set false for quick runs)
+common_packages:
+  - chrony
+  - curl
+  - ethtool
+  - gnupg
+  - htop
+  - jq
+  - python3-netaddr
+  - rsync
+  - vim

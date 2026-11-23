@@ -1,0 +1,11 @@
+---
+# Paperless-ngx, TAILNET ONLY (no /apps.yaml entry): app + Valkey/Tika/Gotenberg
+# (helmrelease.yaml), Postgres (database.yaml), NAS folders (storage.yaml), nightly
+# document_exporter (export.yaml). Secrets: k8s/secrets/paperless/. Steps: docs/manual-steps.md §13.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - storage.yaml
+  - database.yaml
+  - helmrelease.yaml
+  - export.yaml

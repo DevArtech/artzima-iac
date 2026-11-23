@@ -1,0 +1,3 @@
+---
+guest_images_import_dir: /var/lib/vz/import
+guest_images_haos_url: "https://github.com/home-assistant/operating-system/releases/download/{{ haos_version }}/haos_ova-{{ haos_version }}.qcow2.xz"

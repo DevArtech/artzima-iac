@@ -1,0 +1,54 @@
+---
+# Media ("arr") stack facts. Plain YAML (no Jinja): also read by
+# scripts/render.py -> k8s/clusters/artzima/cluster-vars.yaml (Flux) and by the
+# Ansible lxc_devices role (the Jellyfin LXC's read-only bind mount).
+# Design: docs/decisions.md "Media stack"; steps: README "Media stack".
+
+# ONE shared NAS folder for downloads AND the library (TRaSH "data" layout), so
+# Sonarr/Radarr can hardlink/atomically move instead of copying:
+#   <artnas_export>/<media_data_subdir>/torrents/{tv,movies,music}   qBittorrent
+#   <artnas_export>/<media_data_subdir>/media/{tv,movies,music}      the library (Jellyfin reads it)
+# It is mounted at /data in qBittorrent, Sonarr, Radarr and Bazarr (static NFS
+# PV, k8s/apps/media/storage.yaml) and /data/media in the Jellyfin LXC (read-only).
+# Create it on the NAS by hand first (docs/manual-steps.md §3).
+media_data_subdir: data # -> /volume1/Artzima/data (relative to artnas_export, never outside it)
+# Nothing in this repo writes on the NAS outside artnas_export (/volume1/Artzima):
+# the other shares hold the operator's personal files (README "What survives the
+# wipe"). scripts/labdata.py and `make lint` enforce it. Rips that live in another
+# share/filesystem can't be hardlinked into here: see README "Bringing in your existing rips".
+
+# Owner of everything under the data folder, and the uid/gid every media pod
+# runs as. Must match the NAS chown in docs/manual-steps.md §3.
+media_puid: 1000
+media_pgid: 1000
+
+# Surfshark server selection for gluetun (not secret). Comma-separated gluetun
+# country names, e.g. "Netherlands" or "Switzerland,Sweden".
+# List: https://github.com/qdm12/gluetun-wiki/blob/main/setup/servers.md
+vpn_server_countries: "Netherlands"
+
+# Where the NAS data folder is mounted on Proxmox nodes that bind-mount parts of it
+# into LXCs (read-only), see lxc_mounts in hosts.yml.
+media_host_mount: /mnt/artnas-data
+
+# ---------------------------------------------------------------- existing rips
+# The operator's EXISTING ripped movies/TV on the NAS: they must never be lost.
+# `make media-adopt` (scripts/media-adopt.sh) HARDLINKS their contents into
+# <data>/media/{movies,tv,music}; the originals are never moved, renamed or deleted.
+# Each entry is a library root whose children are movie folders (kind: movies),
+# show folders (kind: tv) or artist folders (kind: music). Must be on the SAME NAS volume/filesystem as the
+# data folder (the script checks st_dev and refuses otherwise).
+# TBD: fill in after inspecting the NAS (README "Bringing in your existing rips"). Example:
+#   media_existing_paths:
+#     - { path: /volume1/Artzima/Movies, kind: movies }
+#     - { path: /volume1/Artzima/TV Shows, kind: tv }
+#     - { path: /volume1/Artzima/Music, kind: music }
+media_existing_paths: []
+
+# Sonarr/Radarr recycle bin (on the data volume: deleting = a move, not a loss)
+# under /data/.recycle/{sonarr,radarr}; files older than this are purged.
+media_recycle_days: 30
+
+# Quality profile for adopted rips in Sonarr and Radarr: upgrades NOT allowed
+# (created by the media-wiring Job; adopted titles are also tagged and unmonitored).
+media_owned_profile: Owned rip

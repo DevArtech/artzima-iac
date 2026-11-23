@@ -1,0 +1,16 @@
+---
+collections:
+  - name: community.proxmox
+    version: 2.1.0
+  - name: community.general
+    version: 14.0.1
+  - name: ansible.posix
+    version: 2.2.2
+  - name: ansible.utils
+    version: 6.1.1
+  # Secrets: lookup infisical.vault.read_secrets + create/update_secret modules
+  # (needs the infisicalsdk Python package: make deps installs it in the venv).
+  - name: infisical.vault
+    version: 1.2.3
+  - name: community.crypto
+    version: 3.6.0

@@ -1,0 +1,97 @@
+---
+# The lab's own alert rules (the chart's default rules stay on: nodes, disks, pods,
+# PVCs filling up, ...). Every alert of severity warning/critical goes to THE one
+# webhook (kube-prometheus-stack.yaml, Infisical /k8s/alerts/WEBHOOK_URL).
+# NAS backups (Backrest on the NAS) alert from the NAS itself (role nas_backup).
+# docs/backups.md "Alerts" lists what fires when.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: artzima
+  namespace: monitoring
+spec:
+  groups:
+    - name: artzima-backups
+      rules:
+        - alert: VolSyncBackupMissed
+          expr: (time() - artzima_volsync_last_sync_timestamp_seconds > 26 * 3600) and on (name, exported_namespace) artzima_volsync_paused == 0
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "No off-site backup of {{ $labels.exported_namespace }}/{{ $labels.name }} for 26 h"
+        - alert: BackupJobFailed
+          expr: kube_job_status_failed{job_name=~"volsync-src-.*|restic-maintenance-.*|.*-retention-.*"} > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "Backup/retention job {{ $labels.namespace }}/{{ $labels.job_name }} failed"
+        - alert: PostgresBackupMissed
+          expr: time() - artzima_cnpg_last_successful_backup_timestamp_seconds > 26 * 3600
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "No successful backup of CNPG cluster {{ $labels.exported_namespace }}/{{ $labels.name }} for 26 h"
+        - alert: PostgresWALArchivingStuck
+          expr: cnpg_collector_pg_wal_archive_status{value="ready"} > 10
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "WAL files are not reaching B2 ({{ $labels.namespace }}/{{ $labels.pod }})"
+        - alert: RestoreTestFailed
+          expr: kube_job_status_failed{job_name=~".*restore-test-.*"} > 0
+          labels: { severity: critical }
+          annotations:
+            summary: "Monthly restore test {{ $labels.namespace }}/{{ $labels.job_name }} FAILED (kubectl logs job/...)"
+        - alert: RestoreTestMissed
+          expr: time() - kube_cronjob_status_last_successful_time{cronjob=~".*restore-test"} > 35 * 86400
+          labels: { severity: warning }
+          annotations:
+            summary: "Restore test {{ $labels.namespace }}/{{ $labels.cronjob }} has not passed for 35 days"
+    - name: artzima-health
+      rules:
+        - alert: FluxResourceNotReady
+          expr: gotk_resource_info{ready="False", suspended!="true"} == 1
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "Flux {{ $labels.customresource_kind }} {{ $labels.exported_namespace }}/{{ $labels.name }} is not Ready"
+        - alert: CertificateExpiringSoon
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 14 * 86400
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in < 14 days"
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="False"} == 1
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} is not Ready"
+        - alert: UPSOnBattery
+          expr: network_ups_tools_ups_status{flag="OB"} == 1
+          for: 30s
+          labels: { severity: critical }
+          annotations:
+            summary: "Power cut: the UPS is on battery (NUT shuts the lab down by itself)"
+        - alert: UPSLowBattery
+          expr: network_ups_tools_ups_status{flag="LB"} == 1
+          labels: { severity: critical }
+          annotations:
+            summary: "UPS battery LOW: shutdown imminent"
+        - alert: UPSExporterDown
+          expr: up{job="nut-exporter"} == 0 or absent(network_ups_tools_ups_status)
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "No UPS status from NUT for 15 min (power alerts are blind)"
+        - alert: NASSpaceLow
+          expr: min(kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 0.10
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "The NAS (NFS volumes) has less than 10% free space"
+        - alert: ProxmoxStorageLow
+          expr: pve_disk_usage_bytes{id=~"storage/.*"} / pve_disk_size_bytes{id=~"storage/.*"} > 0.90 and pve_disk_size_bytes > 0
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "Proxmox storage {{ $labels.id }} is over 90% full"

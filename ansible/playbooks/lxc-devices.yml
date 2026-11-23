@@ -1,0 +1,8 @@
+---
+# After `make tofu-apply`: add devN: lines (GPU for jellyfin, /dev/net/tun for
+# the ts-routers) and mpN: bind mounts (Jellyfin's read-only /data/media from the
+# NAS) that OpenTofu's API token is not allowed to set.
+- name: LXC device passthrough and bind mounts
+  hosts: pve_nodes
+  roles:
+    - lxc_devices

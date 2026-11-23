@@ -1,0 +1,38 @@
+---
+# Jellyfin runs in an LXC on host01 (GPU), outside Kubernetes. Traefik still
+# fronts it: a selector-less Service + EndpointSlice point at its lab IP
+# (from cluster-vars, i.e. ansible/hosts.yml), and the generated route
+# (k8s/apps/routes, from /apps.yaml) publishes it.
+# Jellyfin: set Dashboard > Networking > Known proxies to the Talos node IPs
+# (docs/addresses.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: jellyfin
+  namespace: external
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: ${jellyfin_port}
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: jellyfin-1
+  namespace: external
+  labels:
+    kubernetes.io/service-name: jellyfin
+    endpointslice.kubernetes.io/managed-by: flux.artzima
+addressType: IPv4
+ports:
+  - name: http
+    port: ${jellyfin_port}
+    protocol: TCP
+endpoints:
+  - addresses:
+      - ${jellyfin_ip}
+    conditions:
+      ready: true

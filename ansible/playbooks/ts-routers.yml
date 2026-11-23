@@ -1,0 +1,18 @@
+---
+# Configure the two Tailscale subnet-router LXCs created by OpenTofu
+# (ts-router-1 on host01, ts-router-2 on node01). Run after lxc-devices.yml.
+# Approve the routes once in the admin console, or use autoApprovers in the
+# tailnet policy for tag:subnet-router (see docs/manual-steps.md).
+- name: Bootstrap python3 in fresh Debian LXCs
+  hosts: ts_routers
+  gather_facts: false
+  tasks:
+    - name: Install python3 if missing
+      ansible.builtin.raw: test -x /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+      register: lxc_py
+      changed_when: "'Setting up python3' in lxc_py.stdout"
+
+- name: Tailscale subnet routers
+  hosts: ts_routers
+  roles:
+    - tailscale

@@ -1,0 +1,242 @@
+---
+# Backrest (restic) ON THE NAS: the NAS media library + personal shares -> Backblaze B2,
+# independent of the lab (keeps running while the Proxmox machines are wiped).
+# Config (repo, plans, retention, check, prune, hooks) is generated HERE from
+# backups.yml + Infisical; edits made in the Backrest UI are overwritten by the next
+# `make nas-backup` (the repo is the source of truth). docs/backups.md.
+- name: Only in backup_nas_media=restic-on-nas
+  ansible.builtin.assert:
+    that:
+      - backup_nas_media == 'restic-on-nas'
+    fail_msg: "backup_nas_media is {{ backup_nas_media }}: Backrest on the NAS is not used (backups.yml)"
+
+- name: Validate the personal share list (read-only sources outside the lab share)
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z0-9][a-z0-9-]*$')
+      - item.path is match('^/volume[0-9]+/')
+      - "'..' not in item.path"
+      - not (item.path ~ '/').startswith(artnas_export ~ '/')
+    fail_msg: "nas_personal_shares entry {{ item }}: name lowercase-dashes, path /volumeN/<share>, not inside {{ artnas_export }}"
+  loop: "{{ nas_personal_shares }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+# ------------------------------------------------------------------ Backrest config
+- name: Build the Backrest configuration
+  ansible.builtin.set_fact:
+    # Backrest only ADDS snapshots (its key is the backup key): keep all here. Retention
+    # (forget + prune) runs in the separate maintenance container with the maintenance key.
+    nas_backup_retention:
+      policyKeepAll: true
+    # Failures/errors of any operation -> THE alert endpoint (Infisical /k8s/alerts/
+    # WEBHOOK_URL, same as Alertmanager) as a Shoutrrr generic webhook, if set.
+    nas_backup_alert_hooks: >-
+      {{ [] if (alert_webhook_url | trim) == '' else [{
+           'conditions': ['CONDITION_ANY_ERROR', 'CONDITION_SNAPSHOT_ERROR', 'CONDITION_SNAPSHOT_WARNING',
+                          'CONDITION_CHECK_ERROR'],
+           'onError': 'ON_ERROR_IGNORE',
+           'actionShoutrrr': {'shoutrrrUrl': 'generic+' ~ (alert_webhook_url | trim)}}] }}
+    nas_backup_plan_defs: >-
+      {{ [
+           {'id': 'media-daily', 'paths': ['/userdata/media'], 'cron': nas_backup_media_daily_cron, 'flags': []},
+           {'id': 'media-weekly-full', 'paths': ['/userdata/media'], 'cron': nas_backup_media_weekly_cron,
+            'flags': ['--force']},
+         ] + ([] if nas_personal_shares | length == 0 else [
+           {'id': 'personal-daily', 'paths': nas_personal_shares | map(attribute='name') | map('regex_replace', '^', '/userdata/') | list,
+            'cron': nas_backup_personal_cron, 'flags': []}]) }}
+
+- name: Build the plans (each pings its own healthchecks.io check, if a ping key is set)
+  ansible.builtin.set_fact:
+    nas_backup_plans: >-
+      {{ (nas_backup_plans | default([])) + [{
+           'id': item.id,
+           'repo': nas_backup_repo_id,
+           'paths': item.paths,
+           'schedule': {'disabled': true} if (nas_backup_paused | bool) else {'cron': item.cron, 'clock': 'CLOCK_LOCAL'},
+           'retention': nas_backup_retention,
+           'backup_flags': item.flags,
+           'hooks': [] if (nas_backup_healthchecks_url | trim) == '' else [{
+             'conditions': ['CONDITION_SNAPSHOT_START', 'CONDITION_SNAPSHOT_SUCCESS', 'CONDITION_SNAPSHOT_ERROR'],
+             'onError': 'ON_ERROR_IGNORE',
+             'actionHealthchecks': {'webhookUrl': (nas_backup_healthchecks_url | trim | regex_replace('/+$', ''))
+                                    ~ '/' ~ nas_backup_hc_slug_prefix ~ item.id ~ '?create=1'}}]}] }}
+  loop: "{{ nas_backup_plan_defs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  no_log: true
+
+- name: Assemble the Backrest config (repo + plans + auth)
+  ansible.builtin.set_fact:
+    nas_backup_config:
+      version: 6 # Backrest v1.14 config format
+      modno: 1
+      instance: "{{ nas_backup_instance }}"
+      auth:
+        disabled: false
+        users:
+          - name: "{{ nas_backrest_user }}"
+            passwordBcrypt: "{{ nas_backrest_password_bcrypt | trim }}"
+      repos:
+        - id: "{{ nas_backup_repo_id }}"
+          uri: "{{ nas_backup_repo_uri }}"
+          password: "{{ nas_restic_password }}"
+          env:
+            - "AWS_ACCESS_KEY_ID={{ nas_b2_key_id }}"
+            - "AWS_SECRET_ACCESS_KEY={{ nas_b2_application_key }}"
+            - "AWS_DEFAULT_REGION={{ b2_region }}"
+          flags: "{{ [] if (nas_backup_upload_limit_kib | int) == 0 else ['--limit-upload=' ~ (nas_backup_upload_limit_kib | int)] }}"
+          autoInitialize: true # first run creates the repo; Backrest then records its guid
+          autoUnlock: true # only this Backrest uses the repo: stale locks (e.g. window stop) are safe to clear
+          commandPrefix:
+            ioNice: IO_BEST_EFFORT_LOW
+            cpuNice: CPU_LOW
+          prunePolicy:
+            schedule:
+              disabled: true # the maintenance container prunes (maintenance key)
+          checkPolicy:
+            schedule:
+              cron: "{{ nas_backup_check_cron }}"
+            readDataSubsetPercent: "{{ nas_backup_check_percent | float }}"
+          hooks: "{{ nas_backup_alert_hooks }}"
+      plans: "{{ nas_backup_plans }}"
+  no_log: true
+
+# ------------------------------------------------------------------ deploy on the NAS
+- name: Deploy on the NAS
+  when: nas_backup_deploy | bool
+  become: true
+  block:
+    - name: Docker with the compose plugin must be available (UGOS Docker app)
+      ansible.builtin.command: docker compose version
+      changed_when: false
+
+    - name: Backrest folders (inside the lab share; config holds secrets)
+      ansible.builtin.file:
+        path: "{{ nas_backup_root }}/{{ item.dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { dir: "", mode: "0700" }
+        - { dir: maint, mode: "0700" }
+        - { dir: config, mode: "0700" }
+        - { dir: data, mode: "0700" }
+        - { dir: cache, mode: "0700" }
+        - { dir: tmp, mode: "0700" }
+        - { dir: restore, mode: "0700" }
+      loop_control:
+        label: "{{ nas_backup_root }}/{{ item.dir }}"
+
+    - name: Compose file
+      ansible.builtin.template:
+        src: compose.yaml.j2
+        dest: "{{ nas_backup_root }}/compose.yaml"
+        owner: root
+        group: root
+        mode: "0600"
+      register: nas_backup_compose
+
+    - name: Maintenance container files (env holds the maintenance key; crontab; script)
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ nas_backup_root }}/maint/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: maint.env.j2, dest: maint.env, mode: "0600" }
+        - { src: maint-crontab.j2, dest: crontab, mode: "0644" }
+        - { src: maint.sh.j2, dest: maint.sh, mode: "0755" }
+      loop_control:
+        label: "{{ item.dest }}"
+      register: nas_backup_maint_files
+      no_log: true
+
+    # Backrest rewrites config.json itself (modno, repo guid). The repo's version is kept
+    # next to it and only re-applied when the REPO's rendering changes.
+    - name: Rendered config (the repo's version)
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ nas_backup_root }}/config.rendered.json"
+        owner: root
+        group: root
+        mode: "0600"
+      register: nas_backup_rendered
+      no_log: true
+
+    - name: Is there a live config yet?
+      ansible.builtin.stat:
+        path: "{{ nas_backup_root }}/config/config.json"
+      register: nas_backup_live
+
+    - name: Apply the repo's config
+      ansible.builtin.copy:
+        src: "{{ nas_backup_root }}/config.rendered.json"
+        dest: "{{ nas_backup_root }}/config/config.json"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when: nas_backup_rendered is changed or not nas_backup_live.stat.exists
+      register: nas_backup_applied
+      no_log: true
+
+    - name: Start / update the container
+      ansible.builtin.command: docker compose -f {{ nas_backup_root }}/compose.yaml up -d
+      register: nas_backup_up
+      changed_when: nas_backup_up.stderr is search('Creat|Recreat|Start')
+
+    - name: Restart Backrest to load a changed config
+      ansible.builtin.command: docker compose -f {{ nas_backup_root }}/compose.yaml restart backrest
+      when: nas_backup_applied is changed and nas_backup_up is not changed
+      changed_when: true
+
+    - name: Restart the maintenance container to load changed files
+      ansible.builtin.command: docker compose -f {{ nas_backup_root }}/compose.yaml restart restic-maint
+      when: nas_backup_maint_files is changed and nas_backup_up is not changed
+      changed_when: true
+
+    # Optional hard schedule window: restart the container at this hour, which stops a
+    # still-running backup (restic resumes next run; autoUnlock clears the lock).
+    - name: Window stop (root crontab on the NAS; UGOS updates may reset it, see docs)
+      ansible.builtin.cron:
+        name: artzima-backrest-window-stop
+        minute: "0"
+        hour: "{{ nas_backup_window_stop_hour if nas_backup_window_stop_hour is not none else '0' }}"
+        job: "docker restart {{ nas_backup_project }} >/dev/null 2>&1"
+        state: "{{ 'present' if nas_backup_window_stop_hour is not none else 'absent' }}"
+
+# ------------------------------------------------------------------ render only
+- name: Render only (no SSH to the NAS)
+  when: not (nas_backup_deploy | bool)
+  delegate_to: localhost
+  block:
+    - name: Local render folder (gitignored; holds secrets)
+      ansible.builtin.file:
+        path: "{{ nas_backup_render_dir }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [config, maint]
+
+    - name: Render compose.yaml and config/config.json
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ nas_backup_render_dir }}/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: compose.yaml.j2, dest: compose.yaml }
+        - { src: config.json.j2, dest: config/config.json }
+        - { src: maint.env.j2, dest: maint/maint.env }
+        - { src: maint-crontab.j2, dest: maint/crontab }
+        - { src: maint.sh.j2, dest: maint/maint.sh }
+      loop_control:
+        label: "{{ item.dest }}"
+      no_log: true
+
+    - name: Next steps
+      ansible.builtin.debug:
+        msg: >-
+          Rendered into {{ nas_backup_render_dir }} (contains secrets: delete it after copying).
+          One-time steps: docs/backups.md "Backrest on the NAS" (manual install).

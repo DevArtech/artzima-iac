@@ -1,0 +1,102 @@
+---
+# media-wiring: ONE idempotent Job that wires the stack through its APIs
+# (script: wiring/wire.py, ConfigMap media-scripts). It runs on EVERY Flux sync:
+# ttlSecondsAfterFinished deletes the finished Job, and the `apps` Kustomization
+# (interval 30m) re-creates it; the force annotation lets Flux replace it when
+# this spec changes (Job templates are immutable). Every run reads the current
+# state and only changes what differs, so re-runs are safe.
+# Why a Job and not Buildarr/Configarr: docs/decisions.md "Media stack".
+# Existing rips: imported unrenamed, tagged owned-rip, no-upgrade profile,
+# unmonitored (wire.py "adopt"). Log: kubectl -n media logs job/media-wiring
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: media-wiring
+  namespace: media
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  ttlSecondsAfterFinished: 900
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: media-wiring
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${media_puid}
+        runAsGroup: ${media_pgid}
+        # No fsGroup: the Job must never chown the shared media volume.
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wire
+          image: docker.io/library/python:3.14.10-alpine3.24
+          command: ["python3", "-I", "-u", "/scripts/wire.py"]
+          env:
+            - name: DATA_ROOT
+              value: /data
+            - name: SERVICE_DOMAIN
+              value: media.svc.cluster.local
+            # Jellyfin (LXC on host01) via its selector-less Service (k8s/apps/external).
+            - name: JELLYFIN_HOST
+              value: jellyfin.external.svc.cluster.local
+            - name: JELLYFIN_PORT
+              value: "80"
+            # Optional (flaresolverr.yaml): http://flaresolverr.media.svc.cluster.local:8191
+            - name: FLARESOLVERR_URL
+              value: ""
+            # Recyclarr's profile names (recyclarr/recyclarr.yml): Seerr's defaults.
+            - name: SEERR_SONARR_PROFILE
+              value: WEB-1080p
+            - name: SEERR_RADARR_PROFILE
+              value: HD Bluray + WEB
+            # Existing rips (README "Bringing in your existing rips"), group_vars/all/media.yml:
+            # recycle bin retention, the no-upgrade profile, and importing the
+            # unmapped folders of /data/media/{tv,movies} as owned titles.
+            # "<n>d", not "<n>": kustomize drops the quotes before Flux substitutes, and
+            # a bare number is not a valid env value.
+            - name: RECYCLE_DAYS
+              value: ${media_recycle_days}d
+            - name: OWNED_PROFILE
+              value: ${media_owned_profile}
+            - name: ADOPT_UNMAPPED
+              value: "true"
+            - name: WAIT_SECONDS
+              value: "900"
+          envFrom:
+            - secretRef:
+                name: media-apikeys # *_API_KEY (Infisical /k8s/media)
+            - secretRef:
+                name: qbittorrent # QBITTORRENT_USERNAME / _PASSWORD
+            - secretRef:
+                name: jellyfin-api # JELLYFIN_API_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data # creates the TRaSH folder tree
+              mountPath: /data
+      volumes:
+        - name: scripts
+          configMap:
+            name: media-scripts
+        - name: data
+          persistentVolumeClaim:
+            claimName: media-data

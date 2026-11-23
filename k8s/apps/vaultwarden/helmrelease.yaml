@@ -1,0 +1,150 @@
+---
+# Vaultwarden (Bitwarden-compatible password manager), official image.
+#
+#   public:   https://vault.<domain> -> Cloudflare tunnel -> Traefik -> Service vaultwarden:80
+#             (/apps.yaml `vault`; `access: never`: the Bitwarden mobile/desktop apps need
+#             direct access and can't pass Cloudflare Access, so tofu/cloudflare refuses it)
+#             /admin on that host: 403 from a generated Traefik route (deny_paths)
+#   admin:    http://vault-admin/admin on the TAILNET only (Service vaultwarden-admin,
+#             Tailscale operator). Plain HTTP inside the WireGuard tunnel; the admin
+#             cookie is "Secure" only behind X-Forwarded-Proto: https, so it works there.
+#   push:     websocket notifications are served on the main port (/notifications/hub,
+#             ENABLE_WEBSOCKET defaults to true since 1.29); Traefik and cloudflared pass
+#             the Upgrade through, nothing extra to route.
+#
+# Data: Postgres (CloudNativePG, database.yaml; DATABASE_URL = the CNPG app secret's
+# `uri`), plus /data (RSA keys, attachments, sends, icon cache, config.json) on an
+# RWX PVC so the nightly backup CronJob (backup.yaml) can read it from any node.
+# Secrets: Infisical /k8s/vaultwarden via ESO (k8s/secrets/vaultwarden/vaultwarden.yaml).
+# First run, restore: docs/manual-steps.md §12.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vaultwarden
+  namespace: vaultwarden
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # the image runs as root by default; any uid works with a writable /data
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      vaultwarden:
+        replicas: 1 # one writer for /data (attachments, keys) and the icon cache
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: docker.io/vaultwarden/server
+              tag: 1.37.5
+            env:
+              TZ: ${timezone}
+              DOMAIN: https://vault.${public_domain}
+              ROCKET_PORT: "8080" # unprivileged port (image default 80 needs root)
+              DATA_FOLDER: /data
+              SIGNUPS_ALLOWED: "false"
+              INVITATIONS_ALLOWED: "true"
+              SHOW_PASSWORD_HINT: "false"
+              # Traefik appends the client (Cloudflare edge -> cloudflared) chain.
+              IP_HEADER: X-Forwarded-For
+              # SMTP is optional: only the non-empty SMTP_* keys in Infisical reach the
+              # pod (ESO template). Without SMTP_HOST, invites are copied as a link
+              # from the admin page instead of being mailed.
+              SMTP_SECURITY: starttls
+              SMTP_PORT: "587"
+              DATABASE_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: vaultwarden-db-app # CNPG-generated (database.yaml)
+                    key: uri
+            envFrom:
+              - secretRef:
+                  name: vaultwarden # ADMIN_TOKEN (Argon2 PHC) + optional SMTP_*
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /alive
+                    port: 8080
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /alive
+                    port: 8080
+                  periodSeconds: 5
+                  failureThreshold: 60 # first start runs the database migrations
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 20m
+                memory: 64Mi
+              limits:
+                memory: 512Mi
+    service:
+      # Public: /apps.yaml `vault` routes here (name and port must match).
+      app:
+        controller: vaultwarden
+        forceRename: vaultwarden
+        ports:
+          http:
+            port: 80
+            targetPort: 8080
+      # Tailnet only: the admin page (http://vault-admin/admin). Same pod; the
+      # tunnel has no route to this Service.
+      admin:
+        controller: vaultwarden
+        forceRename: vaultwarden-admin
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: vault-admin
+        ports:
+          http:
+            port: 80
+            targetPort: 8080
+    persistence:
+      data: # NAS /volume1/Artzima/k8s/vaultwarden/vaultwarden-data (Retain)
+        type: persistentVolumeClaim
+        forceRename: vaultwarden-data # stable name: backup.yaml mounts it
+        storageClass: nfs-artnas
+        accessMode: ReadWriteMany # the backup CronJob reads it from any node
+        size: 2Gi
+        globalMounts:
+          - path: /data
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

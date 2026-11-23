@@ -1,0 +1,8 @@
+---
+- name: OpenTofu API user and token
+  hosts: pve_nodes
+  tasks:
+    - name: Apply proxmox_api once
+      ansible.builtin.include_role:
+        name: proxmox_api
+      when: "'cluster_init' in lab_roles"

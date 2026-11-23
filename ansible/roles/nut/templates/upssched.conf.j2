@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+CMDSCRIPT /usr/local/sbin/upssched-cmd
+PIPEFN /run/nut/upssched.pipe
+LOCKFN /run/nut/upssched.lock
+
+# {{ nut_onbatt_timer }} s on battery -> forced shutdown of the whole lab.
+AT ONBATT * START-TIMER onbatt {{ nut_onbatt_timer }}
+AT ONLINE * CANCEL-TIMER onbatt

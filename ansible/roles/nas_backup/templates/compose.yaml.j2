@@ -1,0 +1,44 @@
+# Managed by Ansible (role nas_backup, `make nas-backup`): DO NOT EDIT on the NAS.
+# Backrest (restic + web UI) backing up the NAS media library and personal shares to
+# Backblaze B2. The shares are mounted READ-ONLY; everything Backrest writes lives in
+# {{ nas_backup_root }}. docs/backups.md "NAS media and personal files".
+name: {{ nas_backup_project }}
+services:
+  backrest:
+    image: {{ nas_backrest_image }}:{{ nas_backrest_tag }}
+    container_name: {{ nas_backup_project }}
+    hostname: backrest-{{ nas_backup_instance }}
+    restart: unless-stopped
+    environment:
+      BACKREST_DATA: /data
+      BACKREST_CONFIG: /config/config.json
+      XDG_CACHE_HOME: /cache
+      TMPDIR: /tmp
+      TZ: {{ timezone }}
+    volumes:
+      - {{ nas_backup_root }}/data:/data
+      - {{ nas_backup_root }}/config:/config
+      - {{ nas_backup_root }}/cache:/cache
+      - {{ nas_backup_root }}/tmp:/tmp
+      - {{ nas_backup_root }}/restore:/restore # the ONLY writable target for restores
+      # Sources, READ-ONLY:
+      - {{ artnas_export }}/{{ media_data_subdir }}/media:/userdata/media:ro
+{% for s in nas_personal_shares %}
+      - {{ s.path }}:/userdata/{{ s.name }}:ro
+{% endfor %}
+    ports:
+      # LAN address only (also reachable through the Tailscale subnet routers);
+      # never 0.0.0.0, never port-forwarded.
+      - "{{ artnas_ip }}:{{ nas_backrest_port }}:9898"
+
+  # Retention (forget + prune) with the MAINTENANCE key, weekly from crond; Backrest
+  # above only has the backup key and keeps every snapshot (docs/backups.md "Immutability").
+  restic-maint:
+    image: {{ nas_restic_image }}:{{ nas_restic_tag }}
+    container_name: {{ nas_backup_project }}-maint
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /etc/crontabs && cp /maint/crontab /etc/crontabs/root && exec crond -f -l 6"]
+    env_file: {{ nas_backup_root }}/maint/maint.env
+    volumes:
+      - {{ nas_backup_root }}/maint:/maint:ro
+      - {{ nas_backup_root }}/cache:/cache

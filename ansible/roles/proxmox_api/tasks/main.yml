@@ -1,0 +1,48 @@
+---
+# Runs once on the cluster init node; users/ACLs are cluster-wide.
+- name: Read users and roles
+  ansible.builtin.command: pvesh get {{ item }} --output-format json
+  loop: [/access/users, /access/roles]
+  register: proxmox_api_lists
+  changed_when: false
+
+- name: Set facts
+  ansible.builtin.set_fact:
+    proxmox_api_users: "{{ proxmox_api_lists.results[0].stdout | from_json | map(attribute='userid') | list }}"
+    proxmox_api_roles: "{{ proxmox_api_lists.results[1].stdout | from_json | map(attribute='roleid') | list }}"
+
+- name: Create the OpenTofu role
+  ansible.builtin.command: pveum role add {{ proxmox_api_role }} --privs "{{ proxmox_api_privs | join(',') }}"
+  when: proxmox_api_role not in proxmox_api_roles
+  changed_when: true
+
+- name: Keep role privileges in sync
+  ansible.builtin.command: pveum role modify {{ proxmox_api_role }} --privs "{{ proxmox_api_privs | join(',') }}"
+  when: proxmox_api_role in proxmox_api_roles
+  changed_when: false
+
+- name: Create users
+  ansible.builtin.command: pveum user add {{ item }} --comment "managed by ansible (artzima-iac)"
+  loop: ["{{ proxmox_api_user }}", "{{ proxmox_api_exporter_user }}"]
+  when: item not in proxmox_api_users
+  changed_when: true
+
+- name: Grant ACLs
+  ansible.builtin.command: pveum acl modify / --users {{ item.user }} --roles {{ item.role }}
+  loop:
+    - { user: "{{ proxmox_api_user }}", role: "{{ proxmox_api_role }}" }
+    - { user: "{{ proxmox_api_exporter_user }}", role: PVEAuditor }
+  changed_when: false
+
+- name: Issue tokens and push them to Infisical (never written to disk)
+  ansible.builtin.include_tasks: token.yml
+  loop:
+    - user: "{{ proxmox_api_user }}"
+      token: "{{ proxmox_api_token_name }}"
+      dest: "{{ proxmox_api_tofu_secret }}"
+    - user: "{{ proxmox_api_exporter_user }}"
+      token: "{{ proxmox_api_exporter_token_name }}"
+      dest: "{{ proxmox_api_exporter_secret }}"
+  loop_control:
+    loop_var: proxmox_api_tok
+    label: "{{ proxmox_api_tok.user }}!{{ proxmox_api_tok.token }} -> {{ proxmox_api_tok.dest.path }}/{{ proxmox_api_tok.dest.name }}"

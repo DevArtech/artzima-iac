@@ -1,0 +1,100 @@
+---
+# EMERGENCY KIT: what must exist OUTSIDE the lab AND outside Infisical (printed, or on
+# offline media kept away from home), so a total loss (house fire) is recoverable.
+# NAMES ONLY, never values. `make emergency-kit` prints this as a checklist with the
+# last rotation dates; docs/disaster-recovery.md "Emergency kit" explains each item.
+# needed_for refers to the runbook's steps (A1 ... F, P1-P4).
+#
+# Fields:
+#   title         what it is
+#   needed_for    which recovery step needs it (docs/disaster-recovery.md)
+#   kept_at       WHERE the operator keeps it (fill in; e.g. "printed, fire safe at <place>")
+#   last_rotated  YYYY-MM-DD when it last changed (fill in; the kit copy must be updated then)
+#   infisical     optional /folder/KEY of the same value in Infisical (the kit is the copy
+#                 for when Infisical itself can't be reached); `make lint` checks it exists
+#                 in secrets.manifest.yaml, and `make emergency-kit EK_ARGS=--infisical`
+#                 shows Infisical's last-change date (names only)
+items:
+  - id: email-recovery
+    title: Recovery codes + password of the mailbox every account resets to
+    needed_for: A1 (everything else hangs on this mailbox)
+    kept_at: TODO
+    last_rotated: null
+  - id: infisical-recovery
+    title: Infisical account login + 2FA recovery codes (organisation owner)
+    needed_for: A2, B5 (recreate the admin machine identity)
+    kept_at: TODO
+    last_rotated: null
+  - id: github-recovery
+    title: GitHub account 2FA recovery codes
+    needed_for: A4 (push access, new PAT); the repo itself is public
+    kept_at: TODO
+    last_rotated: null
+  - id: backblaze-recovery
+    title: Backblaze account login + 2FA recovery codes
+    needed_for: A3, D4 (bucket ids, new admin key for tofu/backblaze)
+    kept_at: TODO
+    last_rotated: null
+  - id: backblaze-read-all-key
+    title: A Backblaze application key that can READ ALL backup buckets (key id + key)
+    needed_for: C (restore the NAS before anything else exists), E3 (restic CLI)
+    kept_at: TODO
+    last_rotated: null
+  - id: nas-restic-password
+    title: restic password of the NAS repository (bucket artzima-nas, Backrest)
+    needed_for: C (rips + personal files), P3 (Infisical lost)
+    kept_at: TODO
+    last_rotated: null
+    infisical: /ansible/NAS_RESTIC_PASSWORD
+  - id: cluster-restic-password
+    title: restic password of the cluster repositories (bucket artzima-restic, VolSync)
+    needed_for: E3 (Home Assistant backups), P3 (Infisical lost); restores without Infisical
+    kept_at: TODO
+    last_rotated: null
+    infisical: /k8s/backup/RESTIC_PASSWORD
+  - id: tofu-state-passphrase
+    title: OpenTofu state passphrase (decrypts the surviving state files if Infisical is lost)
+    needed_for: P3 (Infisical lost, workstation alive); not needed after a total loss
+    kept_at: TODO
+    last_rotated: null
+    infisical: /tofu/TOFU_STATE_PASSPHRASE
+  - id: vaultwarden-master
+    title: Vaultwarden master password + its 2FA recovery code (sealed envelope)
+    needed_for: E (log in to the restored vault); the vault holds every other password
+    kept_at: TODO
+    last_rotated: null
+  - id: router-login
+    title: Internet router / gateway admin login (DHCP reservations, Xfinity account)
+    needed_for: D6 (DHCP reservations for the new MACs)
+    kept_at: TODO
+    last_rotated: null
+  - id: cloudflare-recovery
+    title: Cloudflare account login + 2FA recovery codes
+    needed_for: A5, D3 (tunnel + DNS, new API token)
+    kept_at: TODO
+    last_rotated: null
+  - id: tailscale-recovery
+    title: Tailscale login (its identity provider account) + that provider's recovery codes
+    needed_for: A6 (OAuth client, dead devices)
+    kept_at: TODO
+    last_rotated: null
+  - id: runbook-location
+    title: "`make dr-pdf` printout (runbook + this checklist; footer: date + commit) + the repo URL github.com/devartech/artzima-iac"
+    needed_for: everything (the repo is public, but print the runbook anyway)
+    kept_at: TODO
+    last_rotated: null
+  - id: pbs-encryption-key
+    title: "OPTIONAL: PBS client-side encryption key (only if enabled on the PVE pbs storage)"
+    needed_for: E4 (PBS restore from B2)
+    kept_at: TODO
+    last_rotated: null
+  - id: infisical-export-key
+    title: "OPTIONAL: private key of the encrypted Infisical export (only if that option is used)"
+    needed_for: P3 (if Infisical itself is unavailable)
+    kept_at: TODO
+    last_rotated: null
+  - id: private-site-backup
+    title: Encrypted offline copy of private site configuration (device roles, addresses, MACs and project settings)
+    needed_for: B5 (restore private inventory when Infisical is unavailable)
+    kept_at: TODO
+    last_rotated: null

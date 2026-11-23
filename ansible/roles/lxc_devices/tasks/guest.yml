@@ -1,0 +1,35 @@
+---
+- name: Set dev lines for {{ lxc_devices_res.item.inventory_hostname }}
+  ansible.builtin.command: >-
+    pct set {{ lxc_devices_res.item.host_index }}
+    --dev{{ idx }} path={{ dev.path }}{{ (',gid=' ~ dev.gid) if dev.gid is defined else '' }}
+  loop: "{{ lxc_devices_res.item.lxc_devices | default([]) }}"
+  loop_control:
+    loop_var: dev
+    index_var: idx
+    label: "dev{{ idx }}: {{ dev.path }}"
+  when: "('dev' ~ idx ~ ': ' ~ dev.path) not in lxc_devices_res.stdout"
+  changed_when: true
+  register: lxc_devices_set
+
+# Read-only bind mounts of the node's media data mount into the guest
+# (unprivileged LXC: see docs/manual-steps.md §10 for the uid/gid mapping).
+- name: Set mp lines for {{ lxc_devices_res.item.inventory_hostname }}
+  ansible.builtin.command: >-
+    pct set {{ lxc_devices_res.item.host_index }}
+    --mp{{ idx }} {{ media_host_mount }}/{{ mnt.data_subdir }},mp={{ mnt.mp }},ro=1,backup=0
+  loop: "{{ lxc_devices_res.item.lxc_mounts | default([]) }}"
+  loop_control:
+    loop_var: mnt
+    index_var: idx
+    label: "mp{{ idx }}: {{ media_host_mount }}/{{ mnt.data_subdir }} -> {{ mnt.mp }} (ro)"
+  when: >-
+    ('mp' ~ idx ~ ': ' ~ media_host_mount ~ '/' ~ mnt.data_subdir ~ ',mp=' ~ mnt.mp)
+    not in lxc_devices_res.stdout
+  changed_when: true
+  register: lxc_devices_mount_set
+
+- name: Restart the container to pick up devices and mounts # noqa: no-handler (per-guest, inside a loop)
+  ansible.builtin.command: pct reboot {{ lxc_devices_res.item.host_index }}
+  when: lxc_devices_set is changed or lxc_devices_mount_set is changed
+  changed_when: true

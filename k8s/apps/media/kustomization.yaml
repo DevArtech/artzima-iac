@@ -1,0 +1,34 @@
+---
+# Media ("arr") stack. Overview: README "Media stack"; design: docs/decisions.md;
+# manual steps: docs/manual-steps.md §3 (NAS) and §10. Secrets (ESO, Infisical
+# /k8s/media + /k8s/vpn): k8s/secrets/media/.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - storage.yaml # shared /data volume (static NFS PV/PVC, TRaSH layout)
+  - prowlarr.yaml
+  - sonarr.yaml
+  - radarr.yaml
+  - lidarr.yaml # music
+  - bazarr.yaml
+  - qbittorrent.yaml # + gluetun sidecar (Surfshark WireGuard)
+  - seerr.yaml # the only public one (/apps.yaml)
+  - flaresolverr.yaml # optional, suspended
+  - recyclarr.yaml # CronJob, TRaSH profiles
+  - wiring.yaml # idempotent API wiring Job
+generatorOptions:
+  # Fixed names: the HelmReleases and Jobs reference them. Changes reach the
+  # Job on its next run and the init containers on the next pod start.
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/part-of: media
+configMapGenerator:
+  - name: media-scripts
+    namespace: media
+    files:
+      - wiring/wire.py
+      - wiring/seed.py
+  - name: recyclarr-config
+    namespace: media
+    files:
+      - recyclarr/recyclarr.yml

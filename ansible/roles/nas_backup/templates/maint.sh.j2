@@ -1,0 +1,18 @@
+#!/bin/sh
+# Managed by Ansible (role nas_backup). forget + prune of the NAS restic repository with
+# the MAINTENANCE key (Backrest itself only adds snapshots). A failure is posted to the
+# alert webhook (if set). Runs from crond in the restic-maint container.
+set -u
+echo "$(date -u '+%F %T') forget + prune: start"
+if restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" \
+     --prune --max-unused 10%; then
+  echo "$(date -u '+%F %T') RESULT: PASS"
+else
+  echo "$(date -u '+%F %T') RESULT: FAIL"
+  if [ -n "$ALERT_URL" ]; then
+    wget -q -O /dev/null --header 'Content-Type: application/json' \
+      --post-data '{"source":"artnas/restic-maint","status":"FAIL","message":"NAS backup retention (forget/prune) failed: docker logs restic-maint"}' \
+      "$ALERT_URL" || echo "alert webhook unreachable"
+  fi
+  exit 1
+fi

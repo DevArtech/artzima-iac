@@ -1,0 +1,16 @@
+---
+pbs_datastore_path: "/mnt/datastore/{{ pbs_datastore_name }}"
+pbs_gc_schedule: "daily"
+pbs_pve_user: pve@pbs
+pbs_prune_jobs:
+  - id: "{{ pbs_datastore_name }}-prune"
+    schedule: "daily"
+    keep_last: 3
+    keep_daily: 7
+    keep_weekly: 4
+    keep_monthly: 6
+pbs_verify_jobs:
+  - id: "{{ pbs_datastore_name }}-verify"
+    schedule: "sat 05:00"
+    outdated_after: 30
+    ignore_verified: true

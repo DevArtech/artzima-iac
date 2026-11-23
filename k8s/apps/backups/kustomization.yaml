@@ -1,0 +1,11 @@
+---
+# Off-site backups of app volumes and NAS folders: VolSync ReplicationSources
+# (restic -> Backblaze B2), generated from ansible/group_vars/all/backups.yml by
+# `make render`. Postgres goes off-site separately (barman-cloud plugin, each app's
+# database.yaml). Everything: docs/backups.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - homeassistant.yaml # static PV/PVC of HA's backup folder (namespace backup)
+  - volsync.yaml # generated
+  - maintenance.yaml # generated: retention (maintenance key) + monthly restore self-checks

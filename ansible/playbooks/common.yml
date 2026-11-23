@@ -1,0 +1,5 @@
+---
+- name: Common base config
+  hosts: proxmox
+  roles:
+    - common

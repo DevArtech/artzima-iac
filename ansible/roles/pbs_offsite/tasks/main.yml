@@ -1,0 +1,104 @@
+---
+# PBS -> Backblaze B2 (docs/backups.md "PBS"). PBS 4.2+ can use an S3 bucket as a
+# datastore backend. This role:
+#   1. creates the S3 endpoint `b2` (Backblaze needs the skip-if-none-match-header quirk),
+#   2. creates the S3-backed datastore pbs_b2_datastore (local cache at pbs_b2_cache_path),
+#   3. a LOCAL sync job (no --remote): local datastore -> S3 datastore, on a schedule,
+#   4. prune + GC on the S3 datastore (its own retention, independent of the local one).
+# Idempotent: every object is read first (--output-format json) and only created if missing.
+- name: Read the installed PBS version
+  ansible.builtin.command: dpkg-query --show --showformat='${Version}' proxmox-backup-server
+  register: pbs_offsite_version
+  changed_when: false
+
+- name: Require PBS with fully supported S3 datastores
+  ansible.builtin.assert:
+    that:
+      - pbs_offsite_version.stdout is version(pbs_offsite_min_version, '>=')
+    fail_msg: >-
+      PBS {{ pbs_offsite_version.stdout }} is older than {{ pbs_offsite_min_version }}: S3 datastores
+      were a technology preview before 4.2. Upgrade PBS first (docs/backups.md).
+
+- name: Local cache directory for the S3 datastore (64-128 GiB recommended, NOT the local datastore)
+  ansible.builtin.file:
+    path: "{{ pbs_b2_cache_path }}"
+    state: directory
+    owner: backup
+    group: backup
+    mode: "0750"
+
+# ------------------------------------------------------------------ S3 endpoint
+- name: Read S3 endpoints
+  ansible.builtin.command: proxmox-backup-manager s3 endpoint list --output-format json
+  register: pbs_offsite_endpoints
+  changed_when: false
+
+# The endpoint is a template: PBS fills in {{bucket}} and {{region}} itself, so the
+# braces are passed through literally (Jinja-escaped here).
+- name: Create the Backblaze B2 S3 endpoint
+  ansible.builtin.command: >-
+    proxmox-backup-manager s3 endpoint create {{ pbs_offsite_endpoint_id }}
+    --endpoint '{{ "{{bucket}}" }}.{{ b2_s3_endpoint }}'
+    --region {{ b2_region }}
+    --access-key {{ pbs_b2_key_id }}
+    --secret-key {{ pbs_b2_application_key }}
+    --provider-quirks skip-if-none-match-header
+  when: pbs_offsite_endpoint_id not in (pbs_offsite_endpoints.stdout | from_json | map(attribute='id') | list)
+  changed_when: true
+  no_log: true
+
+- name: Check that PBS can reach the bucket with that key
+  ansible.builtin.command: >-
+    proxmox-backup-manager s3 check {{ pbs_offsite_endpoint_id }} {{ b2_buckets.pbs }}
+  changed_when: false
+
+# ------------------------------------------------------------------ S3 datastore
+- name: Read datastores
+  ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
+  register: pbs_offsite_datastores
+  changed_when: false
+
+- name: Create the S3-backed datastore
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore create {{ pbs_b2_datastore }} {{ pbs_b2_cache_path }}
+    --backend type=s3,client={{ pbs_offsite_endpoint_id }},bucket={{ b2_buckets.pbs }}
+    --gc-schedule '{{ pbs_b2_gc_schedule }}'
+    {{ '--reuse-datastore true --overwrite-in-use true' if pbs_offsite_reuse_datastore else '' }}
+  when: pbs_b2_datastore not in (pbs_offsite_datastores.stdout | from_json | map(attribute='name') | list)
+  changed_when: true
+
+- name: Keep the GC schedule of the S3 datastore current
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore update {{ pbs_b2_datastore }} --gc-schedule '{{ pbs_b2_gc_schedule }}'
+  changed_when: false
+
+# ------------------------------------------------------------------ sync + prune
+- name: Read sync jobs
+  ansible.builtin.command: proxmox-backup-manager sync-job list --output-format json
+  register: pbs_offsite_sync
+  changed_when: false
+
+# A pull job WITHOUT --remote syncs between two datastores of this same PBS.
+# --remove-vanished false: the S3 copy keeps its own history (its prune job below
+# decides), so a mistake on the local datastore isn't mirrored into the bucket.
+- name: Create the local -> B2 sync job
+  ansible.builtin.command: >-
+    proxmox-backup-manager sync-job create {{ pbs_offsite_sync_job_id }}
+    --store {{ pbs_b2_datastore }} --remote-store {{ pbs_datastore_name }}
+    --schedule '{{ pbs_b2_sync_schedule }}' --remove-vanished false
+  when: pbs_offsite_sync_job_id not in (pbs_offsite_sync.stdout | from_json | map(attribute='id') | list)
+  changed_when: true
+
+- name: Read prune jobs
+  ansible.builtin.command: proxmox-backup-manager prune-job list --output-format json
+  register: pbs_offsite_prune
+  changed_when: false
+
+- name: Create the prune job of the S3 datastore
+  ansible.builtin.command: >-
+    proxmox-backup-manager prune-job create {{ pbs_offsite_prune_job_id }}
+    --store {{ pbs_b2_datastore }} --schedule '{{ pbs_b2_prune_schedule }}'
+    --keep-daily {{ pbs_b2_keep_daily }} --keep-weekly {{ pbs_b2_keep_weekly }}
+    --keep-monthly {{ pbs_b2_keep_monthly }}
+  when: pbs_offsite_prune_job_id not in (pbs_offsite_prune.stdout | from_json | map(attribute='id') | list)
+  changed_when: true

@@ -1,0 +1,11 @@
+#!/bin/sh
+# {{ ansible_managed }}
+case "$1" in
+  onbatt)
+    logger -t upssched-cmd "on battery for {{ nut_onbatt_timer }}s: forcing FSD"
+    /usr/sbin/upsmon -c fsd
+    ;;
+  *)
+    logger -t upssched-cmd "unrecognized command: $1"
+    ;;
+esac

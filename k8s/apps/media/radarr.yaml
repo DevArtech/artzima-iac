@@ -1,0 +1,121 @@
+---
+# Radarr (movies), k8s/apps/media. NOT public: tailnet only, via the
+# Tailscale operator (Service annotation below -> http://radarr:7878 on the
+# tailnet, MagicDNS). Image: home-operations (rootless; runs as media_puid:media_pgid).
+# API key pre-seeded from Infisical /k8s/media/RADARR_API_KEY (RADARR__AUTH__APIKEY);
+# wiring (download client, Jellyfin, Prowlarr, ...) by the media-wiring Job.
+# First login: create the UI user (docs/manual-steps.md §10).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: radarr
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${media_puid}
+        runAsGroup: ${media_pgid}
+        fsGroup: ${media_pgid}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      radarr:
+        replicas: 1 # SQLite on RWO: one writer
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/home-operations/radarr
+              tag: "7.0.3.10918"
+            env:
+              TZ: ${timezone}
+              UMASK: "002" # TRaSH: group-writable files for the shared media group
+              RADARR__APP__INSTANCENAME: Radarr
+              RADARR__SERVER__PORT: "7878"
+              RADARR__AUTH__METHOD: Forms
+              RADARR__AUTH__REQUIRED: Enabled
+              RADARR__LOG__DBENABLED: "False"
+              RADARR__AUTH__APIKEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: media-apikeys
+                    key: RADARR_API_KEY
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: 7878
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: 7878
+                  periodSeconds: 5
+                  failureThreshold: 60 # first start migrates the database
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+    service:
+      app:
+        controller: radarr
+        forceRename: radarr
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: radarr
+        ports:
+          http:
+            port: 7878
+    persistence:
+      config: # NAS /volume1/Artzima/k8s/media/radarr (SQLite + backups)
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 2Gi
+        globalMounts:
+          - path: /config
+      data: # the shared TRaSH volume (storage.yaml)
+        type: persistentVolumeClaim
+        existingClaim: media-data
+        globalMounts:
+          - path: /data
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

@@ -1,0 +1,139 @@
+---
+# Seerr (seerr-team: the merged successor of Overseerr and Jellyseerr): media
+# requests, sign-in with Jellyfin accounts. The ONLY public media app:
+# /apps.yaml entry `seerr` -> https://seerr.<domain> (Cloudflare Tunnel -> Traefik
+# -> this Service). Optional Cloudflare Access: docs/manual-steps.md §10.
+#
+# API key: Infisical /k8s/media/SEERR_API_KEY, seeded into a NEW settings.json by
+# the init container and enforced on every start by the API_KEY env var. The
+# setup wizard (Jellyfin server + admin sign-in) is a manual first login; after
+# it, the media-wiring Job adds Sonarr and Radarr (docs/manual-steps.md §10).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: seerr
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # the image's `node` user (fixed by the image, not media_puid)
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      seerr:
+        replicas: 1 # SQLite in /app/config
+        strategy: Recreate
+        initContainers:
+          seed-config:
+            image:
+              repository: docker.io/library/python
+              tag: 3.14.10-alpine3.24
+            command: ["python3", "-I", "/scripts/seed.py", "seerr"]
+            env:
+              SEERR_API_KEY: &apiKey
+                valueFrom:
+                  secretKeyRef:
+                    name: media-apikeys
+                    key: SEERR_API_KEY
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+        containers:
+          app:
+            image:
+              repository: ghcr.io/seerr-team/seerr
+              tag: v3.5.2
+            env:
+              TZ: ${timezone}
+              LOG_LEVEL: info
+              PORT: "5055"
+              API_KEY: *apiKey
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v1/status
+                    port: 5055
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v1/status
+                    port: 5055
+                  periodSeconds: 5
+                  failureThreshold: 60 # first start / migrations
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false # Next.js writes its cache in the app dir
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+    service:
+      app:
+        controller: seerr
+        forceRename: seerr # = the /apps.yaml entry's service
+        ports:
+          http:
+            port: 5055
+    persistence:
+      config:
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 1Gi
+        advancedMounts:
+          seerr:
+            seed-config:
+              - path: /app/config
+            app:
+              - path: /app/config
+      scripts:
+        type: configMap
+        name: media-scripts
+        advancedMounts:
+          seerr:
+            seed-config:
+              - path: /scripts
+                readOnly: true

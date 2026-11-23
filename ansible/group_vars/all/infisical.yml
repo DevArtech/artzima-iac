@@ -1,0 +1,7 @@
+---
+# Fictional CI settings. Actual project metadata is restored from private configuration.
+# The runtime copy supplies these values to ESO locally; they are never committed.
+infisical_host: https://app.infisical.com
+infisical_project_slug: example-project
+infisical_project_id: REPLACE_VIA_INFISICAL_PROJECT_ENV
+infisical_env: prod

@@ -1,0 +1,173 @@
+---
+# Build the operator's app images and push them to PRIVATE GHCR packages:
+#   ghcr.io/devartech/alexandria-mcp          upstream Dockerfile        @ images/alexandria/upstream.env
+#   ghcr.io/devartech/alexandria-oauth-proxy  upstream proxy/Dockerfile  @ images/alexandria/upstream.env
+#   ghcr.io/devartech/alexandria-cli          images/alexandria-cli/Dockerfile (upstream release binary,
+#                                             sha256-pinned) @ images/alexandria/upstream.env
+#   ghcr.io/devartech/skyjo                   images/skyjo/Dockerfile    @ images/skyjo/upstream.env
+#                                             (includes the MuZero weights from upstream's Git LFS)
+# Tags: the resolved upstream commit SHA (40 chars) + `latest`.
+# The packages are created by this repo's GITHUB_TOKEN and linked to this repo
+# (org.opencontainers.image.source). Keep each package PRIVATE (check after the
+# first run, docs/manual-steps.md §7): the repo is public, the images are not.
+# The cluster pulls them with a read:packages PAT kept in Infisical.
+# Nothing in the upstream repos is changed.
+#
+# Token scope: nothing by default; `packages: write` only for the build job,
+# which only runs for main (push/schedule/dispatch). There is no pull_request
+# trigger, so a fork's PR can never get a token that writes packages.
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/**
+      - .github/workflows/images.yml
+  schedule:
+    - cron: "17 5 * * 1" # weekly (Mon 05:17 UTC): refresh base images at the same pin
+  workflow_dispatch:
+    inputs:
+      alexandria_ref:
+        description: "Override the Alexandria ref (SHA, tag or branch). Empty = images/alexandria/upstream.env"
+        required: false
+        default: ""
+      skynet_ref:
+        description: "Override the skynet ref (SHA, tag or branch). Empty = images/skyjo/upstream.env"
+        required: false
+        default: ""
+
+permissions: {} # nothing by default
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Never push from anything but main (dispatch can target other branches).
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: alexandria-mcp
+            pin: images/alexandria/upstream.env
+            kind: upstream # build the upstream repo's own Dockerfile from a git context
+            subdir: ""
+          - image: alexandria-oauth-proxy
+            pin: images/alexandria/upstream.env
+            kind: upstream
+            subdir: proxy
+          - image: alexandria-cli
+            pin: images/alexandria/upstream.env
+            kind: local # our Dockerfile; it downloads the pinned upstream release binary
+            subdir: images/alexandria-cli
+          - image: skyjo
+            pin: images/skyjo/upstream.env
+            kind: local # our Dockerfile; it clones upstream at SKYNET_REF
+            subdir: images/skyjo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve upstream ref to a commit SHA
+        id: src
+        env:
+          PIN: ${{ matrix.pin }}
+          KIND: ${{ matrix.kind }}
+          SUBDIR: ${{ matrix.subdir }}
+          IMAGE: ${{ matrix.image }}
+          ALEXANDRIA_REF: ${{ inputs.alexandria_ref }}
+          SKYNET_REF: ${{ inputs.skynet_ref }}
+        run: |
+          set -euo pipefail
+          repo="$(sed -n 's/^UPSTREAM_REPO=//p' "$PIN")"
+          ref="$(sed -n 's/^UPSTREAM_REF=//p' "$PIN")"
+          case "$IMAGE" in
+            alexandria-*) override="${ALEXANDRIA_REF:-}" ;;
+            *) override="${SKYNET_REF:-}" ;;
+          esac
+          [ -n "$override" ] && ref="$override"
+          if [ -z "$repo" ] || [ -z "$ref" ]; then echo "::error::bad pin file $PIN"; exit 1; fi
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            # Tags resolve to the peeled commit (^{}) when annotated.
+            sha="$(git ls-remote "https://github.com/$repo.git" "$ref" "$ref^{}" "refs/tags/$ref^{}" \
+                   | awk '{print $1}' | tail -n 1)"
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::could not resolve $repo@$ref to a commit"; exit 1
+          fi
+          # alexandria-cli: the pinned release must be the SAME commit as the pinned ref,
+          # so the CLI that initializes the library matches the server.
+          cli_version="$(sed -n 's/^UPSTREAM_CLI_VERSION=//p' "$PIN")"
+          cli_sha256="$(sed -n 's/^UPSTREAM_CLI_SHA256=//p' "$PIN")"
+          if [ "$IMAGE" = alexandria-cli ]; then
+            tag_sha="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$cli_version^{}" "refs/tags/$cli_version" \
+                       | sort -k2,2r | awk '{print $1}' | head -n 1)"  # peeled ^{} line first, if annotated
+            if [ -z "$cli_version" ] || [ -z "$cli_sha256" ] || [ "$tag_sha" != "$sha" ]; then
+              echo "::error::UPSTREAM_CLI_VERSION=$cli_version is commit ${tag_sha:-?}, not $sha (bump both in $PIN)"; exit 1
+            fi
+          fi
+          if [ "$KIND" = upstream ]; then
+            context="https://github.com/$repo.git#$sha"
+            [ -n "$SUBDIR" ] && context="$context:$SUBDIR"
+          else
+            context="$SUBDIR"
+          fi
+          {
+            echo "repo=$repo"
+            echo "sha=$sha"
+            echo "context=$context"
+            echo "cli_version=$cli_version"
+            echo "cli_sha256=$cli_sha256"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $IMAGE: $repo@$sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/devartech/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ steps.src.outputs.sha }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            io.artzima.upstream.repository=https://github.com/${{ steps.src.outputs.repo }}
+            io.artzima.upstream.revision=${{ steps.src.outputs.sha }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ steps.src.outputs.context }}
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            SKYNET_REF=${{ steps.src.outputs.sha }}
+            ALEXANDRIA_CLI_VERSION=${{ steps.src.outputs.cli_version }}
+            ALEXANDRIA_CLI_SHA256=${{ steps.src.outputs.cli_sha256 }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

@@ -1,0 +1,45 @@
+---
+- name: Enable contrib/non-free components in debian.sources
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/debian.sources
+    regexp: '^Components: .*$'
+    replace: 'Components: main contrib non-free non-free-firmware'
+  register: nvidia_sources
+
+- name: Blacklist nouveau
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-nouveau.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      blacklist nouveau
+      options nouveau modeset=0
+  notify: Rebuild initramfs
+
+- name: Load nvidia modules at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/nvidia.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      nvidia
+      nvidia_uvm
+
+- name: Create /dev/nvidia-uvm* and caps nodes at boot (needed by the LXC)
+  ansible.builtin.copy:
+    dest: /etc/udev/rules.d/70-nvidia.rules
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      KERNEL=="nvidia", RUN+="/bin/bash -c '/usr/bin/nvidia-smi -L && /usr/bin/nvidia-modprobe -c0 -u'"
+      KERNEL=="nvidia_uvm", RUN+="/bin/bash -c '/usr/bin/nvidia-modprobe -c0 -u'"
+
+- name: Install the NVIDIA driver
+  ansible.builtin.apt:
+    name: "{{ nvidia_packages }}"
+    state: present
+    update_cache: "{{ nvidia_sources is changed }}"
+  notify: Reboot reminder

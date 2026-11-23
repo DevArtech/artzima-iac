@@ -1,0 +1,50 @@
+# {{ ansible_managed }}
+# Source of truth: ansible/group_vars/all/network.yml (lab_subnet, lab_gateway,
+# lab_vlan_id). lab_vlan_id = {{ lab_vlan_id if lab_vlan_id is not none else 'null (untagged)' }}
+{% set nic = primary_nic_name %}
+{% set vid = none if lab_vlan_id in [none, '', 'null'] else lab_vlan_id | int %}
+auto lo
+iface lo inet loopback
+
+{% if network_bridge %}
+iface {{ nic }} inet manual
+
+auto {{ network_bridge_name }}
+{% if vid is none %}
+iface {{ network_bridge_name }} inet static
+	address {{ lab_cidr }}
+	gateway {{ lab_gateway }}
+{% else %}
+iface {{ network_bridge_name }} inet manual
+{% endif %}
+	bridge-ports {{ nic }}
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids {{ network_bridge_vids }}
+{% if vid is not none %}
+
+# Management on the tagged lab VLAN. Guests set vlan_id = lab_vlan_id (OpenTofu).
+auto {{ network_bridge_name }}.{{ vid }}
+iface {{ network_bridge_name }}.{{ vid }} inet static
+	address {{ lab_cidr }}
+	gateway {{ lab_gateway }}
+{% endif %}
+{% else %}
+{% if vid is none %}
+auto {{ nic }}
+iface {{ nic }} inet static
+	address {{ lab_cidr }}
+	gateway {{ lab_gateway }}
+{% else %}
+auto {{ nic }}
+iface {{ nic }} inet manual
+
+auto {{ nic }}.{{ vid }}
+iface {{ nic }}.{{ vid }} inet static
+	address {{ lab_cidr }}
+	gateway {{ lab_gateway }}
+{% endif %}
+{% endif %}
+
+source /etc/network/interfaces.d/*

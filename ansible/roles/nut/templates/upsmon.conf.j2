@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+{% if nut_is_server %}
+MONITOR {{ nut_ups_name }}@localhost 1 upsmon_primary {{ nut_upsmon_primary_password }} primary
+{% else %}
+MONITOR {{ nut_ups_name }}@{{ hostvars[nut_server_host].lab_ip }} 1 upsmon_secondary {{ nut_upsmon_secondary_password }} secondary
+{% endif %}
+MINSUPPLIES 1
+SHUTDOWNCMD "/sbin/shutdown -h +0"
+POLLFREQ 5
+POLLFREQALERT 5
+HOSTSYNC {{ nut_hostsync }}
+DEADTIME 15
+FINALDELAY 5
+POWERDOWNFLAG {{ nut_powerdownflag }}
+{% if nut_is_server %}
+NOTIFYCMD /usr/sbin/upssched
+NOTIFYFLAG ONBATT SYSLOG+WALL+EXEC
+NOTIFYFLAG ONLINE SYSLOG+WALL+EXEC
+NOTIFYFLAG LOWBATT SYSLOG+WALL
+NOTIFYFLAG FSD SYSLOG+WALL
+NOTIFYFLAG COMMBAD SYSLOG+WALL
+NOTIFYFLAG COMMOK SYSLOG+WALL
+NOTIFYFLAG SHUTDOWN SYSLOG+WALL
+NOTIFYFLAG REPLBATT SYSLOG+WALL
+{% else %}
+NOTIFYFLAG ONBATT SYSLOG+WALL
+NOTIFYFLAG ONLINE SYSLOG+WALL
+NOTIFYFLAG FSD SYSLOG+WALL
+NOTIFYFLAG SHUTDOWN SYSLOG+WALL
+{% endif %}
+RBWARNTIME 43200
+NOCOMMWARNTIME 300

@@ -1,0 +1,17 @@
+---
+# Vaultwarden: app (helmrelease.yaml), Postgres (database.yaml), nightly NAS
+# backup (backup.yaml). Public route: generated from /apps.yaml (`vault`).
+# Secrets: k8s/secrets/vaultwarden/. Steps: docs/manual-steps.md §12.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - database.yaml
+  - helmrelease.yaml
+  - backup.yaml
+generatorOptions:
+  disableNameSuffixHash: true # fixed name: the CronJob references it
+configMapGenerator:
+  - name: vaultwarden-backup-script
+    namespace: vaultwarden
+    files:
+      - backup.sh

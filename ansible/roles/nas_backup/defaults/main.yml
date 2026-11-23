@@ -1,0 +1,15 @@
+---
+# Settings: ansible/group_vars/all/backups.yml (nas_*, b2_*). Secrets: secrets.yml (Infisical /ansible).
+nas_backup_root: "{{ artnas_export }}/{{ nas_backrest_subdir }}" # /volume1/Artzima/backrest
+# true  = deploy on the NAS over SSH (needs python3 + docker compose there, and sudo)
+# false = only RENDER compose.yaml + config into nas_backup_render_dir on this workstation
+#         (gitignored; contains secrets) for the documented one-time manual steps
+nas_backup_deploy: true
+nas_backup_render_dir: "{{ playbook_dir }}/../out/nas-backup"
+nas_backup_project: backrest # docker compose project + container name
+nas_backup_instance: artnas # Backrest instance id (tags every snapshot)
+nas_backup_repo_id: b2-nas
+# Repository: <endpoint>/<bucket>/restic (one restic repo in the dedicated NAS bucket).
+nas_backup_repo_uri: "s3:https://{{ b2_s3_endpoint }}/{{ b2_bucket_nas }}/restic"
+# healthchecks.io: one check per plan, auto-created from the ping key (slug URLs).
+nas_backup_hc_slug_prefix: artzima-nas-

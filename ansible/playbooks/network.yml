@@ -1,0 +1,6 @@
+---
+- name: Host networking (VLAN-aware vmbr0)
+  hosts: proxmox
+  serial: 1 # one host at a time: a bad bridge config only takes down one node
+  roles:
+    - network

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[upsmon_primary]
+	password = {{ nut_upsmon_primary_password }}
+	upsmon primary
+
+[upsmon_secondary]
+	password = {{ nut_upsmon_secondary_password }}
+	upsmon secondary
+
+# UGREEN NAS (UGOS) hard-codes these credentials. Secondary only.
+[{{ nut_nas_user }}]
+	password = {{ nut_nas_password }}
+	upsmon secondary

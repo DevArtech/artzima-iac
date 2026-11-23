@@ -1,0 +1,125 @@
+---
+# Lidarr (music), k8s/apps/media. NOT public: tailnet only, via the
+# Tailscale operator (Service annotation below -> http://lidarr:8686 on the
+# tailnet, MagicDNS). Image: home-operations (rootless; runs as media_puid:media_pgid).
+# API key pre-seeded from Infisical /k8s/media/LIDARR_API_KEY (LIDARR__AUTH__APIKEY);
+# wiring (download client, Jellyfin, Prowlarr, ...) by the media-wiring Job.
+# First login: create the UI user (docs/manual-steps.md §10).
+# Metadata comes from Lidarr's hosted service (api.lidarr.audio, MusicBrainz-based),
+# which has been degraded since 2025: prefer adding artists by MusicBrainz id
+# ("lidarr:<mbid>"). Status and the optional workaround: docs/decisions.md "Lidarr metadata".
+# The Job turns off writing audio tags: adopted rips share inodes with the originals.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: lidarr
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${media_puid}
+        runAsGroup: ${media_pgid}
+        fsGroup: ${media_pgid}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      lidarr:
+        replicas: 1 # SQLite on RWO: one writer
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/home-operations/lidarr
+              tag: "3.1.6.5078" # newest 3.1 build of this image (3.2 = pre-release); upstream stable is 3.1.6.5079
+            env:
+              TZ: ${timezone}
+              UMASK: "002" # TRaSH: group-writable files for the shared media group
+              LIDARR__APP__INSTANCENAME: Lidarr
+              LIDARR__SERVER__PORT: "8686"
+              LIDARR__AUTH__METHOD: Forms
+              LIDARR__AUTH__REQUIRED: Enabled
+              LIDARR__LOG__DBENABLED: "False"
+              LIDARR__AUTH__APIKEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: media-apikeys
+                    key: LIDARR_API_KEY
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: 8686
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: 8686
+                  periodSeconds: 5
+                  failureThreshold: 60 # first start migrates the database
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+    service:
+      app:
+        controller: lidarr
+        forceRename: lidarr
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: lidarr
+        ports:
+          http:
+            port: 8686
+    persistence:
+      config: # NAS /volume1/Artzima/k8s/media/lidarr (SQLite + backups)
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 2Gi
+        globalMounts:
+          - path: /config
+      data: # the shared TRaSH volume (storage.yaml)
+        type: persistentVolumeClaim
+        existingClaim: media-data
+        globalMounts:
+          - path: /data
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

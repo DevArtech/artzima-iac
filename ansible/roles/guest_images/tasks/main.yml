@@ -1,0 +1,29 @@
+---
+# bpg/proxmox download_file cannot decompress .xz, so the HAOS qcow2 is staged
+# here as local:import/haos_ova-<version>.qcow2 for OpenTofu's disk import_from.
+- name: Ensure the import directory exists
+  ansible.builtin.file:
+    path: "{{ guest_images_import_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install xz
+  ansible.builtin.apt:
+    name: xz-utils
+    state: present
+
+- name: Download HAOS {{ haos_version }}
+  ansible.builtin.get_url:
+    url: "{{ guest_images_haos_url }}"
+    dest: "{{ guest_images_import_dir }}/haos_ova-{{ haos_version }}.qcow2.xz"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Decompress HAOS
+  ansible.builtin.command: unxz --keep haos_ova-{{ haos_version }}.qcow2.xz
+  args:
+    chdir: "{{ guest_images_import_dir }}"
+    creates: "{{ guest_images_import_dir }}/haos_ova-{{ haos_version }}.qcow2"

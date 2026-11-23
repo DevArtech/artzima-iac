@@ -1,0 +1,6 @@
+---
+- name: Restart nut
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+  loop: "{{ ['nut-driver.target', 'nut-server', 'nut-monitor'] if nut_is_server else ['nut-monitor'] }}"

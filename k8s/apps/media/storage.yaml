@@ -1,0 +1,55 @@
+---
+# The ONE shared media volume (TRaSH "data" layout), so imports are hardlinks /
+# atomic moves on the same filesystem instead of copies:
+#
+#   NAS ${artnas_media_data_path}         -> /data in qBittorrent, Sonarr, Radarr, Bazarr
+#     torrents/{tv,movies}   qBittorrent downloads (categories tv / movies)
+#     media/{tv,movies}      the library (Sonarr/Radarr root folders; Jellyfin
+#                            mounts media/ read-only at /data/media in its LXC)
+#
+# Static PV (not the nfs-artnas StorageClass, which would put it under k8s/<ns>/<pvc>):
+# a fixed NAS folder that outlives the cluster. Retain: deleting the PVC/PV never
+# touches the files. The NAS folder and its owner (media_puid:media_pgid, setgid
+# 2775) are created by hand first: docs/manual-steps.md §3. The folder tree
+# below it is created by the media-wiring Job (wiring.yaml).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-data
+  labels:
+    app.kubernetes.io/part-of: media
+spec:
+  capacity:
+    storage: 8Ti # informational for NFS
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: "" # static: never the default class
+  claimRef: # pre-bound: only media/media-data can claim it
+    namespace: media
+    name: media-data
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - noatime
+  csi:
+    driver: nfs.csi.k8s.io
+    # Must be unique in the cluster (csi-driver-nfs static PV format server#share##).
+    volumeHandle: ${artnas_ip}#${artnas_media_data_path}##
+    volumeAttributes:
+      server: ${artnas_ip}
+      share: ${artnas_media_data_path}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-data
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: media-data
+  resources:
+    requests:
+      storage: 8Ti

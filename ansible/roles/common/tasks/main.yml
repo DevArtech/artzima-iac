@@ -1,0 +1,100 @@
+---
+- name: Detect product (pve or pbs)
+  ansible.builtin.set_fact:
+    common_product: "{{ 'pbs' if 'pbs_servers' in group_names else 'pve' }}"
+
+- name: Disable enterprise and Ceph enterprise repos
+  ansible.builtin.file:
+    path: "/etc/apt/sources.list.d/{{ item }}"
+    state: absent
+  loop:
+    - pve-enterprise.sources
+    - pbs-enterprise.sources
+    - ceph.sources
+    - pve-enterprise.list
+    - pbs-enterprise.list
+    - ceph.list
+  notify: Apt update
+
+- name: Add the no-subscription repo (deb822)
+  ansible.builtin.template:
+    src: no-subscription.sources.j2
+    dest: "/etc/apt/sources.list.d/{{ common_product }}-no-subscription.sources"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apt update
+
+- name: Flush apt handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Upgrade packages
+  ansible.builtin.apt:
+    upgrade: dist
+    update_cache: true
+    cache_valid_time: 3600
+  when: common_upgrade | bool
+  register: common_upgrade_result
+
+- name: Check whether a reboot is needed
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: common_reboot_required
+
+- name: Report pending reboot
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} needs a reboot (new kernel). Reboot nodes one at a time."
+  when: common_reboot_required.stat.exists
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: Configure chrony
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+
+- name: Enable chrony
+  ansible.builtin.service:
+    name: chrony
+    enabled: true
+    state: started
+
+- name: Write /etc/hosts from the inventory
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Authorize admin SSH keys for root
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ admin_ssh_keys | join('\n') }}"
+    exclusive: false
+    state: present
+
+- name: Enforce key-only SSH (same as the first-boot hook)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-artzima.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+  notify: Reload ssh

@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: artzima
+  description: "Backrest (restic) in Docker on the UGREEN NAS: media + personal shares (read-only) -> Backblaze B2"
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+dependencies: []
