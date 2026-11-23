@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Never push from anything but main (dispatch can target other branches).
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PRIVATE_IMAGE_PUBLISHING_ENABLED == 'true'
     permissions:
       contents: read
       packages: write
@@ -78,6 +78,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Require a pre-existing verified private package before any build or push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_OWNER: ${{ github.repository_owner }}
+          PACKAGE_NAME: ${{ matrix.image }}
+        run: python3 scripts/verify_private_package.py "$PACKAGE_OWNER" "$PACKAGE_NAME"
 
       - name: Resolve upstream ref to a commit SHA
         id: src

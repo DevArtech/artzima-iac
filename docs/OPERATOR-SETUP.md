@@ -39,7 +39,7 @@ The accounts-only check verifies credential presence. Hardware readiness require
 - Verify the scoped ESO role supports runtime reads and denies administrator-secret reads during cloud bootstrap.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
 - Emergency-kit locations and rotation dates remain unrecorded (`TODO`/empty). Finish the independent recovery credentials and printed kit before destructive work.
-- The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub validation/security checks and the first image builds started; their results and private package visibility still need verification before deployment.
+- The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub CI/security passed for the initial publication. All four image builds completed, but their packages were public. Image publication is disabled pending containment and verified private package setup; deployment remains blocked.
 - Confirm BIOS/network/timezone facts and prepare installer media. The later full hardware preflight is after OS installation and before `make up`; verify installer disk targets separately before installation.
 
 ## A. Prerequisites
