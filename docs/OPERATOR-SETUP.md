@@ -72,7 +72,7 @@ The accounts-only check passes. This is **not** permission to wipe.
 - Verify the scoped ESO role supports runtime reads and denies administrator-secret reads during cloud bootstrap.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
 - Emergency-kit locations and rotation dates remain unrecorded (`TODO`/empty). Finish the independent recovery credentials and printed kit before destructive work.
-- This local checkout currently has no Git commit or remote. Save a reviewed, retrievable deployment checkpoint and complete full checks/image preparation before deployment.
+- The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub validation/security checks and the first image builds started; their results and private package visibility still need verification before deployment.
 - Confirm BIOS/network/timezone facts and prepare installer media. The later full hardware preflight is after OS installation and before `make up`; it does not protect data from the installer wipe.
 
 ## A. Before the wipe
