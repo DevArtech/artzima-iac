@@ -221,6 +221,7 @@ lint-python: ## Byte-compile the Python helpers + render check
 	$(PY) scripts/test_public_guard.py
 	$(PY) scripts/test_private_site.py
 	$(PY) scripts/test_make_dispatch.py
+	$(PY) scripts/test_private_package.py
 	$(PY) -m py_compile install/render_answers.py install/answer_server.py scripts/*.py
 	$(PY) install/render_answers.py --allow-placeholder >/dev/null
 	$(PY) scripts/render.py --check

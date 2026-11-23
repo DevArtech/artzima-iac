@@ -93,3 +93,11 @@ RFC1918 addresses, non-example MAC addresses and non-example project slugs.
 Runtime secrets still include powerful Tailscale operator and backup maintenance keys.
 The ESO role is an improvement over project Viewer, not per-app or per-folder runtime
 isolation. Keep cluster RBAC and access to its bootstrap credential tightly restricted.
+
+## Registry follow-up
+
+The first public-repository image run created public packages. All four were removed and
+fresh anonymous pulls were denied. Post-publication checks were replaced with a private
+builder design: require a private builder repository, register empty packages first and
+verify private targets before application source is built. No registry publication workflow
+remains active in the public source. Private image availability is still a deployment blocker.

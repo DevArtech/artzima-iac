@@ -39,7 +39,7 @@ The accounts-only check verifies credential presence. Hardware readiness require
 - Verify the scoped ESO role supports runtime reads and denies administrator-secret reads during cloud bootstrap.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
 - Emergency-kit locations and rotation dates remain unrecorded (`TODO`/empty). Finish the independent recovery credentials and printed kit before destructive work.
-- The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub CI/security passed for the initial publication. All four image builds completed, but their packages were public. Image publication is disabled pending containment and verified private package setup; deployment remains blocked.
+- The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub CI/security passed for the initial publication. All four image builds completed, but their packages were public. The four public packages were removed and anonymous pulls fail. Public registry workflows are removed. A private builder is prepared locally; its private GitHub repository must be created before private image builds and deployment.
 - Confirm BIOS/network/timezone facts and prepare installer media. The later full hardware preflight is after OS installation and before `make up`; verify installer disk targets separately before installation.
 
 ## A. Prerequisites
@@ -173,8 +173,8 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   unique part of `ID_SERIAL` is enough (the match is `*<serial>*`).
 - [ ] `timezone` in `ansible/group_vars/all/lab.yml`.
 - [ ] `make render`, `make lint`, `make check-public` → all green. Commit and push to GitHub
-  (**public**); *Actions → images* builds the private images; then make sure each package is
-  **Private** ([manual steps §7](manual-steps.md#7-private-images-ghcr-pat-and-pull-secret) steps 1-2).
+  (**public**). Create the separate private image builder; its workflow verifies privacy before building
+  application images ([manual steps §7](manual-steps.md#7-private-images-ghcr-pat-and-pull-secret) steps 1-2).
 
 ### A7. Hardware and network prerequisites
 

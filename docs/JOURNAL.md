@@ -95,3 +95,18 @@ existing SSH authentication because the PAT did not grant workflow creation.
 The primary documentation now describes the IaC system and its operating procedures.
 The one-time rebuild decisions and preparation plan moved into this journal.
 Storage safeguards and future backup/recovery procedures remain in the operating guides.
+
+## 23 November 2026 — Registry publication containment
+
+The first four application image builds succeeded, but their GHCR packages were public.
+The workflow had relied on post-publication visibility checks. That did not enforce the
+intended private state. All four packages were removed with a narrowly scoped workflow
+that checked their exact identities and creation window. Authenticated package reads
+returned not found and fresh anonymous pull requests were denied afterwards.
+
+An empty-image registration test in the public repository also created a public package.
+It contained no application code or model weights and was immediately removed. Registry
+publication workflows were then removed from the public repository. A separate private
+builder was prepared with repository and package privacy checks before application builds.
+Its GitHub repository is not yet created. No server deployment occurred. Public removal
+cannot establish whether anyone downloaded a copy during the exposure window.

@@ -1,7 +1,7 @@
 # images/
 
-Build definitions for the operator's own app images. They are built by
-`.github/workflows/images.yml` and pushed to **private** GHCR packages. The app repos
+Build definitions for the operator's own app images. Run the workflow template
+`private-builder/images.yml` in a separate **private builder repository**, not this public repository. The app repos
 are never modified: Alexandria builds from its own Dockerfiles, and Skyjo is cloned at a pinned commit.
 
 | Image | Source | Pin file |
@@ -102,3 +102,22 @@ overwrites the `<sha>` tag with a fresh digest, and running pods keep their cach
 the cluster to change only when you change git.
 
 Lint: `make lint-images` (hadolint, actionlint, shellcheck).
+
+## Private builder requirement
+
+The public IaC repository must not publish application images. Copy this image tree,
+`scripts/verify_private_package.py` and `private-builder/images.yml` into a private
+builder repository (the workflow goes under `.github/workflows/images.yml`).
+
+The workflow first verifies that its own repository is private. It publishes only empty
+images while registering packages and checks their visibility. Application builds depend
+on that step, and each build verifies its target package is already private before it
+resolves or builds application source. Any failed or missing privacy check stops publication.
+
+A public package cannot be made private again; removing it and recreating it is required.
+Do not use a post-publication manual visibility change as a safety measure. See
+[GitHub package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+
+The prepared builder is `.private/image-builder/`. The planned GitHub repository is
+`DevArtech/artzima-images`, with **Private** visibility and no initial files. It has not
+been created or uploaded yet. Once created, verify its privacy before the first push.

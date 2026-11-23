@@ -20,7 +20,7 @@ from USB installs through to running apps:
 | Off-site backups to Backblaze B2: buckets + scoped keys (OpenTofu), Postgres WAL/base (CNPG Barman Cloud plugin), volumes (VolSync restic), PBS (S3 datastore), NAS media + personal shares (Backrest/restic **on the NAS**) | OpenTofu, Flux, Ansible | `tofu/backblaze/`, `k8s/apps/backups/`, [`docs/backups.md`](docs/backups.md) |
 | Vaultwarden (`vault.<domain>`, never behind Access; `/admin` tailnet-only) on its own CNPG Postgres, nightly snapshot + encrypted NAS backup | Flux + app-template, CNPG, CronJob | `k8s/apps/vaultwarden/` ([manual steps §12](docs/manual-steps.md#12-vaultwarden)) |
 | Publishing every app (one Traefik behind one Cloudflare Tunnel) | `/apps.yaml` → generated Traefik routes + OpenTofu (cloudflare/cloudflare) + cloudflared in k8s | `apps.yaml`, `tofu/cloudflare/`, `k8s/apps/routes/`, `k8s/infrastructure/controllers/{traefik,cloudflared}.yaml` |
-| Private app images (alexandria, skyjo) | GitHub Actions → **private** GHCR packages, pulled with a secret synced from Infisical | [`images/`](images/README.md), `.github/workflows/images.yml` |
+| Private app images (alexandria, skyjo) | GitHub Actions → **private** GHCR packages, pulled with a secret synced from Infisical | [`images/`](images/README.md), private builder workflow template |
 | Secrets (none in git, not even encrypted) | **Infisical** → Ansible lookups, OpenTofu provider (ephemeral), External Secrets Operator | [`docs/secrets.md`](docs/secrets.md), `k8s/secrets/` |
 | Derived credentials (Tailscale auth keys, the cluster's Infisical identity) from five root credentials | OpenTofu (tailscale, infisical) + `make gen-secrets` | `tofu/bootstrap/`, `scripts/gen_secrets.py` |
 | Gates and self-checks: preflight, confirmations, monthly restore tests, alerts to one webhook | make, CronJobs, Alertmanager | `scripts/preflight.py`, `scripts/verify.py`, `k8s/apps/backups/maintenance.yaml`, `k8s/infrastructure/configs/alerts.yaml` |
@@ -92,7 +92,7 @@ tofu/         Talos VMs + bootstrap, Jellyfin LXC, HAOS VM, ts-router LXCs
 k8s/          clusters/artzima (Flux entry), infrastructure/ (incl. external-secrets), apps/,
               secrets/ (ClusterSecretStore + ExternalSecrets: Infisical paths only)
 images/       build definitions for the private app images (alexandria: upstream pin + CLI; skyjo: Dockerfile with LFS weights)
-.github/      workflows/ci.yml (make lint on every PR), images.yml (private GHCR), security.yml (gitleaks)
+.github/      workflows/ci.yml (make lint on every PR), security.yml (gitleaks)
 scripts/      labdata/render helpers, validate_k8s.py, install-tools.sh, infisical_exec.py,
               preflight.py, verify.py, gen_secrets.py, confirm.sh (the "yes" gate),
               dr-tools.sh (DR laptop tools), dr_pdf.py, dr_secrets_from_cluster.py,
@@ -161,8 +161,10 @@ MACs and installs onto the disk with the inventory serial. Every target also run
 ### Private app images (GHCR)
 
 `alexandria` and `skyjo` are the operator's own apps. Their images are **private**
-GHCR packages, built by this repo's GitHub Actions (`.github/workflows/images.yml`) and
-never by changing the app repos:
+GHCR packages built in a separate **private builder repository**. This public repository
+contains build definitions and a guarded workflow template at
+`images/private-builder/images.yml`; it does not publish application images. The app repos
+are not modified:
 
 | Image | Built from | Pin |
 |---|---|---|
@@ -171,11 +173,11 @@ never by changing the app repos:
 | `ghcr.io/devartech/alexandria-cli` | [`images/alexandria-cli/Dockerfile`](images/alexandria-cli/Dockerfile): upstream's **release** binary `alexandria` (sha256-pinned; CI checks the release tag is the pinned commit), for `alexandria init` | same (`UPSTREAM_CLI_VERSION`, `UPSTREAM_CLI_SHA256`) |
 | `ghcr.io/devartech/skyjo` | [`images/skyjo/Dockerfile`](images/skyjo/Dockerfile) (clones skynet at the pin **with Git LFS**: the MuZero weights are in the image; API + frontend on one origin) | `images/skyjo/upstream.env` |
 
-- **When:** on a push to `main` that touches `images/**` or the workflow, every Monday
+- **When:** in the private builder, on a push to `main` that touches `images/**` or the workflow, every Monday
   (refreshes base images at the same pin), and by hand (*Actions → images → Run workflow*,
   optionally with another upstream ref).
 - **Tags:** the resolved upstream commit SHA, plus `latest`. The HelmReleases pin the SHA tag.
-- **Bumping an app:** change `UPSTREAM_REF` in its `upstream.env`, push, wait for the
+- **Bumping an app:** change the pin in the private builder, synchronise its public pin, wait for the
   workflow, then set the same SHA as the image tag in `k8s/apps/<app>/helmrelease.yaml`.
 - **Pulling:** every pod of both apps has `imagePullSecrets: [ghcr-pull]`. ESO's
   `ClusterExternalSecret` (`k8s/secrets/ghcr-pull.yaml`) creates that `dockerconfigjson` in every

@@ -7,7 +7,7 @@
 #   ghcr.io/devartech/skyjo                   images/skyjo/Dockerfile    @ images/skyjo/upstream.env
 #                                             (includes the MuZero weights from upstream's Git LFS)
 # Tags: the resolved upstream commit SHA (40 chars) + `latest`.
-# The packages are created by this repo's GITHUB_TOKEN and linked to this repo
+# Run this workflow only in a PRIVATE builder repository. Packages use its GITHUB_TOKEN and link to that private repository
 # (org.opencontainers.image.source). Keep each package PRIVATE (check after the
 # first run, docs/manual-steps.md §7): the repo is public, the images are not.
 # The cluster pulls them with a read:packages PAT kept in Infisical.
@@ -44,12 +44,70 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  bootstrap-private-packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require this builder repository to be private
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true ] || {
+            echo "::error::Image publication requires a private builder repository"
+            exit 1
+          }
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Create empty packages and require private visibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d)"
+          trap 'rm -rf "$context"' EXIT
+          # No application source, model weights or credentials enter these images.
+          printf 'FROM scratch\nLABEL io.artzima.purpose="private-registry-bootstrap"\n' > "$context/Dockerfile"
+          for name in alexandria-mcp alexandria-oauth-proxy alexandria-cli skyjo; do
+            endpoint="/users/DevArtech/packages/container/$name"
+            status="$(curl -sS -o "$context/existing.json" -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com$endpoint")"
+            if [ "$status" = 200 ]; then
+              jq -e '.visibility == "private"' "$context/existing.json" >/dev/null || {
+                echo "::error::Existing package is not private; refusing to modify it"
+                exit 1
+              }
+              echo "Existing private package verified: $name"
+              continue
+            fi
+            [ "$status" = 404 ] || { echo "::error::Package lookup failed: HTTP $status"; exit 1; }
+            docker buildx build --platform linux/amd64 --provenance=false \
+              --tag "ghcr.io/devartech/$name:private-bootstrap" --push "$context"
+            metadata="$(gh api "$endpoint")"
+            if ! jq -e '.visibility == "private"' <<< "$metadata" >/dev/null; then
+              # Only the empty package just created in this step is removed.
+              gh api --method DELETE "$endpoint"
+              echo "::error::The registry did not create a private package. Empty bootstrap removed; application publication remains disabled."
+              exit 1
+            fi
+            echo "Created and verified private empty package: $name"
+          done
+
   build:
+    needs: bootstrap-private-packages
     name: ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Never push from anything but main (dispatch can target other branches).
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PRIVATE_IMAGE_PUBLISHING_ENABLED == 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write

@@ -195,17 +195,15 @@ from the Talos node IPs (pod traffic is SNATed when it leaves the cluster), so:
 
 ## 7. Private images: GHCR PAT and pull secret
 
-The app images (`ghcr.io/devartech/alexandria-mcp`, `alexandria-oauth-proxy`, `skyjo`)
-are **private** GHCR packages, even though this repo is public. The workflow `images.yml`
-pushes them with its own `GITHUB_TOKEN`, so the build needs no secret. The cluster needs a
-read-only token for pulling.
+Application image publishing runs in a separate **private builder repository**.
+The public IaC repository contains definitions and pins, not an active publishing workflow.
+The four targets are `alexandria-mcp`, `alexandria-oauth-proxy`, `alexandria-cli` and `skyjo`.
 
-1. **Push the repo** (public) and let *Actions → images* finish once on `main`.
-2. **Make sure every package is private:** *github.com → your profile → Packages →* each of
-   the 3 packages. If one shows **Public**, go to *Package settings → Danger Zone → Change
-   visibility → Private*. Never make them public. If a package with the same name already exists
-   from somewhere else, the push fails with 403. In that case, open
-   *Package settings → Manage Actions access*, add `artzima-iac` with **Write**, then re-run.
+1. **Prepare the private builder:** follow [the image build guide](../images/README.md#private-builder-requirement).
+2. **Verify privacy before application builds:** the builder checks repository privacy,
+   registers empty packages and checks private visibility, then verifies every target
+   before building. Do not proceed on a failed check. Public packages cannot be changed
+   back to private; a private replacement is required.
 3. **The token** is root credential #5 ([OPERATOR-SETUP A2](OPERATOR-SETUP.md#a2-accounts-and-the-other-four-root-credentials)):
    *Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)*.
    - Note: `artzima`. Expiration: your choice; put a reminder before it expires.
