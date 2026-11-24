@@ -124,6 +124,7 @@ def bazarr() -> None:
 # to merge: a file without main.mediaServerType sends a brand-new database into the
 # Overseerr merge, which dies with "Failed to insert migration records ... migrations".
 SEERR_NOT_CONFIGURED = 4
+SEERR_SEEDED_KEYS = {"main", "network", "clientId", "sessionSecret", "vapidPrivate", "vapidPublic"}
 
 
 def seerr() -> None:
@@ -131,9 +132,10 @@ def seerr() -> None:
     if conf.exists():
         data = json.loads(conf.read_text())
         main = data.setdefault("main", {})
-        # Repair only a file this script seeded and Seerr never started with (Seerr
-        # writes clientId on its first successful start); never a real Overseerr file.
-        if "mediaServerType" not in main and "clientId" not in data:
+        # Repair only a file this script seeded (plus the ids Seerr generates and saves
+        # before the merge crashes); a real Overseerr file has all sections (plex, ...).
+        if ("mediaServerType" not in main and set(main) <= {"apiKey"}
+                and set(data) <= SEERR_SEEDED_KEYS):
             main["mediaServerType"] = SEERR_NOT_CONFIGURED
             conf.write_text(json.dumps(data, indent=1))
             print(f"Seerr: added main.mediaServerType (not configured) to never-started {conf}")
