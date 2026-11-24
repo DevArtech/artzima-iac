@@ -497,12 +497,17 @@ def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: 
                               raw=True).strip()
             break
         except (RuntimeError, OSError) as e:
+            # 5.x: wrong login = HTTP 401, banned IP = 403. Never retry those (retries would
+            # earn the ban); only "not reachable yet" is retried.
+            if isinstance(e, RuntimeError) and ("HTTP 401" in str(e) or "HTTP 403" in str(e)):
+                raise RuntimeError("login refused (HTTP 401/403): check /k8s/media/QBITTORRENT_* and the "
+                                   "qbittorrent pod's seed-config init container log") from None
             if time.monotonic() > deadline:
                 raise RuntimeError(f"not reachable after {WAIT}s: {e}") from None
             time.sleep(10)
     # Success = a session cookie (QBT_SID_<port>; "SID" before 5.x). qBittorrent 5.x answers
     # 204 with an empty body (which call() returns as "null"), 4.x answered 200 "Ok.";
-    # a wrong login is 200 "Fails.", a banned IP 403 (raised by call()).
+    # a wrong login is 401 in 5.x (above), 200 "Fails." in 4.x (no cookie: refused here).
     if not any(c.name.startswith(("QBT_SID", "SID")) for c in api.jar):
         raise RuntimeError(f"login refused ({answer[:20]!r}): check /k8s/media/QBITTORRENT_* and the "
                            "qbittorrent pod's seed-config init container log")
