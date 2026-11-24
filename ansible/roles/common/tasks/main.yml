@@ -98,3 +98,41 @@
       KbdInteractiveAuthentication no
       PermitRootLogin prohibit-password
   notify: Reload ssh
+
+# The Lenovo M83s' Intel I217-LM (e1000e) hangs under heavy traffic ("Detected Hardware Unit
+# Hang"): the host stays up but its network freezes until a power cycle (build night,
+# 2026-11-24). Turning off TSO/GSO/GRO on that NIC is the standard fix.
+- name: Find the primary NIC's driver
+  ansible.builtin.command: ethtool -i lan0
+  register: common_lan0_driver
+  changed_when: false
+  failed_when: false
+
+- name: Keep e1000e offloads off (I217 hardware-hang fix)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/e1000e-offload-off.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Unit]
+      Description=Turn off lan0 TSO/GSO/GRO: the e1000e I217-LM hangs under load
+      After=network-pre.target
+      Before=network.target
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/ethtool -K lan0 tso off gso off gro off
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+  when: "'driver: e1000e' in common_lan0_driver.stdout"
+  register: common_e1000e_unit
+
+- name: Enable the e1000e offload fix
+  ansible.builtin.systemd_service:
+    name: e1000e-offload-off.service
+    enabled: true
+    state: started
+    daemon_reload: "{{ common_e1000e_unit is changed }}"
+  when: "'driver: e1000e' in common_lan0_driver.stdout"
