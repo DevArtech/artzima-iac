@@ -558,7 +558,9 @@ def arr_login_ok(api: Api, user: str, password: str) -> bool:
     auth cookie (SonarrAuth, ...); a wrong login = 302 to /login?...loginFailed=true. The
     *arr host API returns only a hash of the password, so this is how a changed Jellyfin
     password is noticed without keeping any state. The *arrs have no login lockout."""
-    data = urllib.parse.urlencode({"username": user, "password": password, "rememberMe": "on"}).encode()
+    # rememberMe must be a boolean: Radarr 7 rejects "on" (a checkbox value) with HTTP 400, and
+    # on a failed model validation it writes the whole form, PASSWORD INCLUDED, to its log.
+    data = urllib.parse.urlencode({"username": user, "password": password, "rememberMe": "true"}).encode()
     try:
         res = urllib.request.build_opener(_NoRedirect).open(
             urllib.request.Request(api.base + "/login", data=data, method="POST"), timeout=TIMEOUT)
