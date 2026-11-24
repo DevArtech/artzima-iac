@@ -654,6 +654,12 @@ def seerr_server(api: Api, s: dict) -> None:
     test = seerr_test(api, s["path"], conn)
     prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
     if prof is None:
+        # Seerr caches an arr's profile list for an hour: drop that cache (only Seerr's
+        # copy of the arr API answers) and ask again, e.g. right after Recyclarr's first run.
+        api.post(f"/api/v1/settings/cache/{s['name'].lower()}/flush")
+        test = seerr_test(api, s["path"], conn)
+        prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
+    if prof is None:
         log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
             "(recyclarr creates it; the next run adds the server)")
         return
