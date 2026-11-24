@@ -290,6 +290,16 @@ spec:
           paperless:
             app:
               - path: /usr/src/paperless/data
+      # The search index (Tantivy) breaks on NFS: deleted-but-open files become
+      # .nfsXXXX "silly renames" that a rebuild cannot remove (EBUSY), so every
+      # upload failed. It is a cache: the image's init-search-index step rebuilds
+      # it from the database at each start (document_index reindex --if-needed).
+      index:
+        type: emptyDir
+        advancedMounts:
+          paperless:
+            app:
+              - path: /usr/src/paperless/data/index
       media:
         type: persistentVolumeClaim
         existingClaim: paperless-media
