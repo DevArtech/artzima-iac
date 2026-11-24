@@ -56,7 +56,7 @@ preselects `flux-system`.
 ### Empty by design while all is well
 
 Flux "Suspended Objects"; Traefik "Services failing SLO" ×2 and "5xx over $interval" (they list
-only offenders). Flux "Failing Sources" shows 0 instead of no data.
+only offenders). Flux "Failing Reconcilers" and "Failing Sources" show 0 instead of no data.
 
 Not available at all (no exporter): host temperatures, Proxmox Backup Server, Backrest, Tailscale,
 VolSync's own operator metrics (the overview uses kube-state-metrics' `artzima_volsync_*`).

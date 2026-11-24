@@ -160,7 +160,7 @@
      },
      "editorMode": "code",
      "exemplar": false,
-     "expr": "count(gotk_resource_info{exported_namespace=~\"$namespace\", customresource_kind=~\"Kustomization|HelmRelease\", ready=\"False\"})",
+     "expr": "count(gotk_resource_info{exported_namespace=~\"$namespace\", customresource_kind=~\"Kustomization|HelmRelease\", ready=\"False\"}) or vector(0)",
      "instant": true,
      "interval": "",
      "legendFormat": "",

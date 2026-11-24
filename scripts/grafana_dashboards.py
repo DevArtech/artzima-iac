@@ -87,6 +87,7 @@ PATCH: dict[str, dict[int, dict]] = {
     },
     # count() of nothing is "No data": show 0 failing sources instead
     "flux-cluster": {
+        28: {"replace": [('ready="False"})', 'ready="False"}) or vector(0)')]},
         30: {"replace": [('ready="False"})', 'ready="False"}) or vector(0)')]},
     },
 }
