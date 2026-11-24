@@ -99,8 +99,8 @@ Each key's `by:` (operator / generated / automation) and `generate:` recipe is i
 /bare-metal          installer-only
 /ansible             host configuration (+ Tailscale keys, B2 keys for PBS/NAS, PBS fingerprint)
 /tofu                OpenTofu inputs (+ Proxmox token, ESO identity credentials)
-/operator            generated logins for PEOPLE (Vaultwarden admin, Backrest): copy to your
-                     password manager; nothing in the lab reads them
+/operator            generated logins for PEOPLE (Vaultwarden admin, Backrest, Jellyfin admin):
+                     copy to your password manager; only `make jellyfin` reads the Jellyfin one
 /k8s/cloudflared     \
 /k8s/monitoring       |
 /k8s/alerts           |  THE alert webhook URL (Alertmanager + Backrest on the NAS)
@@ -169,6 +169,7 @@ creates it (recipe from the manifest). Otherwise the named `make` step writes it
 | `/ansible/NAS_BACKUP_HEALTHCHECKS_URL` | optional dead-man switch `https://hc-ping.com/<ping-key>`; **empty** = off | gen (empty), you | Backrest plan hooks |
 | `/k8s/alerts/WEBHOOK_URL` | THE alert endpoint (https; Headquarters later); **empty** = alerts are not sent yet | gen (empty), you | ESO → `monitoring/alert-webhook` (Alertmanager); Backrest hooks (`generic+…`) and the NAS `restic-maint` |
 | `/operator/VAULTWARDEN_ADMIN_PASSWORD`, `/operator/BACKREST_PASSWORD` | logins for **you** (password manager) | gen | nothing (their hashes are) |
+| `/operator/JELLYFIN_ADMIN_USER`, `JELLYFIN_ADMIN_PASSWORD` | `devartech`, base64:24: Jellyfin's admin login for **you** | gen | `make jellyfin` (first-run wizard, then its API session) |
 | `/k8s/vaultwarden/ADMIN_TOKEN` | Argon2id PHC hash (m=65540, t=3, p=4) of `/operator/VAULTWARDEN_ADMIN_PASSWORD` | gen | ESO → `vaultwarden/vaultwarden` |
 | `/k8s/vaultwarden/BACKUP_PASSPHRASE` | base64:32. **Keep a copy outside Vaultwarden** | gen | nightly NAS backup (gpg) |
 | `/k8s/vaultwarden/SMTP_HOST`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD` | empty = no mail; fill in to enable | gen (empty), you | ESO → `vaultwarden/vaultwarden` (only non-empty keys emitted) |
@@ -178,7 +179,7 @@ creates it (recipe from the manifest). Otherwise the named `make` step writes it
 | `/k8s/alexandria/LEGACY_BEARER_TOKEN`, `OPENAI_API_KEY` | empty (= reuse the MCP token / no embedder key) | gen (empty) | same |
 | `/k8s/media/{SONARR,RADARR,LIDARR,PROWLARR,BAZARR}_API_KEY`, `SEERR_API_KEY` | hex:16 / hex:32, **pre-seeded** into the apps | gen | ESO → `media/media-apikeys`: the apps, media-wiring Job, Recyclarr |
 | `/k8s/media/QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD` | `admin`, base64:24 | gen | ESO → `media/qbittorrent` |
-| `/k8s/media/JELLYFIN_API_KEY` | empty until you create the key in Jellyfin ([OPERATOR-SETUP C](OPERATOR-SETUP.md#c-after)); the wiring Job skips the Jellyfin connection while empty | gen (empty), you | ESO → `media/jellyfin-api` |
+| `/k8s/media/JELLYFIN_API_KEY` | Jellyfin API key `artzima-iac`, created in Jellyfin and written here by `make jellyfin` (role `jellyfin_setup`); the wiring Job skips the Jellyfin connection while it is missing or empty | `make jellyfin` | ESO → `media/jellyfin-api` |
 | `/k8s/paperless/SECRET_KEY`, `ADMIN_USER`, `ADMIN_PASSWORD` | base64:48, `admin`, base64:24 (first start only) | gen | ESO → `paperless/paperless` |
 | `/k8s/backup/RESTIC_PASSWORD` | base64:48: every VolSync repo. **Keep a copy outside the lab** | gen | `<pvc>-restic` Secrets, `restic-maint` |
 

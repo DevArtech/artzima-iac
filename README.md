@@ -292,8 +292,9 @@ flowchart LR
 2. **Surfshark:** generate a WireGuard key pair (*Manual setup → WireGuard*), and put the private key
    and the `Address` into Infisical `/k8s/vpn` ([§10.1](docs/manual-steps.md#101-before-the-flux-sync-in-this-order)).
    Pick the country in `ansible/group_vars/all/media.yml`.
-3. **Keys:** generate the arr/Seerr API keys and the qBittorrent login into `/k8s/media`, and create a
-   **Jellyfin API key** (*Dashboard → API Keys*) → `/k8s/media/JELLYFIN_API_KEY`. Run `make secrets-check`.
+3. **Keys:** generate the arr/Seerr API keys and the qBittorrent login into `/k8s/media`
+   (`make gen-secrets`). The **Jellyfin API key** is created by `make jellyfin` and written to
+   `/k8s/media/JELLYFIN_API_KEY`. Run `make secrets-check`.
 4. **Flux sync:** `make render`, `make cf-plan cf-apply` (adds `seerr.<domain>`), commit, push.
    Flux deploys the stack, and the `media-wiring` Job connects everything: download client, root
    folders, Prowlarr apps, Bazarr, Jellyfin Connect, and Seerr once its wizard is done.
@@ -372,10 +373,10 @@ copy, the bytes would still be there under the original path, and the arrs' recy
      files in tv/music roots) are linked flat with a warning: create a folder in the *data* layout and
      `mv` the **link** into it on the NAS (the original is untouched).
    - **Releasing a title:** remove its `owned-rip` tag (for example, to let it upgrade later).
-8. **Jellyfin** starts fresh: its first-run wizard creates the admin user, and its libraries are
-   **`/data/media/movies`**, **`/data/media/tv`** and **`/data/media/music`** (*Dashboard → Libraries*,
-   [manual steps §10.3](docs/manual-steps.md#103-first-logins)). Scan once; the adopted rips appear
-   there. Nothing from the old Jellyfin (users, watch history) is carried over.
+8. **Jellyfin** starts fresh: `make jellyfin` runs its first-run wizard (admin login in Infisical
+   `/operator/JELLYFIN_ADMIN_*`) and creates the libraries **`/data/media/movies`**, **`/data/media/tv`**
+   and **`/data/media/music`** ([manual steps §10.3](docs/manual-steps.md#103-first-logins)). Scan once;
+   the adopted rips appear there. Nothing from the old Jellyfin (users, watch history) is carried over.
 9. **Keep the originals** until you decide otherwise. They cost no extra space while the links
    exist (same inodes). Deleting the originals later is a separate, manual decision, and is
    never done by this repo.

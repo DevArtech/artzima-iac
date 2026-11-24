@@ -3,8 +3,8 @@
 # fronts it: a selector-less Service + EndpointSlice point at its lab IP
 # (from cluster-vars, i.e. ansible/hosts.yml), and the generated route
 # (k8s/apps/routes, from /apps.yaml) publishes it.
-# Jellyfin: set Dashboard > Networking > Known proxies to the Talos node IPs
-# (docs/addresses.md).
+# Jellyfin's Known proxies (the Talos node IPs) and published URL are set by
+# `make jellyfin` (ansible/roles/jellyfin_setup).
 apiVersion: v1
 kind: Service
 metadata:

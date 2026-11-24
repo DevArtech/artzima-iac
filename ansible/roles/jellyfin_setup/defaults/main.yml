@@ -1,0 +1,49 @@
+---
+# Jellyfin's own configuration over its HTTP API on the LXC itself (role tasks/main.yml).
+jellyfin_setup_url: "http://localhost:{{ http_port | default(8096) }}"
+# Identifies this client to Jellyfin (its sessions and devices list).
+jellyfin_setup_client_header: >-
+  MediaBrowser Client="artzima-iac", Device="ansible", DeviceId="artzima-iac-ansible", Version="1.0"
+# Hide request/response data of the authenticated calls (session token, password, API key).
+# Set false only to debug a failing API call, and never in a shared log.
+jellyfin_setup_no_log: true
+
+# First-run wizard (only while Jellyfin reports it is not done).
+jellyfin_setup_startup:
+  UICulture: en-US
+  MetadataCountryCode: US
+  PreferredMetadataLanguage: en
+
+# Libraries: created when no library of that name exists; never changed or deleted, and
+# created WITHOUT a scan (refreshLibrary=false). /data/media is the LXC's read-only bind mount.
+jellyfin_setup_libraries:
+  - { name: Movies, type: movies, path: /data/media/movies }
+  - { name: Shows, type: tvshows, path: /data/media/tv }
+  - { name: Music, type: music, path: /data/media/music }
+
+# Dashboard > Playback > Transcoding. RTX 3050 Ti (Ampere GA107): NVDEC decodes
+# H.264, HEVC (8/10-bit), VC-1, VP9 (8/10-bit) and AV1; NVENC encodes H.264 and HEVC
+# (AV1 encode needs Ada). Tone mapping runs as a CUDA filter on NVIDIA.
+jellyfin_setup_encoding:
+  HardwareAccelerationType: nvenc
+  HardwareDecodingCodecs: [h264, hevc, vc1, vp9, av1]
+  EnableHardwareEncoding: true
+  AllowHevcEncoding: true
+  AllowAv1Encoding: false
+  EnableDecodingColorDepth10Hevc: true
+  EnableDecodingColorDepth10Vp9: true
+  EnableEnhancedNvdecDecoder: true
+  EnableTonemapping: true
+
+# Server settings (Dashboard > General / Networking). Jellyfin 12 turns legacy
+# authorization OFF by default, and then rejects API keys sent as X-Emby-Token,
+# X-MediaBrowser-Token or ?api_key. The Sonarr/Radarr/Lidarr "Emby / Jellyfin"
+# Connect notification sends X-MediaBrowser-Token, so the media wiring needs it on.
+jellyfin_setup_system:
+  EnableLegacyAuthorization: true
+
+# The API key for the media wiring Job (Sonarr/Radarr/Lidarr "Connect"): created once
+# under this app name and stored in Infisical (k8s project) at this path.
+jellyfin_setup_api_key_app: artzima-iac
+jellyfin_setup_api_key_path: /k8s/media
+jellyfin_setup_api_key_name: JELLYFIN_API_KEY

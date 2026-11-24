@@ -555,8 +555,8 @@ Talos and the LXCs are rebuilt by code. The old vzdump backups are in datastore 
 ### E4. First logins
 
 As in [OPERATOR-SETUP C](OPERATOR-SETUP.md#c-after): Vaultwarden (your account and its data are
-back: log in with the master password from the kit), Paperless, Jellyfin (new setup, libraries,
-API key → `/k8s/media/JELLYFIN_API_KEY`), Backrest (`http://192.0.2.156:9898`, still paused),
+back: log in with the master password from the kit), Paperless, Jellyfin (set up by `make jellyfin`: wizard, libraries, API key →
+`/k8s/media/JELLYFIN_API_KEY`; log in with `/operator/JELLYFIN_ADMIN_*`), Backrest (`http://192.0.2.156:9898`, still paused),
 the media stack's VPN check.
 
 ---

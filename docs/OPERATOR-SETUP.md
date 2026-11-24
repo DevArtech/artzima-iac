@@ -341,14 +341,16 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 
 ## C. After
 
-- [ ] **Jellyfin (starts fresh):** nothing is carried over from the old server: no users, watch history
-  or settings. `https://jellyfin.<domain>` → the first-run wizard creates the **admin user** → libraries
-  **Movies** `/data/media/movies`, **Shows** `/data/media/tv`, **Music** `/data/media/music`
-  ([manual steps §10.3](manual-steps.md#103-first-logins)), *Dashboard → API Keys → +* (name
-  `arr-stack`) → put the key into Infisical `/k8s/media/JELLYFIN_API_KEY` (replace the empty value).
-  Until then the wiring Job skips only the Sonarr/Radarr/Lidarr → Jellyfin connection; to apply it
-  now: `kubectl -n media delete job media-wiring --ignore-not-found && flux reconcile kustomization apps`.
-  "Known proxies" = the Talos node IPs ([addresses](addresses.md)).
+- [ ] **Jellyfin (starts fresh, automated):** nothing is carried over from the old server: no users,
+  watch history or settings. Nothing to click: `make jellyfin` (part of `make up`) runs the first-run
+  wizard, creates the libraries **Movies** `/data/media/movies`, **Shows** `/data/media/tv` and
+  **Music** `/data/media/music`, turns on NVENC, sets the known proxies (Talos node IPs) and the
+  published URL, and writes the API key `artzima-iac` to `/k8s/media/JELLYFIN_API_KEY`
+  ([manual steps §10.3](manual-steps.md#103-first-logins)). **Your login** is in Infisical
+  `/operator/JELLYFIN_ADMIN_USER` / `JELLYFIN_ADMIN_PASSWORD`: copy it to your password manager and
+  log in at `https://jellyfin.<domain>`. If the wiring Job ran before the key existed, it skipped only
+  the Sonarr/Radarr/Lidarr → Jellyfin connection; to apply it now:
+  `kubectl -n media delete job media-wiring --ignore-not-found && flux reconcile kustomization apps`.
 - [ ] **Media stack:** VPN check, Recyclarr, first logins, Seerr wizard
   ([manual steps §10.2-10.3](manual-steps.md#102-after-the-sync)). Existing rips: `make media-adopt`
   (dry-run), then `make media-adopt MEDIA_ADOPT_ARGS=--apply`.

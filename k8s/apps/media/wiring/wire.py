@@ -304,8 +304,8 @@ def arr(api: Api, kind: str, cfg: dict) -> None:
               "onSeriesDelete", "onEpisodeFileDelete", "onEpisodeFileDeleteForUpgrade",
               "onMovieDelete", "onMovieFileDelete", "onMovieFileDeleteForUpgrade"]
     if not cfg["jf_key"]:
-        # Infisical /k8s/media/JELLYFIN_API_KEY is empty until you create the key in Jellyfin
-        # (docs/OPERATOR-SETUP.md "after"); the next run (re-run the Job) connects it.
+        # Infisical /k8s/media/JELLYFIN_API_KEY is written by `make jellyfin` (role
+        # jellyfin_setup); until then it is missing or empty and the next run connects it.
         log(f"skip {kind} -> Jellyfin connect: JELLYFIN_API_KEY is empty")
         return
     upsert(api, f"{api.prefix}/notification", "MediaBrowser", "Jellyfin",
