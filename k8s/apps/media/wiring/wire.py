@@ -699,7 +699,8 @@ def seerr_server(api: Api, s: dict) -> None:
             log(f"ok   Seerr: {s['name']}")
             return
         cur.update(conn)
-        api.put(f"{s['path']}/{cur['id']}", cur)
+        # the id goes in the path only: Seerr's API schema marks body.id read-only (HTTP 400)
+        api.put(f"{s['path']}/{cur['id']}", {k: v for k, v in cur.items() if k != "id"})
         log(f"upd  Seerr: {s['name']} {', '.join(upd)}")
         return
     test = seerr_test(api, s["path"], conn)
