@@ -9,7 +9,8 @@ Secrets from Infisical /k8s/media) and are never printed.
 
   1. /data tree (TRaSH layout): torrents/{tv,movies}, media/{tv,movies}
   2. Sonarr + Radarr + Lidarr: root folder, hardlinks on, renaming OFF (Lidarr: and
-     never write audio tags), recycle bin
+     never write audio tags; Radarr: no folder renames), no chmod / file-date changes
+     (adopted rips share their inode with the originals), recycle bin
      (/data/.recycle), qBittorrent download client (category tv / movies),
      Jellyfin "Connect" (library refresh on import)
   2b. existing rips: import unmapped folders of the root folders (only on an
@@ -41,6 +42,9 @@ import urllib.request
 
 MASK = "********"  # how the *arr APIs return stored secrets
 WAIT = int(os.environ.get("WAIT_SECONDS", "900"))
+# Per request. Generous: a root folder listing scans the NFS media tree, and an arr
+# that is still starting answers only once it is up.
+TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "120"))
 errors: list[str] = []
 
 
@@ -61,7 +65,8 @@ class Api:
         self.name, self.base = name, base.rstrip("/")
         self.prefix = prefix  # *arr API root: /api/v3 (Sonarr, Radarr), /api/v1 (Lidarr, Prowlarr)
         self.headers = {"Accept": "application/json", **(headers or {})}
-        handlers = [urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())] if cookies else []
+        self.jar = http.cookiejar.CookieJar()
+        handlers = [urllib.request.HTTPCookieProcessor(self.jar)] if cookies else []
         self.opener = urllib.request.build_opener(*handlers)
 
     def call(self, method: str, path: str, body=None, form: dict | None = None, raw: bool = False):
@@ -74,7 +79,7 @@ class Api:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
-            with self.opener.open(req, timeout=30) as res:
+            with self.opener.open(req, timeout=TIMEOUT) as res:
                 text = res.read().decode() or "null"
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:500]
@@ -202,19 +207,23 @@ def ensure_config(api: Api, path: str, want: dict, what: str) -> None:
     log(f"upd  {api.name}: {what}")
 
 
-def ensure_media_management(api: Api, recycle_bin: str, recycle_days: int) -> None:
+def ensure_media_management(api: Api, kind: str, recycle_bin: str, recycle_days: int) -> None:
+    extra = {"autoRenameFolders": False} if kind == "radarr" else {}  # no folder renames on refresh
     ensure_config(api, f"{api.prefix}/config/mediamanagement", {
         "copyUsingHardlinks": True,
-        # Never chmod/chown imported files: an adopted rip shares its inode with
-        # the original, so that would change the original too.
+        # Never chmod/chown imported files, never touch their timestamps: an adopted rip
+        # shares its inode with the original, so that would change the original too.
         "setPermissionsLinux": False,
+        "fileDate": "none",
+        "deleteEmptyFolders": False,
+        **extra,
         # Deleting = moving into the recycle bin on the same volume (not a loss).
         "recycleBin": recycle_bin,
         "recycleBinCleanupDays": recycle_days,
         # TRaSH: let custom formats decide; also no "proper/repack" upgrade path
         # around the "no upgrades" rule of the Owned rip profile.
         "downloadPropersAndRepacks": "doNotPrefer",
-    }, f"media management (hardlinks, recycle bin {recycle_bin}, {recycle_days} d)")
+    }, f"media management (hardlinks, no chmod/file dates, recycle bin {recycle_bin}, {recycle_days} d)")
 
 
 def ensure_no_rename(api: Api, kind: str) -> None:
@@ -283,7 +292,7 @@ def arr(api: Api, kind: str, cfg: dict) -> None:
     if not wait_for(api, f"{api.prefix}/system/status"):
         return
     ensure_root_folder(api, cfg["root"], kind)
-    ensure_media_management(api, cfg["recycle_bin"], cfg["recycle_days"])
+    ensure_media_management(api, kind, cfg["recycle_bin"], cfg["recycle_days"])
     ensure_no_rename(api, kind)
     if kind == "lidarr":
         # Never write tags into audio files: an adopted rip shares its inode with
@@ -487,9 +496,13 @@ def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: 
             if time.monotonic() > deadline:
                 raise RuntimeError(f"not reachable after {WAIT}s: {e}") from None
             time.sleep(10)
-    if answer != "Ok.":
-        raise RuntimeError("login refused: check /k8s/media/QBITTORRENT_* and the qbittorrent "
-                           "pod's seed-config init container log")
+    # Success = a session cookie (QBT_SID_<port>; "SID" before 5.x). qBittorrent 5.x answers
+    # 204 with an empty body (which call() returns as "null"), 4.x answered 200 "Ok.";
+    # a wrong login is 200 "Fails.", a banned IP 403 (raised by call()).
+    if not any(c.name.startswith(("QBT_SID", "SID")) for c in api.jar):
+        raise RuntimeError(f"login refused ({answer[:20]!r}): check /k8s/media/QBITTORRENT_* and the "
+                           "qbittorrent pod's seed-config init container log")
+    log("ok   qBittorrent: logged in")
     prefs = api.get("/api/v2/app/preferences")
     want = {
         "save_path": f"{data_root}/torrents",
@@ -636,28 +649,57 @@ def seerr_test(api: Api, path: str, conn: dict, tries: int = 6) -> dict:
     return {}
 
 
+def flushed_test(api: Api, s: dict, conn: dict) -> dict:
+    """Seerr caches an arr's profile list for an hour: drop that cache (only Seerr's copy
+    of the arr API answers) and test again, e.g. right after Recyclarr's first run."""
+    api.post(f"/api/v1/settings/cache/{s['name'].lower()}/flush")
+    return seerr_test(api, s["path"], conn)
+
+
+def profile_list(api: Api, s: dict, conn: dict, want_id) -> list[dict] | None:
+    """The arr's quality profiles as Seerr sees them (fresh if `want_id` is missing from
+    the cached list); None if the arr can't be reached right now (nothing is changed)."""
+    try:
+        profiles = seerr_test(api, s["path"], conn, tries=2).get("profiles")
+        if profiles is not None and want_id not in {p["id"] for p in profiles}:
+            profiles = flushed_test(api, s, conn).get("profiles")
+    except RuntimeError as e:
+        log(f"warn Seerr: {s['name']} profile check skipped: {e}")
+        return None
+    return profiles
+
+
 def seerr_server(api: Api, s: dict) -> None:
     conn = {"name": s["name"], "hostname": s["host"], "port": s["port"], "apiKey": s["key"],
             "useSsl": False, "baseUrl": ""}
     existing = [x for x in api.get(s["path"]) if x.get("hostname") == s["host"] and not x.get("is4k")]
     if existing:
-        # Keep what the operator changed in the UI (profile, folder, tags); fix only the connection.
+        # Keep what the operator changed in the UI (profile, folder, tags); fix only the
+        # connection, and a profile id the arr no longer has (e.g. after its database was
+        # rebuilt): re-pointed to the profile of the same name, else to s["profile"].
         cur = existing[0]
-        if all(cur.get(k) == v for k, v in conn.items()):
+        upd = [] if all(cur.get(k) == v for k, v in conn.items()) else ["connection"]
+        profiles = profile_list(api, s, conn, want_id=cur.get("activeProfileId"))
+        if profiles is not None and cur.get("activeProfileId") not in {p["id"] for p in profiles}:
+            prof = (next((p for p in profiles if p["name"] == cur.get("activeProfileName")), None)
+                    or next((p for p in profiles if p["name"] == s["profile"]), None))
+            if prof is None:
+                log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
+                    "(recyclarr creates it; the next run re-points the server)")
+            else:
+                cur.update(activeProfileId=prof["id"], activeProfileName=prof["name"])
+                upd.append(f"profile -> '{prof['name']}'")
+        if not upd:
             log(f"ok   Seerr: {s['name']}")
-        else:
-            seerr_test(api, s["path"], conn)
-            cur.update(conn)
-            api.put(f"{s['path']}/{cur['id']}", cur)
-            log(f"upd  Seerr: {s['name']} connection")
+            return
+        cur.update(conn)
+        api.put(f"{s['path']}/{cur['id']}", cur)
+        log(f"upd  Seerr: {s['name']} {', '.join(upd)}")
         return
     test = seerr_test(api, s["path"], conn)
     prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
     if prof is None:
-        # Seerr caches an arr's profile list for an hour: drop that cache (only Seerr's
-        # copy of the arr API answers) and ask again, e.g. right after Recyclarr's first run.
-        api.post(f"/api/v1/settings/cache/{s['name'].lower()}/flush")
-        test = seerr_test(api, s["path"], conn)
+        test = flushed_test(api, s, conn)
         prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
     if prof is None:
         log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
