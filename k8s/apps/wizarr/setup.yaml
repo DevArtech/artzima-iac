@@ -4,9 +4,13 @@
 # Jellyfin server (in-cluster URL + API key, public URL for invite links) and its
 # libraries. Like media-wiring it runs on EVERY Flux sync (ttlSecondsAfterFinished
 # deletes it, the `apps` Kustomization re-creates it; force: the template is
-# immutable) and only writes what differs. Invites and users are never touched.
-# Until it has run once, Wizarr's /setup/ page is open to anyone who reaches the host
-# (docs/decisions.md "Public first-run pages"). Log: kubectl -n wizarr logs job/wizarr-setup
+# immutable). On a fresh Wizarr it does the whole first run; once an admin exists it
+# only ADDS what is missing (the Jellyfin server) and never rewrites the admin's
+# account, server, libraries, settings or invites. If the admin's login is not the
+# Jellyfin admin login, it skips the admin-only steps (one sign-in attempt per run).
+# The public host answers 403 on /setup (deny_paths in /apps.yaml); this Job uses the
+# in-cluster Service (docs/decisions.md "Public first-run pages").
+# Log: kubectl -n wizarr logs job/wizarr-setup
 apiVersion: batch/v1
 kind: Job
 metadata:

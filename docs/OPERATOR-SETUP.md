@@ -360,8 +360,9 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **Wizarr (automated):** nothing to click. The Job `wizarr-setup` creates Wizarr's admin with the
   Jellyfin admin login, adds the Jellyfin server (in-cluster URL, `/k8s/media/JELLYFIN_API_KEY`,
   invite links to `https://jellyfin.<domain>`) and its libraries
-  ([manual steps §10.3](manual-steps.md#103-first-logins)). Sign in at `https://wizarr.<domain>` with
-  the Jellyfin login and create invites.
+  ([manual steps §10.3](manual-steps.md#103-first-logins)). On an already set-up Wizarr it only adds
+  what is missing and changes nothing else. Sign in at `https://wizarr.<domain>` with the Jellyfin
+  login and create invites.
 - [ ] **Media stack:** VPN check, Recyclarr, first logins
   ([manual steps §10.2-10.3](manual-steps.md#102-after-the-sync)). Existing rips: `make media-adopt`
   (dry-run), then `make media-adopt MEDIA_ADOPT_ARGS=--apply`.
