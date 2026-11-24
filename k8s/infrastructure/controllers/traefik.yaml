@@ -73,5 +73,8 @@ spec:
       prometheus:
         serviceMonitor:
           enabled: true
+          # keep Traefik's own `service` label (the app's route); otherwise it clashes with
+          # the target label and becomes exported_service (Grafana dashboards expect service)
+          honorLabels: true
     accessLog:
       enabled: true

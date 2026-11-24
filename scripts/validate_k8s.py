@@ -133,7 +133,17 @@ def run(cmd: list[str], stdin: str | None = None) -> subprocess.CompletedProcess
 COMPLEX_VAR = re.compile(r"(?<!\$)\$\{(?![_a-zA-Z][_a-zA-Z0-9]*\})[^}\n]*\}")
 
 
+SUBSTITUTE_OFF = re.compile(r"^\s+kustomize\.toolkit\.fluxcd\.io/substitute:\s*['\"]?disabled", re.M)
+
+
 def substitute(text: str, env: dict) -> str:
+    """Like Flux postBuild: every document, except those annotated
+    kustomize.toolkit.fluxcd.io/substitute: disabled (e.g. Grafana dashboards)."""
+    docs = re.split(r"(?m)^---\n", text)
+    return "---\n".join(d if SUBSTITUTE_OFF.search(d) else substitute_doc(d, env) for d in docs)
+
+
+def substitute_doc(text: str, env: dict) -> str:
     for m in COMPLEX_VAR.finditer(text):
         fail(f"Flux would evaluate {m.group(0)!r}: only plain variables (or the escaped form) are allowed")
 

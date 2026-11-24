@@ -163,9 +163,12 @@ project holds **only** `/k8s/**`, and the cluster's identity `artzima-eso` gets 
   project is **denied** ([secrets](secrets.md#runtime-identity-boundary)).
 - [ ] **Copy the logins for people** into your password manager: Infisical folder `/operator`
   (main project: `VAULTWARDEN_ADMIN_PASSWORD`, `BACKREST_PASSWORD`), plus, in the cluster's project,
-  `/k8s/paperless/ADMIN_PASSWORD`,
-  `/k8s/monitoring/GRAFANA_ADMIN_PASSWORD`, `/k8s/alexandria/LOGIN_PASSWORD`,
+  `/k8s/paperless/ADMIN_PASSWORD`, `/k8s/alexandria/LOGIN_PASSWORD`,
   `/k8s/media/QBITTORRENT_PASSWORD`.
+- [ ] **Grafana admin login (yours):** set `/k8s/monitoring/GRAFANA_ADMIN_USER` and
+  `GRAFANA_ADMIN_PASSWORD` in the cluster's project (`by: operator`; `make preflight` waits for
+  them). A later change reaches Grafana by itself through the `grafana-admin-sync` Job
+  ([manual steps §15.1](manual-steps.md#151-admin-login)).
 - [ ] `make secrets-check`: only "pending (automation writes these)" may be non-empty
   (`PBS_FINGERPRINT`, the Proxmox tokens: written during `make up`).
 
@@ -372,6 +375,9 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **Paperless:** <http://paperless> over Tailscale, user `admin` / `/k8s/paperless/ADMIN_PASSWORD`;
   create the `hq` user and its **API token for Headquarters** (stored in HQ, not here)
   ([manual steps §13.2-13.3](manual-steps.md#132-first-login)).
+- [ ] **Grafana:** `https://grafana.<domain>` with your login (`/k8s/monitoring/GRAFANA_ADMIN_*`);
+  the home dashboard is "artzima: overview", the rest in folders Hosts / Platform / Databases
+  ([manual steps §15](manual-steps.md#15-grafana)).
 - [ ] **Alexandria:** first logins ([manual steps §8](manual-steps.md#8-alexandria-secrets-library-first-login-embedder)).
 - [ ] **Backrest on the NAS:** <http://192.0.2.156:9898>, user `admin` / `/operator/BACKREST_PASSWORD`.
   When the first **full** upload has finished and a test restore worked: **review any existing backup-provider transition** ([backups](backups.md#backup-provider-transition)).

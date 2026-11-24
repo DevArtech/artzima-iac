@@ -11,3 +11,4 @@ resources:
   - ../vaultwarden
   - ../paperless
   - ../backups
+  - ../monitoring # Grafana: admin login sync + dashboards as code

@@ -46,6 +46,17 @@ spec:
         enabled: true
         storageClassName: nfs-artnas
         size: 2Gi
+      # Dashboards as code: ConfigMaps labelled grafana_dashboard=1 (k8s/apps/monitoring),
+      # each in the folder named by its grafana_folder annotation. The chart's own
+      # dashboards have none and stay in the root folder.
+      sidecar:
+        dashboards:
+          folderAnnotation: grafana_folder
+          provider:
+            foldersFromFilesStructure: true
+      grafana.ini:
+        dashboards:
+          default_home_dashboard_path: /tmp/dashboards/Artzima/artzima-overview.json
     # ALERTS -> ONE webhook (Infisical /k8s/alerts/WEBHOOK_URL -> Secret alert-webhook,
     # k8s/secrets/monitoring). Rules: k8s/infrastructure/configs/alerts.yaml + the chart's
     # defaults. Empty URL = nothing is sent yet (alerts still visible in Alertmanager).
@@ -109,7 +120,9 @@ spec:
                   exported_namespace: [metadata, namespace]
                   ready: [status, conditions, "[type=Ready]", status]
                   suspended: [spec, suspend]
-                metrics: &flux_metrics
+                # `revision` lives at a different path per kind; a path that does not
+                # exist drops the whole series (one shared path left only Kustomizations).
+                metrics:
                   - name: resource_info
                     help: The current state of a Flux resource.
                     each:
@@ -120,15 +133,29 @@ spec:
               - groupVersionKind: { group: helm.toolkit.fluxcd.io, version: v2, kind: HelmRelease }
                 metricNamePrefix: gotk
                 labelsFromPath: *flux_labels
-                metrics: *flux_metrics
+                metrics:
+                  - name: resource_info
+                    help: The current state of a Flux resource.
+                    each:
+                      type: Info
+                      info:
+                        labelsFromPath:
+                          revision: [status, history, "0", chartVersion]
               - groupVersionKind: { group: source.toolkit.fluxcd.io, version: v1, kind: GitRepository }
                 metricNamePrefix: gotk
                 labelsFromPath: *flux_labels
-                metrics: *flux_metrics
+                metrics: &flux_source_metrics
+                  - name: resource_info
+                    help: The current state of a Flux resource.
+                    each:
+                      type: Info
+                      info:
+                        labelsFromPath:
+                          revision: [status, artifact, revision]
               - groupVersionKind: { group: source.toolkit.fluxcd.io, version: v1, kind: HelmRepository }
                 metricNamePrefix: gotk
                 labelsFromPath: *flux_labels
-                metrics: *flux_metrics
+                metrics: *flux_source_metrics
               - groupVersionKind: { group: volsync.backube, version: v1alpha1, kind: ReplicationSource }
                 metricNamePrefix: artzima_volsync
                 labelsFromPath:

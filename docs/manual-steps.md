@@ -980,3 +980,61 @@ personal shares are outside the lab: the repo never writes to them, and Backrest
    **only then** review retirement of the previous backup provider according to its retention policy. Both are manual steps;
    the repo never does them ([backups: Transition](backups.md#backup-provider-transition)).
 7. **Monthly:** [check the last successful run](backups.md#check-the-last-successful-run-monthly-and-in-the-quarterly-test).
+
+## 15. Grafana
+
+Grafana runs from kube-prometheus-stack (namespace `monitoring`), public at `https://grafana.<domain>`
+(`/apps.yaml`). Its dashboards are code: `k8s/apps/monitoring/` (README there).
+
+### 15.1 Admin login
+
+The login is **yours**: Infisical (cluster project) `/k8s/monitoring/GRAFANA_ADMIN_USER` and
+`GRAFANA_ADMIN_PASSWORD` (`by: operator`). Grafana itself reads them only when it **first creates its
+database**; afterwards the **`grafana-admin-sync` Job** (`k8s/apps/monitoring/grafana-admin-sync.yaml`)
+applies a change to Grafana's admin (user id 1) through Grafana's API on every `apps` sync. It signs in
+with the login it last applied (Secret `monitoring/grafana-admin-applied`, which it maintains) and
+does nothing when Grafana already matches.
+
+**To change the login:**
+
+1. Change both values in Infisical.
+2. Apply now instead of within the hour (ESO refresh + next Flux sync):
+   ```bash
+   kubectl -n monitoring annotate externalsecret grafana-admin force-sync=$(date +%s) --overwrite
+   kubectl -n monitoring delete job grafana-admin-sync --ignore-not-found
+   flux reconcile kustomization apps --with-source
+   kubectl -n monitoring logs -f job/grafana-admin-sync   # "now matches Infisical"
+   ```
+3. Sign in with the new login. The dashboard sidecars pick up the new values at the next Grafana pod
+   restart (until then their reload calls are refused; dashboards still load, every 30 s).
+
+**If the Job says "no known login works"** (the login was changed by hand in Grafana, or
+`grafana-admin-applied` is empty because Infisical changed before the Job's first run): tell the
+Job what Grafana has now, then run it again (step 2). Nothing is printed or passed as an argument:
+
+```bash
+# Password unknown? Set Grafana's to Infisical's (from stdin):
+kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d |
+  kubectl -n monitoring exec -i deploy/kube-prometheus-stack-grafana -c grafana -- \
+    grafana cli admin reset-admin-password --password-from-stdin
+# Record Grafana's current login name (e.g. admin) + that password for the Job:
+read -r -p 'Grafana login now: ' GL
+kubectl -n monitoring create secret generic grafana-admin-applied --dry-run=client -o yaml \
+  --from-file=admin-user=<(printf %s "$GL") \
+  --from-file=admin-password=<(kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d) |
+  kubectl apply --server-side --force-conflicts -f -
+```
+
+The Job then renames the admin and verifies the new login.
+
+### 15.2 Dashboards
+
+- **Home:** "artzima: overview" (folder *Artzima*): hosts, Kubernetes, Flux, databases, backups,
+  Traefik per app, the Cloudflare tunnel. Set as home by `grafana.ini`
+  `dashboards.default_home_dashboard_path` (kube-prometheus-stack values).
+- **Hosts:** Node Exporter Full, Proxmox via Prometheus. **Platform:** Flux Cluster Stats, Flux
+  Control Plane, Traefik. **Databases:** CloudNativePG.
+- Community dashboards are **vendored** (pinned revision + sha256, never fetched at runtime), pointed
+  at the provisioned Prometheus (`uid: prometheus`), with the panels that cannot work here removed.
+  Edits in the UI are not kept: change `scripts/grafana_dashboards.py` / `scripts/grafana_overview.py`,
+  regenerate, and run its `check` (every panel returns data), see `k8s/apps/monitoring/README.md`.

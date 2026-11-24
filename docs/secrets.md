@@ -173,7 +173,7 @@ creates it (recipe from the manifest). Otherwise the named `make` step writes it
 | `/k8s/vaultwarden/ADMIN_TOKEN` | Argon2id PHC hash (m=65540, t=3, p=4) of `/operator/VAULTWARDEN_ADMIN_PASSWORD` | gen | ESO → `vaultwarden/vaultwarden` |
 | `/k8s/vaultwarden/BACKUP_PASSPHRASE` | base64:32. **Keep a copy outside Vaultwarden** | gen | nightly NAS backup (gpg) |
 | `/k8s/vaultwarden/SMTP_HOST`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD` | empty = no mail; fill in to enable | gen (empty), you | ESO → `vaultwarden/vaultwarden` (only non-empty keys emitted) |
-| `/k8s/monitoring/GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | `admin`, base64:24 | gen | ESO → `monitoring/grafana-admin` |
+| `/k8s/monitoring/GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | your own Grafana admin login; a change reaches Grafana through the `grafana-admin-sync` Job ([manual steps §15](manual-steps.md#15-grafana)) | you | ESO → `monitoring/grafana-admin` |
 | `/k8s/ghcr/GHCR_USERNAME` | `devartech` | gen | ESO → `ghcr-pull` |
 | `/k8s/alexandria/ALEXANDRIA_MCP_TOKEN`, `LOGIN_USERNAME`, `LOGIN_PASSWORD` | hex:32, `admin`, hex:16 | gen | ESO → `alexandria/alexandria` |
 | `/k8s/alexandria/LEGACY_BEARER_TOKEN`, `OPENAI_API_KEY` | empty (= reuse the MCP token / no embedder key) | gen (empty) | same |

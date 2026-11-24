@@ -1,0 +1,41 @@
+---
+# Scrape targets the dashboards need (k8s/infrastructure/configs/dashboards/).
+# CNPG: every database pod's exporter (port `metrics`, 9187), in all namespaces;
+# the official CloudNativePG dashboard reads cnpg_* from here. One PodMonitor
+# instead of `monitoring.enablePodMonitor` per Cluster (deprecated in CNPG).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cnpg-instances
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchLabels:
+      cnpg.io/podRole: instance
+  podMetricsEndpoints:
+    - port: metrics
+---
+# Flux controllers (port http-prom), as in fluxcd/flux2-monitoring-example: the
+# "Flux Control Plane" dashboard. Flux's own allow-scraping NetworkPolicy admits it.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: flux-system
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [flux-system]
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [helm-controller, source-controller, kustomize-controller, notification-controller]
+  podMetricsEndpoints:
+    - port: http-prom
+      relabelings:
+        # prometheus-operator#4816: skip pods that are not running
+        - sourceLabels: [__meta_kubernetes_pod_phase]
+          action: keep
+          regex: Running

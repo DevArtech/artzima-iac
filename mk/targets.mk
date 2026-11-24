@@ -250,7 +250,8 @@ lint-python: ## Byte-compile the Python helpers + render check
 	$(PY) -c 'import json; json.load(open("renovate.json"))' # Renovate config parses
 	bash -n install/prepare-iso.sh install/first-boot.sh scripts/*.sh
 	@for f in scripts/*.sh install/*.sh; do test -x $$f || { echo "not executable: $$f (chmod +x)"; exit 1; }; done
-	$(PY) -m py_compile images/skyjo/artzima_serve.py images/skyjo/check_weights.py k8s/apps/media/wiring/wire.py k8s/apps/media/wiring/seed.py
+	$(PY) -m py_compile images/skyjo/artzima_serve.py images/skyjo/check_weights.py k8s/apps/media/wiring/wire.py k8s/apps/media/wiring/seed.py \
+	  k8s/apps/monitoring/grafana-admin/sync.py
 lint-ansible: ## syntax-check every playbook + ansible-lint (production profile)
 	cd ansible && for p in playbooks/*.yml; do ansible-playbook --syntax-check $$p >/dev/null || exit 1; echo "syntax ok: $$p"; done
 	cd ansible && ansible-lint

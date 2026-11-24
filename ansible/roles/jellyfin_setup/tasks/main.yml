@@ -221,6 +221,26 @@
   changed_when: true
   no_log: "{{ jellyfin_setup_no_log }}"
 
+# ---------------------------------------------------------------- theme
+- name: Read the branding settings
+  ansible.builtin.uri:
+    url: "{{ jellyfin_setup_url }}/System/Configuration/branding"
+    headers: "{{ jellyfin_setup_headers }}"
+  register: jellyfin_setup_branding
+  no_log: "{{ jellyfin_setup_no_log }}"
+
+- name: Set the web theme (custom CSS)
+  ansible.builtin.uri:
+    url: "{{ jellyfin_setup_url }}/System/Configuration/branding"
+    method: POST
+    headers: "{{ jellyfin_setup_headers }}"
+    body_format: json
+    body: "{{ jellyfin_setup_branding.json | combine({'CustomCss': jellyfin_setup_custom_css}) }}"
+    status_code: [200, 204]
+  when: (jellyfin_setup_branding.json.CustomCss | default('')) != jellyfin_setup_custom_css
+  changed_when: true
+  no_log: "{{ jellyfin_setup_no_log }}"
+
 # ---------------------------------------------------------------- behind Traefik
 # Traefik's requests reach the LXC from the Talos node IPs (SNAT), so those are the
 # known proxies; clients are told the public URL.

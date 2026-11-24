@@ -7,4 +7,5 @@ resources:
   - pve-exporter.yaml
   - cloudflared-monitor.yaml
   - nut-exporter.yaml # UPS status for alerts
+  - monitors.yaml # scrape CNPG instances + Flux controllers (Grafana dashboards)
   - alerts.yaml # PrometheusRule: backups, restore tests, Flux, certs, UPS, space

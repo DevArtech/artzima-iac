@@ -1,0 +1,51 @@
+---
+# Grafana as code (kube-prometheus-stack runs Grafana: k8s/infrastructure/controllers).
+#   grafana-admin-sync.yaml  applies Infisical's admin login to Grafana (every Flux sync)
+#   dashboards/<folder>/     dashboards, loaded by Grafana's sidecar from ConfigMaps
+#                            labelled grafana_dashboard=1, folder = annotation grafana_folder.
+#                            Regenerate / check: scripts/grafana_dashboards.py (README.md)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - grafana-admin-sync.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/part-of: grafana
+configMapGenerator:
+  - name: grafana-admin-sync
+    files:
+      - grafana-admin/sync.py
+  - name: grafana-dashboards-artzima
+    files: [dashboards/artzima/artzima-overview.json]
+    options: &dashboard
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: Artzima
+        # Grafana's own ${...} variables, not Flux substitutions
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+  - name: grafana-dashboards-hosts-node-exporter
+    files: [dashboards/hosts/node-exporter-full.json]
+    options:
+      <<: *dashboard
+      annotations: { grafana_folder: Hosts, kustomize.toolkit.fluxcd.io/substitute: disabled }
+  - name: grafana-dashboards-hosts-proxmox
+    files: [dashboards/hosts/proxmox.json]
+    options:
+      <<: *dashboard
+      annotations: { grafana_folder: Hosts, kustomize.toolkit.fluxcd.io/substitute: disabled }
+  - name: grafana-dashboards-platform
+    files:
+      - dashboards/platform/flux-cluster.json
+      - dashboards/platform/flux-control-plane.json
+      - dashboards/platform/traefik.json
+    options:
+      <<: *dashboard
+      annotations: { grafana_folder: Platform, kustomize.toolkit.fluxcd.io/substitute: disabled }
+  - name: grafana-dashboards-databases
+    files: [dashboards/databases/cloudnative-pg.json]
+    options:
+      <<: *dashboard
+      annotations: { grafana_folder: Databases, kustomize.toolkit.fluxcd.io/substitute: disabled }
