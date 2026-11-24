@@ -2,6 +2,19 @@
 # The ONLY public routes: cloudflared -> Traefik (entrypoint web) -> these.
 ---
 apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: public-wizarr-deny
+  namespace: wizarr
+  labels:
+    app.kubernetes.io/managed-by: artzima-render
+    artzima.io/public-app: wizarr
+spec:
+  ipAllowList:
+    sourceRange:
+      - 127.0.0.1/32
+---
+apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: public-wizarr
@@ -13,6 +26,14 @@ spec:
   entryPoints:
     - web
   routes:
+    - kind: Rule
+      match: Host(`wizarr.${public_domain}`) && (PathPrefix(`/setup`))
+      priority: 10000
+      middlewares:
+        - name: public-wizarr-deny
+      services:
+        - name: wizarr
+          port: 5690
     - kind: Rule
       match: Host(`wizarr.${public_domain}`)
       services:

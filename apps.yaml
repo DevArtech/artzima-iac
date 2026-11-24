@@ -33,10 +33,14 @@ traefik:
 
 apps:
   # --- Kubernetes apps -----------------------------------------------------
+  # Wizarr's first-run page /setup/ creates the admin for whoever posts it first. The
+  # setup Job (k8s/apps/wizarr/setup.yaml) uses the in-cluster Service, so the public host
+  # never needs it (docs/decisions.md "Public first-run pages"). Invites (/j/...) stay public.
   - name: wizarr
     namespace: wizarr
     service: wizarr
     port: 5690
+    deny_paths: [/setup]
   - name: alexandria # the OAuth proxy only; alexandria-mcp:8080 stays internal
     namespace: alexandria
     service: alexandria

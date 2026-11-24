@@ -357,6 +357,11 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
   Movies and Shows libraries, application URL `https://seerr.<domain>`, then Sonarr and Radarr
   (Recyclarr's profiles, `/data/media/{tv,movies}`). Sign in at `https://seerr.<domain>` with the
   Jellyfin login. Left to you: *Settings → Users → Import Jellyfin users* (or allow new sign-ins).
+- [ ] **Wizarr (automated):** nothing to click. The Job `wizarr-setup` creates Wizarr's admin with the
+  Jellyfin admin login, adds the Jellyfin server (in-cluster URL, `/k8s/media/JELLYFIN_API_KEY`,
+  invite links to `https://jellyfin.<domain>`) and its libraries
+  ([manual steps §10.3](manual-steps.md#103-first-logins)). Sign in at `https://wizarr.<domain>` with
+  the Jellyfin login and create invites.
 - [ ] **Media stack:** VPN check, Recyclarr, first logins
   ([manual steps §10.2-10.3](manual-steps.md#102-after-the-sync)). Existing rips: `make media-adopt`
   (dry-run), then `make media-adopt MEDIA_ADOPT_ARGS=--apply`.

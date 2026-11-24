@@ -559,7 +559,9 @@ back: log in with the master password from the kit), Paperless, Jellyfin (set up
 `/k8s/media/JELLYFIN_API_KEY`; log in with `/operator/JELLYFIN_ADMIN_*`), Seerr (nothing to click: its
 requests and users come back with `seerr-db`, and the wiring Job redoes its setup over the API,
 signing in once with the Jellyfin admin login that `make jellyfin` copies to `/k8s/media/JELLYFIN_ADMIN_*`;
-log in with that login), Backrest (`http://192.0.2.156:9898`, still paused),
+log in with that login), Wizarr (nothing to click: its volume is not backed up, so it starts empty
+and the Job `wizarr-setup` sets it up again with the same Jellyfin admin login, server and libraries;
+old invites are gone, Jellyfin users are not), Backrest (`http://192.0.2.156:9898`, still paused),
 the media stack's VPN check.
 
 ---

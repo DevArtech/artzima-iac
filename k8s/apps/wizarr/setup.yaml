@@ -1,0 +1,69 @@
+---
+# wizarr-setup: Wizarr's first run, no manual steps (script: setup/wizarr_setup.py,
+# ConfigMap wizarr-scripts). Admin account = the Jellyfin admin login, then the
+# Jellyfin server (in-cluster URL + API key, public URL for invite links) and its
+# libraries. Like media-wiring it runs on EVERY Flux sync (ttlSecondsAfterFinished
+# deletes it, the `apps` Kustomization re-creates it; force: the template is
+# immutable) and only writes what differs. Invites and users are never touched.
+# Until it has run once, Wizarr's /setup/ page is open to anyone who reaches the host
+# (docs/decisions.md "Public first-run pages"). Log: kubectl -n wizarr logs job/wizarr-setup
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wizarr-setup
+  namespace: wizarr
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  ttlSecondsAfterFinished: 900
+  backoffLimit: 3
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wizarr-setup
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: setup
+          image: docker.io/library/python:3.14.10-alpine3.24
+          command: ["python3", "-I", "-u", "/scripts/wizarr_setup.py"]
+          env:
+            - name: WIZARR_URL
+              value: http://wizarr.wizarr.svc.cluster.local:5690
+            # Jellyfin (LXC on host01) via its selector-less Service (k8s/apps/external).
+            - name: JELLYFIN_URL
+              value: http://jellyfin.external.svc.cluster.local:80
+            # Where invited users are sent (Wizarr: server "External URL").
+            - name: JELLYFIN_PUBLIC_URL
+              value: https://jellyfin.${public_domain}
+          envFrom:
+            - secretRef:
+                name: wizarr-setup # JELLYFIN_ADMIN_USER / _PASSWORD, JELLYFIN_API_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: wizarr-scripts

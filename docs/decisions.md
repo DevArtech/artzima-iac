@@ -89,6 +89,30 @@
   streams go through Cloudflare, so check their terms for video before relying on it.
   Tailscale or the LAN option is the fallback. Cloudflare sees the plaintext at the edge.
 
+## Public first-run pages (2026-11-24)
+
+Jellyfin, Wizarr and Seerr each have a first-run wizard that makes **whoever completes it first**
+the admin. All three are public through the tunnel, so on a fresh build or rebuild that page is
+open to the internet from the moment the route works until its setup automation has run
+(Jellyfin: `make jellyfin`; Wizarr: the `wizarr-setup` Job; Seerr: the `media-wiring` Job). This
+was not theoretical: on 2026-11-24 an unknown client reached Jellyfin's open wizard.
+
+- **The automation never needs the public host.** `make jellyfin` talks to `localhost:8096` in the
+  LXC; the Wizarr and Seerr Jobs use the in-cluster Services. So the public first-run paths can be
+  closed for good without hurting the setup.
+- **Wizarr:** `/setup` answers 403 on the public host (`deny_paths` in `/apps.yaml`), so the
+  window is closed even before the Job runs.
+- **Jellyfin and Seerr are still exposed during bootstrap.** Rule for a rebuild: run the setup
+  steps before the Cloudflare route goes live (`make cf-apply` after `make jellyfin` and the first
+  green `media-wiring`), or put `jellyfin`, `seerr` and `wizarr` behind Cloudflare Access during
+  bootstrap and remove it afterwards (Jellyfin's TV/mobile apps and Wizarr's invite links can't
+  pass Access, so it can't stay).
+- **Not done yet, the next fix:** deny Jellyfin's `/Startup` API on the public host too. It needs
+  a case-insensitive match (Jellyfin's routing ignores case, Traefik's `PathPrefix` does not), so
+  `deny_paths` would need a regex form first. Seerr's first sign-in (`POST /api/v1/auth/jellyfin`)
+  is also its normal login and can't be denied; seeding Seerr's settings with our Jellyfin server
+  (`wiring/seed.py`) would at least make that sign-in require an account on our Jellyfin.
+
 ## The lab network: behind a Firewalla, no VLANs (2026-11-23)
 
 - **Decision:** a Firewalla Purple SE in **Router mode** sits between the Xfinity gateway (WAN
