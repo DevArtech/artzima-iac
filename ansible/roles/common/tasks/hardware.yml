@@ -44,6 +44,41 @@
 
 # --- Realtek r8169: link power saving (ASPM, clock PM, EEE) drops the link on these NICs.
 # The PCI device is found from lan0 at run time.
+- name: Laptop - console mouse support, so touchpad or mouse movement wakes a blanked screen
+  ansible.builtin.apt:
+    name: gpm
+    state: present
+  when: common_is_laptop | bool
+
+- name: Laptop - blank the screen after 1 minute idle (any key or mouse movement wakes it)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/console-blank.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Unit]
+      Description=Blank the laptop console after 1 minute idle (wakes on any key or mouse/touchpad movement via gpm)
+      After=getty.target gpm.service
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c "setterm --term linux --blank 1 --powerdown 1 --powersave powerdown > /dev/tty1 < /dev/tty1"
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+  register: common_console_blank
+  when: common_is_laptop | bool
+
+- name: Laptop - enable gpm and the console blanking
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: "{{ common_console_blank is changed }}"
+  loop: [gpm.service, console-blank.service]
+  when: common_is_laptop | bool
+
 - name: Keep the r8169 NIC awake (ASPM, clkpm and EEE off)
   ansible.builtin.copy:
     dest: /etc/systemd/system/lan0-no-powersave.service
