@@ -27,7 +27,8 @@ spec:
     - web
   routes:
     - kind: Rule
-      match: Host(`wizarr.${public_domain}`) && (PathPrefix(`/setup`))
+      match: Host(`wizarr.${public_domain}`) && (PathRegexp(`(?i)^/+setup`)) && (HeaderRegexp(`Cf-Connecting-Ip`,
+        `.*`) || HeaderRegexp(`Cf-Ray`, `.*`))
       priority: 10000
       middlewares:
         - name: public-wizarr-deny
@@ -134,6 +135,19 @@ spec:
           port: 80
 ---
 apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: public-seerr-deny
+  namespace: media
+  labels:
+    app.kubernetes.io/managed-by: artzima-render
+    artzima.io/public-app: seerr
+spec:
+  ipAllowList:
+    sourceRange:
+      - 127.0.0.1/32
+---
+apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: public-seerr
@@ -146,10 +160,33 @@ spec:
     - web
   routes:
     - kind: Rule
+      match: Host(`seerr.${public_domain}`) && (PathRegexp(`(?i)^/+setup`) || PathRegexp(`(?i)^/+api/+v1/+settings/+initialize`)
+        || PathRegexp(`(?i)^/+api/+v1/+auth/+plex`)) && (HeaderRegexp(`Cf-Connecting-Ip`,
+        `.*`) || HeaderRegexp(`Cf-Ray`, `.*`))
+      priority: 10000
+      middlewares:
+        - name: public-seerr-deny
+      services:
+        - name: seerr
+          port: 5055
+    - kind: Rule
       match: Host(`seerr.${public_domain}`)
       services:
         - name: seerr
           port: 5055
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: public-jellyfin-deny
+  namespace: external
+  labels:
+    app.kubernetes.io/managed-by: artzima-render
+    artzima.io/public-app: jellyfin
+spec:
+  ipAllowList:
+    sourceRange:
+      - 127.0.0.1/32
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -163,6 +200,15 @@ spec:
   entryPoints:
     - web
   routes:
+    - kind: Rule
+      match: Host(`jellyfin.${public_domain}`) && (PathRegexp(`(?i)^/+Startup`)) &&
+        (HeaderRegexp(`Cf-Connecting-Ip`, `.*`) || HeaderRegexp(`Cf-Ray`, `.*`))
+      priority: 10000
+      middlewares:
+        - name: public-jellyfin-deny
+      services:
+        - name: jellyfin
+          port: 80
     - kind: Rule
       match: Host(`jellyfin.${public_domain}`)
       services:

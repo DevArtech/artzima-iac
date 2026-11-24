@@ -98,20 +98,36 @@ open to the internet from the moment the route works until its setup automation 
 was not theoretical: on 2026-11-24 an unknown client reached Jellyfin's open wizard.
 
 - **The automation never needs the public host.** `make jellyfin` talks to `localhost:8096` in the
-  LXC; the Wizarr and Seerr Jobs use the in-cluster Services. So the public first-run paths can be
-  closed for good without hurting the setup.
-- **Wizarr:** `/setup` answers 403 on the public host (`deny_paths` in `/apps.yaml`), so the
-  window is closed even before the Job runs.
-- **Jellyfin and Seerr are still exposed during bootstrap.** Rule for a rebuild: run the setup
-  steps before the Cloudflare route goes live (`make cf-apply` after `make jellyfin` and the first
-  green `media-wiring`), or put `jellyfin`, `seerr` and `wizarr` behind Cloudflare Access during
-  bootstrap and remove it afterwards (Jellyfin's TV/mobile apps and Wizarr's invite links can't
-  pass Access, so it can't stay).
-- **Not done yet, the next fix:** deny Jellyfin's `/Startup` API on the public host too. It needs
-  a case-insensitive match (Jellyfin's routing ignores case, Traefik's `PathPrefix` does not), so
-  `deny_paths` would need a regex form first. Seerr's first sign-in (`POST /api/v1/auth/jellyfin`)
-  is also its normal login and can't be denied; seeding Seerr's settings with our Jellyfin server
-  (`wiring/seed.py`) would at least make that sign-in require an account on our Jellyfin.
+  LXC; the Wizarr and Seerr Jobs use the in-cluster Services. So the first-run paths can be closed
+  to the internet for good without hurting the setup.
+- **Rule: `setup_paths` in `/apps.yaml`.** `make render` adds a priority route per app:
+  `Host && PathRegexp(setup prefixes) && (HeaderRegexp(Cf-Connecting-Ip) || HeaderRegexp(Cf-Ray))`
+  → a Traefik `ipAllowList` that matches nobody → **403**. Blocked from the internet:
+
+  | App | Prefixes | Why |
+  |---|---|---|
+  | Jellyfin | `/Startup` | the whole wizard API (`StartupController`). The web wizard is a `#/wizard…` route, never sent to the server. |
+  | Seerr | `/setup`, `/api/v1/settings/initialize`, `/api/v1/auth/plex` | the setup page, the "wizard done" call, and the Plex sign-in, which on a fresh Seerr makes **any** Plex account admin (we never use Plex). |
+  | Wizarr | `/setup` | creates the admin; invites (`/j/<code>`) stay public. |
+
+- **How "came through the tunnel" is decided.** Traefik is ClusterIP-only: its clients are
+  cloudflared and other pods (LAN and tailnet reach the apps directly, not through Traefik), and
+  cloudflared's source is an ordinary pod IP. What only tunnel traffic carries is Cloudflare's
+  headers: the edge sets `Cf-Connecting-Ip` and `Cf-Ray` on every request it proxies and
+  overwrites what a client sent, so an internet client can't remove them. The rule only ever
+  **blocks** on a header; nothing is allowed because of one. A pod that sends the header (even
+  empty) blocks itself, which is the safe direction.
+- **Match details.** Prefixes are plain paths turned into `(?i)^/+seg/+seg…`: Jellyfin
+  (ASP.NET) and Seerr (Express) route case-insensitively, `//Startup` reaches the same handler,
+  and Traefik decodes unreserved `%XX` (`/%53tartup`) before matching. Prefix match, so it can
+  over-block a path that merely starts the same way, never under-block.
+- **Seerr's residual window.** The first admin can also come from `POST /api/v1/auth/jellyfin`,
+  which is the normal login and can't be denied. On a Seerr that has no Jellyfin server yet it
+  accepts a `hostname`, so until the `media-wiring` Job has set our Jellyfin server, a stranger
+  could sign in against their own Jellyfin and become admin. Close it on a rebuild by applying the
+  Cloudflare route (`make cf-apply`) after the first green `media-wiring`, or seed
+  `jellyfin.ip` in `wiring/seed.py` before Seerr's first start (not done yet). After the wiring,
+  Seerr refuses a `hostname` and Plex sign-in is disabled.
 
 ## The lab network: behind a Firewalla, no VLANs (2026-11-23)
 

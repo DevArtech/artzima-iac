@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pathlib
 import os
+import re
 import sys
 
 import yaml
@@ -239,12 +240,27 @@ def render_nas_doc() -> str:
     return "\n".join(lines) + "\n"
 
 
+# Headers the Cloudflare edge sets on EVERY request it proxies (cloudflared passes them on).
+# A client can't remove them: Cloudflare overwrites whatever the client sent. Traffic to
+# Traefik from anywhere else (in-cluster pods; Traefik is ClusterIP-only) doesn't carry them.
+TUNNEL_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray")
+
+
+def setup_path_regexp(prefix: str) -> str:
+    """/api/v1/auth/plex -> (?i)^/+api/+v1/+auth/+plex for Traefik's PathRegexp.
+
+    Case-insensitive because Jellyfin (ASP.NET) and Seerr (Express) route case-insensitively;
+    `/+` because `//Startup` reaches the same handler. No `$` (Flux substitution)."""
+    return "(?i)^" + "".join("/+" + re.escape(seg) for seg in prefix.strip("/").split("/"))
+
+
 def render_routes() -> str:
     apps = labdata.load_apps()
     docs = []
     for a in apps["apps"]:
         deny = a.get("deny_paths") or []
-        if deny:
+        setup = a.get("setup_paths") or []
+        if deny or setup:
             # A Traefik ipAllowList that matches no client: every request on these
             # paths gets 403 Forbidden, whatever is behind it.
             docs.append({
@@ -265,6 +281,19 @@ def render_routes() -> str:
                 "kind": "Rule",
                 "match": f"Host(`{a['host']}`) && ({paths})",
                 "priority": 10000,  # always before the catch-all route of the same host
+                "middlewares": [{"name": f"public-{a['name']}-deny"}],
+                "services": [{"name": a["service"], "port": a["port"]}],
+            })
+        if setup:
+            # First-run setup pages/API: 403 only when the request came through the
+            # Cloudflare tunnel (a Cloudflare header is present). Block on presence, never
+            # allow on a header: a header a client adds can only get itself blocked.
+            paths = " || ".join(f"PathRegexp(`{setup_path_regexp(x)}`)" for x in setup)
+            via_tunnel = " || ".join(f"HeaderRegexp(`{h}`, `.*`)" for h in TUNNEL_HEADERS)
+            routes.append({
+                "kind": "Rule",
+                "match": f"Host(`{a['host']}`) && ({paths}) && ({via_tunnel})",
+                "priority": 10000,
                 "middlewares": [{"name": f"public-{a['name']}-deny"}],
                 "services": [{"name": a["service"], "port": a["port"]}],
             })

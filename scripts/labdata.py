@@ -175,6 +175,11 @@ def load_apps() -> dict:
         deny = a.get("deny_paths") or []
         if not isinstance(deny, list) or not all(isinstance(x, str) and x.startswith("/") and "`" not in x for x in deny):
             raise SystemExit(f"apps.yaml: {a['name']}: deny_paths must be a list of paths like /admin")
+        setup = a.get("setup_paths") or []
+        if not isinstance(setup, list) or not all(
+                isinstance(x, str) and re.fullmatch(r"(/[A-Za-z0-9._-]+)+", x) for x in setup):
+            raise SystemExit(f"apps.yaml: {a['name']}: setup_paths must be a list of plain path "
+                             "prefixes like /Startup or /api/v1/auth/plex")
         if a.get("access", "optional") not in ("optional", "never"):
             raise SystemExit(f"apps.yaml: {a['name']}: access must be optional or never")
         a["host"] = f"{a['name']}.{DOMAIN_VAR}"

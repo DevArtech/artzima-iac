@@ -4,6 +4,11 @@
 # Optional per entry:
 #   deny_paths: [/admin]  -> a generated route answers 403 for these path prefixes on
 #                            the public host (Traefik ipAllowList that matches nobody)
+#   setup_paths: [/setup] -> first-run setup pages/API (whoever finishes them becomes
+#                            admin): 403 when the request came through the Cloudflare
+#                            tunnel, served normally to in-cluster callers. Plain path
+#                            prefixes, matched case-insensitively (docs/decisions.md
+#                            "Public first-run pages")
 #   access: never         -> Cloudflare Access may NOT be put in front (tofu/cloudflare
 #                            fails the plan); default "optional"
 #
@@ -34,13 +39,13 @@ traefik:
 apps:
   # --- Kubernetes apps -----------------------------------------------------
   # Wizarr's first-run page /setup/ creates the admin for whoever posts it first. The
-  # setup Job (k8s/apps/wizarr/setup.yaml) uses the in-cluster Service, so the public host
+  # setup Job (k8s/apps/wizarr/setup.yaml) uses the in-cluster Service, so the internet
   # never needs it (docs/decisions.md "Public first-run pages"). Invites (/j/...) stay public.
   - name: wizarr
     namespace: wizarr
     service: wizarr
     port: 5690
-    deny_paths: [/setup]
+    setup_paths: [/setup]
   - name: alexandria # the OAuth proxy only; alexandria-mcp:8080 stays internal
     namespace: alexandria
     service: alexandria
@@ -62,12 +67,19 @@ apps:
     port: 80
     access: never
     deny_paths: [/admin]
+  # Seerr's /setup page, /api/v1/settings/initialize, and /api/v1/auth/plex (on a fresh
+  # Seerr any Plex account signing in there becomes admin; we never use Plex). The first
+  # admin via /api/v1/auth/jellyfin can't be denied: it is also the normal login.
   - name: seerr # media requests (Jellyfin sign-in). The rest of the media stack is tailnet-only.
     namespace: media
     service: seerr
     port: 5055
+    setup_paths: [/setup, /api/v1/settings/initialize, /api/v1/auth/plex]
   # --- outside Kubernetes (Service + EndpointSlice in k8s/apps/external) ---
+  # Jellyfin's wizard API is /Startup/* (the web wizard is a #/ route, never sent to the
+  # server). `make jellyfin` runs it on the LXC against localhost.
   - name: jellyfin
     namespace: external
     service: jellyfin
     port: 80
+    setup_paths: [/Startup]
