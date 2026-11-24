@@ -20,6 +20,8 @@ Secrets from Infisical /k8s/media) and are never printed.
      FlareSolverr indexer proxy (only if FLARESOLVERR_URL is set); the indexer
      "Internet Archive" (public, no account), synced to the three apps
   4. Bazarr: Sonarr + Radarr connection
+  4b. UI logins: forms login on Sonarr/Radarr/Lidarr/Prowlarr/Bazarr = the Jellyfin admin
+     login (checked by a test login / Bazarr's stored digest; written only on difference)
   5. qBittorrent: default save path, categories tv / movies / music (WebUI password:
      seeded from Infisical by the qbittorrent pod's init container)
   6. Seerr: the whole setup wizard (first sign-in with the Jellyfin admin login,
@@ -30,6 +32,7 @@ Exit code 1 if any step failed (the Job retries); steps are independent.
 
 from __future__ import annotations
 
+import hashlib
 import http.cookiejar
 import json
 import os
@@ -545,6 +548,79 @@ def bazarr(api: Api, targets: dict) -> None:
     log(f"upd  Bazarr: {', '.join(sorted({k.split('-')[1] for k in form if not k.startswith('settings-general')}))}")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):  # see the 302 itself, don't follow it
+        return None
+
+
+def arr_login_ok(api: Api, user: str, password: str) -> bool:
+    """A real forms login (POST /login, outside the API): success = 302 to "/" with the app's
+    auth cookie (SonarrAuth, ...); a wrong login = 302 to /login?...loginFailed=true. The
+    *arr host API returns only a hash of the password, so this is how a changed Jellyfin
+    password is noticed without keeping any state. The *arrs have no login lockout."""
+    data = urllib.parse.urlencode({"username": user, "password": password, "rememberMe": "on"}).encode()
+    try:
+        res = urllib.request.build_opener(_NoRedirect).open(
+            urllib.request.Request(api.base + "/login", data=data, method="POST"), timeout=TIMEOUT)
+        headers = res.headers
+    except urllib.error.HTTPError as e:
+        headers = e.headers
+    cookies = headers.get_all("Set-Cookie") or []
+    return "loginFailed" not in (headers.get("Location") or "") and any(
+        c.split("=", 1)[0].endswith("Auth") for c in cookies)
+
+
+@step("UI logins")
+def ui_logins(arrs: list[Api], bazarr_api: Api, user: str, password: str) -> None:
+    """Forms login on Sonarr, Radarr, Lidarr, Prowlarr and Bazarr = the operator's Jellyfin
+    admin login (Infisical /k8s/media/JELLYFIN_ADMIN_USER/_PASSWORD, written by `make jellyfin`).
+    Read first, write only on difference; the password itself is never printed or compared
+    in clear: *arrs by a test login, Bazarr by its stored MD5 digest."""
+    if not (user and password):
+        log("skip UI logins: JELLYFIN_ADMIN_USER / _PASSWORD empty (written by `make jellyfin`)")
+        return
+    failed = []
+    for api in arrs:
+        try:
+            path = f"{api.prefix}/config/host"
+            cfg = api.get(path)
+            same = (cfg.get("authenticationMethod") == "forms" and cfg.get("authenticationRequired") == "enabled"
+                    and cfg.get("username") == user)
+            if same and arr_login_ok(api, user, password):
+                log(f"ok   {api.name}: forms login (user {user})")
+                continue
+            cfg.update(authenticationMethod="forms", authenticationRequired="enabled", username=user,
+                       password=password, passwordConfirmation=password)
+            api.put(f"{path}/{cfg['id']}", cfg)
+            if not arr_login_ok(api, user, password):
+                raise RuntimeError("login still refused after saving it")
+            log(f"upd  {api.name}: forms login (user {user}{'' if not same else ', password changed'})")
+        except (RuntimeError, OSError) as e:
+            log(f"FAIL {api.name}: forms login: {e}")
+            failed.append(api.name)
+
+    # Bazarr: settings auth.type "form" (None = no login at all); it stores md5(password)
+    # and hashes a new password itself on save (bazarr/app/config.py save_settings).
+    try:
+        digest = hashlib.md5(password.encode()).hexdigest()  # Bazarr's own scheme, not ours
+        auth = (bazarr_api.get("/api/system/settings").get("auth") or {})
+        if auth.get("type") == "form" and auth.get("username") == user and auth.get("password") == digest:
+            log(f"ok   Bazarr: form login (user {user})")
+        else:
+            was = auth.get("type")
+            bazarr_api.post("/api/system/settings", form={
+                "settings-auth-type": "form", "settings-auth-username": user, "settings-auth-password": password})
+            auth = (bazarr_api.get("/api/system/settings").get("auth") or {})
+            if not (auth.get("type") == "form" and auth.get("username") == user and auth.get("password") == digest):
+                raise RuntimeError("settings not stored as expected (type/username/password digest differ)")
+            log(f"upd  Bazarr: form login (user {user}; was auth type {was})")
+    except (RuntimeError, OSError) as e:
+        log(f"FAIL Bazarr: form login: {e}")
+        failed.append("Bazarr")
+    if failed:
+        raise RuntimeError(f"{', '.join(failed)}: login not set (see above)")
+
+
 @step("qBittorrent")
 def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: dict) -> None:
     # Retry only while it is unreachable (VPN still connecting): a wrong password
@@ -834,6 +910,9 @@ def main() -> None:
         "sonarr": {"host": host["sonarr"], "port": port["sonarr"], "key": keys["sonarr"]},
         "radarr": {"host": host["radarr"], "port": port["radarr"], "key": keys["radarr"]},
     })
+    ui_logins([sonarr, radarr, lidarr, Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}, prefix="/api/v1")],
+              Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}),
+              os.environ.get("JELLYFIN_ADMIN_USER", "").strip(), os.environ.get("JELLYFIN_ADMIN_PASSWORD", ""))
     qbittorrent(Api("qBittorrent", url["qbittorrent"], cookies=True), qbt_user, qbt_pass, data,
                 {"tv": f"{data}/torrents/tv", "movies": f"{data}/torrents/movies",
                  "music": f"{data}/torrents/music"})
