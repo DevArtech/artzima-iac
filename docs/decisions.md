@@ -369,11 +369,16 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   per app, `Recreate`, and NFSv4.1 hard mounts. The arr developers advise against network
   storage for `/config`. If corruption ever shows up, Sonarr/Radarr/Prowlarr can move to
   Postgres on the existing CNPG operator (`*__POSTGRES__*` env).
-- **Seerr on Postgres (CNPG `media/seerr-db`), not SQLite.** Seerr 3.5.2's SQLite runs in WAL
-  mode (a `-shm` shared-memory file). On the NFSv3 `nfs-artnas` volume that broke the very first
-  start of a brand-new database (`no such table: migrations`). Seerr therefore uses its own
-  CNPG cluster (`k8s/apps/media/database.yaml`), like Vaultwarden and Paperless, with the same
-  backups and monthly restore self-check. The config PVC keeps only `settings.json` and logs.
+- **Seerr on Postgres (CNPG `media/seerr-db`), not SQLite.** Seerr's SQLite runs in WAL mode (a
+  `-shm` shared-memory file), which is a corruption risk on the NFSv3 `nfs-artnas` volume, and its
+  requests and users deserve real database backups. Seerr therefore uses its own CNPG cluster
+  (`k8s/apps/media/database.yaml`), like Vaultwarden and Paperless, with the same backups and
+  monthly restore self-check. The config PVC keeps only `settings.json` and logs.
+  - **First-start pitfall:** Seerr 3.5 reads `settings.json` raw, and a file without
+    `main.mediaServerType` sends it into the Overseerr→Seerr merge. On a brand-new database
+    that merge exits with `Failed to insert migration records … migrations` (SQLite or
+    Postgres alike). The seed-config init container therefore writes `mediaServerType: 4`
+    (Seerr's own "not configured" default) next to the API key (`k8s/apps/media/wiring/seed.py`).
 - **FlareSolverr** is only needed for some Cloudflare-protected public indexers. It ships
   suspended (rendered and linted, not deployed), and enabling it is two edits.
 - **Existing rips: hardlinks, then "owned" titles.** The operator's existing rips must

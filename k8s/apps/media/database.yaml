@@ -1,8 +1,8 @@
 ---
 # Seerr's Postgres: a CloudNativePG Cluster (operator: k8s/infrastructure/
-# controllers/cloudnative-pg.yaml). Why not Seerr's default SQLite: it runs in WAL
-# mode (a -shm file) on the NFSv3 config PVC and failed on a brand-new database
-# ("no such table: migrations"); docs/decisions.md "SQLite on NFS".
+# controllers/cloudnative-pg.yaml). Why not Seerr's default SQLite: a WAL-mode
+# database (with its -shm file) on the NFSv3 config PVC is a corruption risk, and
+# Seerr's data (requests, users) deserves the CNPG backups; docs/decisions.md.
 # CNPG generates the credentials itself: Secret seerr-db-app (keys username,
 # password, host, port, dbname, uri, ...); its username/password are Seerr's
 # DB_USER/DB_PASS. Nothing of it is in git or Infisical. Seerr's settings.json and

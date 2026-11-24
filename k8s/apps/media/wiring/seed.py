@@ -12,9 +12,9 @@ prints a secret, and it is idempotent: it changes only what differs.
                         traffic to the VPN interface tun0
   seed.py bazarr        /config/config/config.yaml: auth.apikey (BAZARR_API_KEY),
                         only on first start (Bazarr owns the file afterwards)
-  seed.py seerr         /app/config/settings.json: main.apiKey (SEERR_API_KEY) and
-                        network.trustProxy, only on first start (Seerr also reads
-                        API_KEY from env on every later start)
+  seed.py seerr         /app/config/settings.json: main.apiKey (SEERR_API_KEY),
+                        main.mediaServerType and network.trustProxy, only on first
+                        start (Seerr also reads API_KEY from env on every later start)
 """
 
 from __future__ import annotations
@@ -119,15 +119,32 @@ def bazarr() -> None:
     print(f"Bazarr: seeded auth.apikey in {conf}")
 
 
+# Seerr's MediaServerType.NOT_CONFIGURED (its own default for a fresh install). Seerr
+# reads settings.json RAW (no defaults) to decide whether this is an Overseerr install
+# to merge: a file without main.mediaServerType sends a brand-new database into the
+# Overseerr merge, which dies with "Failed to insert migration records ... migrations".
+SEERR_NOT_CONFIGURED = 4
+
+
 def seerr() -> None:
     conf = pathlib.Path(os.environ.get("SEERR_CONF", "/app/config/settings.json"))
     if conf.exists():
+        data = json.loads(conf.read_text())
+        main = data.setdefault("main", {})
+        # Repair only a file this script seeded and Seerr never started with (Seerr
+        # writes clientId on its first successful start); never a real Overseerr file.
+        if "mediaServerType" not in main and "clientId" not in data:
+            main["mediaServerType"] = SEERR_NOT_CONFIGURED
+            conf.write_text(json.dumps(data, indent=1))
+            print(f"Seerr: added main.mediaServerType (not configured) to never-started {conf}")
+            return
         print(f"Seerr: {conf} exists, not touched (API_KEY env applies on every start)")
         return
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text(json.dumps({"main": {"apiKey": env("SEERR_API_KEY")},
+    conf.write_text(json.dumps({"main": {"apiKey": env("SEERR_API_KEY"),
+                                         "mediaServerType": SEERR_NOT_CONFIGURED},
                                 "network": {"trustProxy": True}}, indent=1))
-    print(f"Seerr: seeded main.apiKey and network.trustProxy in {conf}")
+    print(f"Seerr: seeded main.apiKey, main.mediaServerType and network.trustProxy in {conf}")
 
 
 if __name__ == "__main__":

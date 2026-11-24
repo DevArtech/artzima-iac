@@ -10,10 +10,12 @@
 # it, the media-wiring Job adds Sonarr and Radarr (docs/manual-steps.md §10).
 #
 # Database: CNPG Cluster seerr-db (database.yaml), credentials from the
-# CNPG-generated Secret seerr-db-app. NOT Seerr's default SQLite: its WAL/-shm
-# files on the NFSv3 config PVC broke the very first migration. The config PVC
-# keeps settings.json and logs only. Env names: docs.seerr.dev
-# "extending-seerr/database-config".
+# CNPG-generated Secret seerr-db-app, instead of Seerr's default SQLite (WAL/-shm)
+# on the NFSv3 config PVC. The config PVC keeps settings.json and logs only.
+# Env names: docs.seerr.dev "extending-seerr/database-config".
+# seed-config also writes main.mediaServerType (wiring/seed.py): without it Seerr
+# takes a new settings.json for an Overseerr install and its merge crashes on a
+# brand-new database ("Failed to insert migration records").
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
