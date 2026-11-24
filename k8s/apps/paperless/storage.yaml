@@ -19,7 +19,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   claimRef: { namespace: paperless, name: paperless-data }
-  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  mountOptions: ["nfsvers=3", "hard", "noatime"]
   csi:
     driver: nfs.csi.k8s.io
     volumeHandle: ${artnas_ip}#${artnas_paperless_path}/data##
@@ -38,7 +38,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   claimRef: { namespace: paperless, name: paperless-media }
-  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  mountOptions: ["nfsvers=3", "hard", "noatime"]
   csi:
     driver: nfs.csi.k8s.io
     volumeHandle: ${artnas_ip}#${artnas_paperless_path}/media##
@@ -57,7 +57,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   claimRef: { namespace: paperless, name: paperless-consume }
-  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  mountOptions: ["nfsvers=3", "hard", "noatime"]
   csi:
     driver: nfs.csi.k8s.io
     volumeHandle: ${artnas_ip}#${artnas_paperless_path}/consume##
@@ -76,7 +76,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   claimRef: { namespace: paperless, name: paperless-export }
-  mountOptions: ["nfsvers=4.1", "hard", "noatime"]
+  mountOptions: ["nfsvers=3", "hard", "noatime"]
   csi:
     driver: nfs.csi.k8s.io
     volumeHandle: ${artnas_ip}#${artnas_backups_path}/paperless##

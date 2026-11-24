@@ -1,7 +1,7 @@
 ---
 storage_nfs_id: artnas
 storage_nfs_content: backup,iso,vztmpl,snippets
-storage_nfs_options: vers=4.1
+storage_nfs_options: vers=3  # UGOS offers NFSv3 only (no v4 option), 2026-11-23
 storage_pbs_id: pbs
 storage_pbs_user: pve@pbs
 

@@ -1,0 +1,143 @@
+---
+# Shared disk (pbs_os_on_datastore_disk: true): the OS and the datastore are on the SAME disk.
+# Included by datastore_disk.yml after the disk was found by serial (pbs_dsk_dev) and checked
+# to hold the root filesystem.
+#
+# The installer put the OS in a small partition (answer file lvm.hdsize) as LVM volume group
+# pbs_datastore_vg and left the rest of the disk unpartitioned. Never destructive:
+#   1. LV pbs_datastore_vg/pbs_datastore_lv exists -> reused as it is (no partitioning).
+#   2. Otherwise the largest free block of the disk becomes ONE new partition (GPT name
+#      pbs_datastore_fs_label, so an interrupted run finds it again), a physical volume in the
+#      OS volume group, and the LV on all free space of that group.
+#   3. A filesystem is created on the LV only if the LV has none (never reformatted).
+# Nothing outside free space is written; the whole-disk wipe of datastore_disk.yml never runs.
+
+- name: Shared disk - read the disk layout, physical volumes and logical volumes
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - lsblk -J -l -o PATH,TYPE,FSTYPE,PARTLABEL {{ pbs_dsk_dev }}
+    - pvs --reportformat json -o pv_name,vg_name
+    - lvs --reportformat json -o lv_name,vg_name
+  register: pbs_lv_read
+  changed_when: false
+
+- name: Shared disk - layout facts
+  ansible.builtin.set_fact:
+    pbs_lv_disk_paths: "{{ (pbs_lv_read.results[0].stdout | from_json).blockdevices | map(attribute='path') | list }}"
+    pbs_lv_vg_pvs: >-
+      {{ (pbs_lv_read.results[1].stdout | from_json).report[0].pv
+         | selectattr('vg_name', 'equalto', pbs_datastore_vg) | map(attribute='pv_name') | list }}
+    pbs_lv_exists: >-
+      {{ (pbs_lv_read.results[2].stdout | from_json).report[0].lv
+         | selectattr('vg_name', 'equalto', pbs_datastore_vg)
+         | selectattr('lv_name', 'equalto', pbs_datastore_lv) | list | length == 1 }}
+
+- name: Shared disk - the OS volume group lives on this disk
+  ansible.builtin.assert:
+    that:
+      - pbs_lv_vg_pvs | length > 0
+      - pbs_lv_vg_pvs | intersect(pbs_lv_disk_paths) | length > 0
+    fail_msg: >-
+      pbs_os_on_datastore_disk is true, but volume group {{ pbs_datastore_vg }} (PVs {{ pbs_lv_vg_pvs }})
+      is not on {{ pbs_dsk_dev }} (serial {{ pbs_datastore_disk_serial }}). Was PBS installed onto this disk
+      (install_disk_serial, install_lvm.hdsize)? Nothing was changed.
+
+- name: Shared disk - create the datastore volume (only if it does not exist yet)
+  when: not pbs_lv_exists
+  block:
+    - name: Partitions on the disk named for the datastore (left by an interrupted run)
+      ansible.builtin.set_fact:
+        pbs_lv_part: >-
+          {{ (pbs_lv_read.results[0].stdout | from_json).blockdevices | selectattr('type', 'equalto', 'part')
+             | selectattr('partlabel', 'equalto', pbs_datastore_fs_label) | map(attribute='path') | list }}
+
+    - name: Largest free (unpartitioned) block on the disk, in bytes
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        f=$(sgdisk -F {{ pbs_dsk_dev }} | tail -n1); e=$(sgdisk -E {{ pbs_dsk_dev }} | tail -n1);
+        ss=$(blockdev --getss {{ pbs_dsk_dev }});
+        if [ "$f" -gt 0 ] && [ "$e" -ge "$f" ]; then echo $(( (e - f + 1) * ss )); else echo 0; fi
+      args:
+        executable: /bin/bash
+      register: pbs_lv_free
+      changed_when: false
+      when: pbs_lv_part | length == 0
+
+    - name: Enough free space for the datastore partition
+      ansible.builtin.assert:
+        that:
+          - (pbs_lv_free.stdout | int) >= (pbs_datastore_lv_min_gib | int) * 1024 * 1024 * 1024
+        fail_msg: >-
+          {{ pbs_dsk_dev }} has only {{ ((pbs_lv_free.stdout | int) / 1024 ** 3) | round(1) }} GiB unpartitioned
+          (need {{ pbs_datastore_lv_min_gib }} GiB). The answer file must cap the OS slice (install_lvm.hdsize
+          in hosts.yml) before the install. Nothing was changed.
+      when: pbs_lv_part | length == 0
+
+    - name: New partition in the largest free block (free space only; existing partitions untouched)
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        sgdisk -n 0:0:0 -t 0:8E00 -c 0:{{ pbs_datastore_fs_label | quote }} {{ pbs_dsk_dev }} &&
+        partx -u {{ pbs_dsk_dev }} && udevadm settle
+      args:
+        executable: /bin/bash
+      changed_when: true
+      when: pbs_lv_part | length == 0
+
+    - name: Read the partition again
+      ansible.builtin.command: lsblk -J -l -o PATH,TYPE,FSTYPE,PARTLABEL {{ pbs_dsk_dev }}
+      register: pbs_lv_reread
+      changed_when: false
+
+    - name: The datastore partition
+      ansible.builtin.set_fact:
+        pbs_lv_partinfo: >-
+          {{ (pbs_lv_reread.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'part')
+             | selectattr('partlabel', 'equalto', pbs_datastore_fs_label) | list }}
+
+    - name: Exactly one datastore partition, empty or already a physical volume
+      ansible.builtin.assert:
+        that:
+          - pbs_lv_partinfo | length == 1
+          - pbs_lv_partinfo[0].fstype in [none, 'LVM2_member']
+        fail_msg: >-
+          Expected one partition named {{ pbs_datastore_fs_label }} on {{ pbs_dsk_dev }} that is empty or an LVM
+          physical volume, found {{ pbs_lv_partinfo }}. Check by hand; nothing was formatted.
+
+    - name: Make it a physical volume (pvcreate refuses a partition with any other signature)
+      ansible.builtin.command: pvcreate {{ pbs_lv_partinfo[0].path }}
+      changed_when: true
+      when: pbs_lv_partinfo[0].fstype != 'LVM2_member'
+
+    - name: Volume group of that physical volume
+      ansible.builtin.command: pvs --noheadings -o vg_name {{ pbs_lv_partinfo[0].path }}
+      register: pbs_lv_part_vg
+      changed_when: false
+
+    - name: The physical volume is free or already in the OS volume group
+      ansible.builtin.assert:
+        that:
+          - pbs_lv_part_vg.stdout | trim in ['', pbs_datastore_vg]
+        fail_msg: >-
+          {{ pbs_lv_partinfo[0].path }} belongs to volume group {{ pbs_lv_part_vg.stdout | trim }},
+          not {{ pbs_datastore_vg }}. Check by hand; nothing was changed.
+
+    - name: Add it to the OS volume group
+      ansible.builtin.command: vgextend {{ pbs_datastore_vg }} {{ pbs_lv_partinfo[0].path }}
+      changed_when: true
+      when: pbs_lv_part_vg.stdout | trim == ''
+
+    - name: Datastore logical volume on all free space of the volume group
+      ansible.builtin.command: >-
+        lvcreate -Wy --yes -l 100%FREE -n {{ pbs_datastore_lv }} {{ pbs_datastore_vg }}
+      changed_when: true
+
+- name: Filesystem on the datastore volume (created only if it has none; never reformatted)
+  community.general.filesystem:
+    dev: "/dev/{{ pbs_datastore_vg }}/{{ pbs_datastore_lv }}"
+    fstype: "{{ pbs_datastore_lv_fstype }}"
+    opts: "-L {{ pbs_datastore_fs_label }}"
+    force: false
+
+- name: From here on the datastore "disk" is the logical volume
+  ansible.builtin.set_fact:
+    pbs_dsk_dev: "/dev/{{ pbs_datastore_vg }}/{{ pbs_datastore_lv }}"

@@ -1,0 +1,89 @@
+---
+# Firewalla (lab router, Router mode): the rules this repo keeps on the box.
+#
+#   make firewalla-plan    read-only: rule diff + PASS/FAIL of the settings below
+#   make firewalla-apply   plan, "yes", then create / replace / delete MANAGED rules only
+#
+# scripts/firewalla.py talks to the box over SSH (pi@ the first address of
+# firewalla_vpn_subnet, through the WireGuard VPN) and calls the Firewalla app's own
+# local API there (http://localhost:8834/v1/encipher/simple, the same handler the app uses).
+#
+# Managed rules carry the rule's "notes" field (shown as the rule's note in the app):
+#   artzima-iac:<id>
+# The script only ever creates, replaces or deletes rules with that marker. Every other
+# rule (made in the app, Active Protect, the ingress firewall, ...) is listed as info
+# and never touched. Do not edit a managed rule in the app: the next apply resets it.
+#
+# Addresses are never written here. Placeholders come from
+# ansible/group_vars/all/network.yml (the private copy in the private runtime):
+#   {home_subnet}            the home network on the Firewalla WAN side (Xfinity)
+#   {workstation_home_ip}    cidrhost(home_subnet, host_index of lab_unmanaged "workstation")
+#   {answer_port}            answer_port below (make answer-server, ANSWER_PORT)
+# scope: lab                 the Firewalla LAN whose address is lab_gateway
+#                            (sent as tag ["intf:<that network's UUID on the box>"])
+#
+# Why so few rules (READ BEFORE ADDING ONE):
+#   Nothing else is blocked by rules: NO country blocks, NO category blocks, NO ad-block on
+#   the lab. On 2026-11-23 "block all countries except US" silently broke Tailscale (its
+#   DERP relays and coordination servers sit abroad) and 1.1.1.1 (anycast, geolocated
+#   abroad), and nothing in the app said why. Lab servers need the whole internet for
+#   updates, images, Tailscale and Cloudflare; the protection that matters is Active
+#   Protect (known-bad hosts) and the ingress firewall (nothing reaches the lab from the
+#   internet). The plan reports country and category rules as FAIL.
+#
+# Safety of the lab -> home block (checked against the box, 2026-11-23):
+#   - Rules are enforced in the FORWARD chain only (FW_OUTPUT is empty): traffic of the
+#     Firewalla itself (DHCP from the Xfinity, its default route via the home gateway,
+#     DNS upstreams) is never filtered.
+#   - FW_FORWARD accepts traffic to the networks' gateways (c_network_gateway_set) before
+#     any rule, so even lab -> Xfinity gateway stays open; the lab's internet traffic is
+#     not addressed to home_subnet at all.
+#   - A network-scoped "outbound" rule matches connections the lab OPENS (src = lab
+#     network, conntrack ORIGINAL) and their replies, nothing else.
+#   - Network allow rules (FW_FIREWALL_NET_ALLOW) are evaluated before network block rules
+#     (FW_FIREWALL_NET_BLOCK): the answer-server exception wins.
+#   - The workstation's VPN traffic comes from the VPN network (firewalla_vpn_subnet),
+#     not from home_subnet: the rules don't affect it.
+
+answer_port: 8000
+
+rules:
+  - id: lab-to-answer-server
+    description: >-
+      Allow the lab to reach the answer server on the workstation's home address (tcp
+      {answer_port}): the Proxmox auto-installer fetches its answer file and reports back
+      there (make answer-server). Exception to lab-to-home-block.
+    policy:
+      action: allow
+      type: remoteIpPort
+      target: "{workstation_home_ip},{answer_port}"
+      protocol: tcp
+      direction: outbound
+      scope: lab
+
+  - id: lab-to-home-block
+    description: >-
+      Block the lab from opening connections to the home network (home_subnet). Home
+      devices reach the lab over Tailscale; the workstation over the WireGuard VPN.
+    policy:
+      action: block
+      type: net
+      target: "{home_subnet}"
+      direction: outbound
+      scope: lab
+
+# Settings that are not rules. make firewalla-plan READS them and prints PASS/FAIL;
+# nothing writes them (no proven safe write path). Fix a FAIL in the app:
+# docs/disaster-recovery.md "Firewalla: replace or factory-reset".
+settings:
+  mode: router                  # Router mode (redis "mode")
+  active_protect: true          # the app's Active Protect rule (category default_c, block)
+  ingress_firewall: true        # the app's inbound "block traffic from the internet" rule
+  new_device_quarantine: false  # newDeviceTag, system and lab network
+  ad_block: false               # adblock, system and lab network
+  port_forwards: 0              # extension.portforward.config
+  upnp: false
+  wan_dns: [9.9.9.9, 1.1.1.1]   # upstreams the Firewalla itself uses (WAN DNS override)
+  wireguard_port: 51820         # VPN server listen port (the client Endpoint uses it)
+  no_country_rules: true
+  no_category_rules: true       # except Active Protect

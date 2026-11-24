@@ -102,6 +102,20 @@ class PrivateSiteTests(unittest.TestCase):
                          "NAS 203.0.113.156 on 203.0.113.0/24; Firewalla WAN 100.64.0.251\n")
         self.assertIn("192.0.2.156", doc.read_text())  # public source untouched
 
+    def test_operator_docs_get_the_vpn_server_only(self):
+        (self.root / self.files[1]).write_text(self.net + "firewalla_vpn_subnet: 203.0.113.0/24\n")
+        self.create_site()
+        (self.site / self.files[1]).write_text(self.net + "firewalla_vpn_subnet: 100.64.9.0/24\n")
+        doc = self.root / "docs/runbook.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("ssh pi@203.0.113.1; AllowedIPs 203.0.113.1/32 of 203.0.113.0/24; "
+                       "other example 203.0.113.2/32, 203.0.113.17\n")
+        self.prepare(self.files + ["docs/runbook.md"] +
+                     [str(p.relative_to(self.root)) for p in (self.root / "k8s").rglob("*.yaml")])
+        self.assertEqual((self.runtime / "docs/runbook.md").read_text(),
+                         "ssh pi@100.64.9.1; AllowedIPs 100.64.9.1/32 of 100.64.9.0/24; "
+                         "other example 203.0.113.2/32, 203.0.113.17\n")
+
     def test_operator_docs_without_home_subnet_still_prepare(self):
         self.create_site()
         doc = self.root / "docs/runbook.md"

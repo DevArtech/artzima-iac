@@ -24,7 +24,7 @@ parameters:
   subDir: $${pvc.metadata.namespace}/$${pvc.metadata.name}
   onDelete: retain # only used if a PV is ever deleted by the driver: keep the folder
 mountOptions:
-  - nfsvers=4.1
+  - nfsvers=3
   - hard
   - noatime
 reclaimPolicy: Retain
@@ -49,7 +49,7 @@ parameters:
   subDir: _scratch/$${pvc.metadata.namespace}/$${pvc.metadata.name}
   onDelete: delete
 mountOptions:
-  - nfsvers=4.1
+  - nfsvers=3
   - hard
   - noatime
 reclaimPolicy: Delete

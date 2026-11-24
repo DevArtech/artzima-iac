@@ -1,6 +1,6 @@
 ---
-# Inside the Jellyfin LXC (Debian 13): NVIDIA userspace matching host01's
-# Debian driver, plus Jellyfin from the official repo.
+# Inside the Jellyfin LXC (Debian 13): NVIDIA userspace from NVIDIA's repo at exactly
+# host01's driver version (nvidia_driver_version), plus Jellyfin from the official repo.
 - name: Bootstrap python3 in fresh Debian LXCs
   hosts: jellyfin
   gather_facts: false
@@ -14,16 +14,29 @@
   hosts: jellyfin
   vars:
     jellyfin_nvidia_userspace:
-      - nvidia-smi
-      - libnvidia-encode1
-      - libcuda1
-      - libnvcuvid1
+      - "nvidia-smi={{ nvidia_driver_version }}-*"
+      - "libnvidia-encode1={{ nvidia_driver_version }}-*"
+      - "libcuda1={{ nvidia_driver_version }}-*"
+      - "libnvcuvid1={{ nvidia_driver_version }}-*"
   tasks:
     - name: Enable contrib/non-free in debian.sources
       ansible.builtin.replace:
         path: /etc/apt/sources.list.d/debian.sources
         regexp: '^Components: .*$'
         replace: 'Components: main contrib non-free non-free-firmware'
+
+    - name: NVIDIA apt repository (cuda-keyring)
+      ansible.builtin.apt:
+        deb: "{{ nvidia_repo_url }}/cuda-keyring_1.1-1_all.deb"
+
+    - name: Pin the NVIDIA userspace to host01's driver version
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/nvidia-driver
+        mode: "0644"
+        content: |
+          Package: nvidia-* libnvidia-* libcuda1 libnvcuvid1
+          Pin: version {{ nvidia_driver_version }}-*
+          Pin-Priority: 1001
 
     - name: Jellyfin apt key
       ansible.builtin.get_url:

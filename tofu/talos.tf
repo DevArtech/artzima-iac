@@ -84,6 +84,9 @@ resource "proxmox_virtual_environment_vm" "talos" {
   }
 
   initialization {
+    # ide0, not the provider's default ide2: the Talos ISO cdrom is on ide2, and the clash left the
+    # VMs without a cloud-init drive, so Talos took DHCP addresses (2026-11-24).
+    interface    = "ide0"
     datastore_id = var.vm_datastore
     dns {
       domain  = local.lab_domain
@@ -155,6 +158,7 @@ locals {
     yamlencode({
       apiVersion = "v1alpha1"
       kind       = "HostnameConfig"
+      auto       = "off" # the generated config sets auto; Talos refuses auto together with hostname
       hostname   = name
     }),
     yamlencode({
@@ -178,7 +182,7 @@ data "talos_machine_configuration" "cp" {
   cluster_endpoint   = local.cluster_endpoint
   machine_type       = "controlplane"
   machine_secrets    = talos_machine_secrets.this.machine_secrets
-  talos_version      = var.talos_version
+  talos_version      = var.talos_config_contract # config FORMAT; the nodes run var.talos_version
   kubernetes_version = var.kubernetes_version
   docs               = false
   examples           = false

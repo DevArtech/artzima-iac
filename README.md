@@ -489,7 +489,7 @@ What *you* do lives in [`docs/OPERATOR-SETUP.md`](docs/OPERATOR-SETUP.md). Open 
 - [x] `hosts.yml`: `install_disk` + `install_disk_serial` per host, the PBS datastore disk
       (`pbs_datastore_disk_serial`, USB), the ZimaBoard's second NIC MAC (2026-11-23, private).
 - [ ] `lab.yml`: `timezone` (OPERATOR-SETUP A6).
-- [ ] PBS S3 cache (`pbs_b2_cache_path`): the ZimaBoard's eMMC is too small (~29 GiB for 64-128 GiB);
+- [ ] PBS S3 cache (`pbs_b2_cache_path`): the PBS root filesystem is too small (~32 GiB for 64-128 GiB);
       `make pbs-offsite` refuses until the cache is on the USB disk outside the datastore, or on another disk.
 - [ ] Check the Jellyfin GPU device list (`ls -l /dev/nvidia*` on
       host01) against `lxc_devices` in `hosts.yml`.

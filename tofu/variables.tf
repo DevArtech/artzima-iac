@@ -66,6 +66,12 @@ variable "talos_version" {
   default     = "v1.14.6"
 }
 
+variable "talos_config_contract" {
+  description = "Machine-config format the configs are generated in. The patches here use the v1alpha1 install/kubelet/network fields plus the 1.12 network documents; Talos 1.14 generates newer documents that conflict with them, and Talos accepts older contracts by design."
+  type        = string
+  default     = "v1.12"
+}
+
 variable "kubernetes_version" {
   description = "null = the Talos release's default Kubernetes"
   type        = string

@@ -44,3 +44,12 @@ primary_nic_name: lan0
 # (docs/OPERATOR-SETUP.md C, generated list: docs/nas-plan.md). NEVER deleted by this repo.
 # Example: - { name: images, size: 100G, note: old VM disks }
 artnas_legacy_dirs: []
+
+# ansible-core 2.19+ no longer defines ansible_managed by default; templates use it as a header.
+ansible_managed: "Managed by Ansible (artzima-iac): local edits are overwritten"
+
+# NVIDIA driver for host01's GPU (Jellyfin NVENC), from NVIDIA's own Debian 13 repo: Debian's
+# 550 driver does not build on the Proxmox 7.0 kernel (2026-11-23). The Jellyfin LXC installs
+# the SAME version of the userspace libraries; host and container must match exactly.
+nvidia_repo_url: https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64
+nvidia_driver_version: "620.70.06"

@@ -27,7 +27,7 @@
     group: backup
     mode: "0750"
 
-# The ZimaBoard's OS disk is a ~29 GiB eMMC: a cache there would fill it. Stop instead.
+# The PBS root filesystem is a ~32 GiB slice: a cache there would fill it. Stop instead.
 - name: Free space and location of the cache filesystem
   ansible.builtin.command: df -B1 --output=avail,target {{ pbs_b2_cache_path }}
   register: pbs_offsite_cache_df

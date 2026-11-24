@@ -132,6 +132,18 @@ cannot establish whether anyone downloaded a copy during the exposure window.
   default, plus a confirmation pinned to the disk's serial). It is set `true` for build day only and
   back to `false` afterwards ([OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)).
 
+## 23 November 2026 — PBS OS moves onto the USB datastore disk (decided)
+
+- The PBS install onto the ZimaBoard's eMMC failed twice: the Proxmox auto-installer cannot install
+  onto eMMC. Decision by the operator: install the PBS OS onto the external USB disk instead and keep
+  the datastore on the same disk. The eMMC stays unused. This replaces "the OS goes on the eMMC" above.
+- Implemented: the answer file selects the USB disk by serial and caps the OS partition
+  (`install_lvm.hdsize`; on PBS the installer ignores `maxroot`, so the partition size is the only way
+  to leave room). `make answers` allows the install serial to equal the datastore serial only with
+  `pbs_os_on_datastore_disk: true`. The role `pbs` adds the free rest of the disk to the OS volume group
+  as the logical volume `datastore`, formatted once and reused afterwards.
+- Consequence: reinstalling PBS now wipes its local datastore; the offsite copy in B2 remains.
+
 ## 23 November 2026 — Home Assistant removed; Jellyfin starts fresh (decided)
 
 - Decision by the operator: **Home Assistant leaves the lab entirely.** Removed from the code and

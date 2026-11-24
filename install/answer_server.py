@@ -95,6 +95,16 @@ class Handler(BaseHTTPRequestHandler):
                               entry["host"], mac, entry["serial"])
                 self._send(412, f"install disk serial for {entry['host']} not present: check hosts.yml\n")
                 return
+            # Third guardrail: a machine that already reported a finished install (the
+            # stick was left in and it booted the installer again) gets no second answer,
+            # so the installer stops before touching a disk. Delete
+            # answers/installed/<host>.json (or `make clean-answers`) to reinstall on purpose.
+            if (ANSWERS / "installed" / f"{entry['host']}.json").exists():
+                logging.error("%s (%s) already installed; refusing a second install "
+                              "(remove the stick, or delete answers/installed/%s.json)",
+                              entry["host"], mac, entry["host"])
+                self._send(409, f"{entry['host']} is already installed: remove the USB stick\n")
+                return
             logging.info("serving the answer for %s (%s, peer %s)", entry["host"], mac,
                          self.client_address[0])
             self._send(200, entry["text"], "application/toml")

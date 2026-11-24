@@ -7,7 +7,16 @@ pbs_datastore_disk_serial: null
 # Afterwards set pbs_datastore_format_disk back to false (the label also prevents a repeat).
 pbs_datastore_format_disk: false
 pbs_datastore_format_confirm_serial: ""
-pbs_datastore_fs_label: artzima-pbs # written after formatting (ext4 label, max 16 chars)
+pbs_datastore_fs_label: artzima-pbs # written after formatting (ext4 label, max 16 chars; xfs max 12)
+# Shared disk (tasks/datastore_lv.yml): the OS and the datastore are on the SAME disk
+# (install_disk_serial == pbs_datastore_disk_serial; install_lvm.hdsize caps the OS slice).
+# The disk is never wiped by the role: the rest of it becomes LV pbs_datastore_lv in the
+# OS volume group, formatted once; later runs reuse it and never format again.
+pbs_os_on_datastore_disk: false
+pbs_datastore_vg: pbs # the VG the PBS installer creates (named after the product)
+pbs_datastore_lv: datastore
+pbs_datastore_lv_fstype: ext4 # ext4 or xfs
+pbs_datastore_lv_min_gib: 64 # refuse to build a datastore LV smaller than this
 pbs_datastore_mount: "/mnt/datastore/{{ pbs_datastore_name }}"
 pbs_datastore_mount_opts: defaults,nofail,x-systemd.device-timeout=30s
 pbs_datastore_fs_types: [ext4, xfs]

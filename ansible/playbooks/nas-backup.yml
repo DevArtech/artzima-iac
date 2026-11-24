@@ -1,12 +1,17 @@
 ---
 # Backrest (restic) on the UGREEN NAS: media + personal shares -> Backblaze B2
 # (backups.yml backup_nas_media=restic-on-nas). Connects as devartech with sudo:
-#   make nas-backup          (lists the tasks, asks "yes", then the sudo password: -K)
+#   make nas-backup          (lists the tasks, asks "yes"; the sudo password comes from Infisical
+#                             /ansible/NAS_SUDO_PASSWORD, read into the environment, never on the command line)
+#   make nas-backup NAS_ANSIBLE_ARGS=-K   (no Infisical entry: type the sudo password instead)
 # Render-only, without SSH to the NAS (then follow the one-time manual steps):
 #   make nas-backup NAS_ANSIBLE_ARGS= ANSIBLE_ARGS="-e nas_backup_deploy=false"
 # docs/backups.md "Backrest on the NAS".
 - name: Backrest on the NAS
   hosts: artnas
   gather_facts: false # UGOS: only what the tasks need; no fact gathering
+  vars:
+    # From Infisical via scripts/infisical_exec.py (make nas-backup); empty = rely on -K.
+    ansible_become_password: "{{ lookup('ansible.builtin.env', 'NAS_SUDO_PASSWORD') or omit }}"
   roles:
     - nas_backup

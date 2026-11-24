@@ -4,4 +4,4 @@ lxc_devices_guests: []
 lxc_devices_mount_guests: []
 # NAS media data folder on the node: read-only, hard (never silently empty),
 # _netdev + nofail so a NAS outage doesn't block the node's boot.
-lxc_devices_media_mount_opts: "vers=4.1,ro,hard,noatime,_netdev,nofail"
+lxc_devices_media_mount_opts: "vers=3,ro,hard,noatime,_netdev,nofail"

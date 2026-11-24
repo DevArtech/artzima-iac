@@ -46,6 +46,10 @@ k8s_service_subnet: 198.19.0.0/16
 # Home network on the Firewalla WAN side (Xfinity gateway). Home devices reach
 # the lab only over Tailscale (docs/manual-steps.md §4a).
 home_subnet: 198.51.100.0/24
+# The Firewalla's WireGuard VPN server (firewalla/baseline.yaml, make firewalla-plan):
+# the server is the first address (also the Firewalla's SSH), the client profile
+# "workstation" the second. The workstation reaches the lab only through it.
+firewalla_vpn_subnet: 203.0.113.0/24
 # Firewalla LAN DHCP pool as host offsets [first, last]. Must not overlap any
 # static host, the VIP or lab_unmanaged (render.py refuses).
 lab_dhcp_pool: [210, 249]

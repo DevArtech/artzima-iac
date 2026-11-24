@@ -24,7 +24,7 @@ spec:
     namespace: vaultwarden
     name: vaultwarden-backups
   mountOptions:
-    - nfsvers=4.1
+    - nfsvers=3
     - hard
     - noatime
   csi:

@@ -3,20 +3,30 @@
 # mpN: lines, and API tokens (OpenTofu) cannot. So OpenTofu creates the
 # containers and this role adds devices and bind mounts from the inventory
 # (lxc_devices / lxc_mounts on each LXC guest in hosts.yml).
-- name: Collect LXCs placed on this node
+# ansible-core 2.19: `groups | map('extract', hostvars) | selectattr(...)` fails with
+# "'hostvars' is undefined" (lazy HostVarsVars), so collect per host in a loop instead,
+# keeping only the fields the role uses.
+- name: Collect LXCs on this node that need devices
   ansible.builtin.set_fact:
     lxc_devices_guests: >-
-      {{ groups['all'] | map('extract', hostvars)
-         | selectattr('guest_kind', 'defined') | selectattr('guest_kind', 'eq', 'lxc')
-         | selectattr('proxmox_node', 'defined') | selectattr('proxmox_node', 'eq', inventory_hostname)
-         | selectattr('lxc_devices', 'defined')
-         | list }}
+      {{ lxc_devices_guests + [{'inventory_hostname': item, 'host_index': hostvars[item].host_index,
+         'lxc_devices': hostvars[item].lxc_devices, 'lxc_mounts': hostvars[item].lxc_mounts | default([])}] }}
+  loop: "{{ groups['all'] }}"
+  when:
+    - hostvars[item].guest_kind | default('') == 'lxc'
+    - hostvars[item].proxmox_node | default('') == inventory_hostname
+    - hostvars[item].lxc_devices is defined
+
+- name: Collect LXCs on this node that need bind mounts
+  ansible.builtin.set_fact:
     lxc_devices_mount_guests: >-
-      {{ groups['all'] | map('extract', hostvars)
-         | selectattr('guest_kind', 'defined') | selectattr('guest_kind', 'eq', 'lxc')
-         | selectattr('proxmox_node', 'defined') | selectattr('proxmox_node', 'eq', inventory_hostname)
-         | selectattr('lxc_mounts', 'defined')
-         | list }}
+      {{ lxc_devices_mount_guests + [{'inventory_hostname': item, 'host_index': hostvars[item].host_index,
+         'lxc_devices': hostvars[item].lxc_devices | default([]), 'lxc_mounts': hostvars[item].lxc_mounts}] }}
+  loop: "{{ groups['all'] }}"
+  when:
+    - hostvars[item].guest_kind | default('') == 'lxc'
+    - hostvars[item].proxmox_node | default('') == inventory_hostname
+    - hostvars[item].lxc_mounts is defined
 
 # ------------------------------------------------------------ media data folder
 # The NAS media data folder (group_vars/all/media.yml), mounted READ-ONLY on

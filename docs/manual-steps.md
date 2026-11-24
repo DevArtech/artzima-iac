@@ -15,7 +15,7 @@ then read `k8s/clusters/artzima/cluster-vars.yaml`).
 | Virtualization | VT-x/AMD-V and VT-d/IOMMU **on** | VMs; GPU on host01 |
 | Secure Boot | Off (simplest with the NVIDIA DKMS module on host01) | |
 | Example laptop host | Disable "battery only" / lid-close sleep; plug in permanently | it is a server now |
-| Example eMMC host | Boot from eMMC after install; second NIC unused for now | |
+| Example eMMC host | Boot from the external USB disk after install (it holds the OS; the eMMC is unused); remove the installer stick; second NIC unused for now | the auto-installer cannot target eMMC |
 
 ### 1.1 Power: UPS shutdown, coming back, Wake-on-LAN
 
@@ -49,6 +49,18 @@ Do this on build day, **before the USB installs** ([OPERATOR-SETUP B0](OPERATOR-
 The installers need the Firewalla's DHCP and the workstation's lab NIC to fetch their answers.
 Exact menu names vary between Firewalla app versions; the values do not.
 
+**Setting up a new or factory-reset Firewalla** (app, WireGuard VPN, SSH key, then the rules from
+git with `make firewalla-apply`): [disaster recovery P5](disaster-recovery.md#p5-firewalla-replace-or-factory-reset).
+The rules live in [`firewalla/baseline.yaml`](../firewalla/baseline.yaml); `make firewalla-plan`
+shows the diff and checks the settings below (read-only).
+
+**Lessons (2026-11-23): no country blocks.** A "block all countries except US" rule on the
+Firewalla silently broke Tailscale (its relays and coordination servers sit abroad) and `1.1.1.1`
+(anycast, geolocated abroad). Nothing in the app pointed at the rule; it took a while to find. The
+lab needs the whole internet (updates, images, Tailscale, Cloudflare). Keep only Active Protect and
+the ingress firewall; no country, category or ad-block rules. `make firewalla-plan` reports them
+as `FAIL`.
+
 ### 2.1 Firewalla: Router mode
 
 1. Cabling: the Xfinity gateway to the Firewalla port you choose as **WAN**; the other port to
@@ -67,7 +79,9 @@ Exact menu names vary between Firewalla app versions; the values do not.
 4. *Network Manager → WAN* DNS (the Firewalla's upstreams): **`9.9.9.9`** and **`1.1.1.1`**.
    The static hosts already list them as fallbacks after the Firewalla (`lab_dns`).
 5. **DHCP reservations:** none. Every lab machine and guest has a static address.
-6. **Outbound:** allow everything from the lab (the default; no block rules). Make sure **new
+6. **Outbound:** allow everything from the lab to the internet. The only block rule comes from git
+   (`make firewalla-apply`): the lab may not open connections to the home network, except the
+   answer server on the workstation. Make sure **new
    device quarantine** (*New Device* / *Quarantine*) is **off** for the LAN, or new lab machines
    are cut off on build day. If something outbound breaks later, check the Firewalla's blocked
    flows first.

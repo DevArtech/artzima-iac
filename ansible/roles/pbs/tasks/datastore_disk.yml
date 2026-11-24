@@ -13,7 +13,11 @@
 # serial the attached disk reports are not identical. After formatting, the filesystem gets the
 # label pbs_datastore_fs_label; a disk with that label, or an already registered datastore, is
 # never formatted again, even if the flag was left true (it warns instead).
-# The disk holding / (the eMMC) is never a candidate.
+# The disk holding / is never a candidate, except in the shared-disk mode:
+#   pbs_os_on_datastore_disk: true   (the OS and the datastore are on the SAME disk)
+# Then the disk MUST hold / and is never wiped or partitioned as a whole: datastore_lv.yml
+# puts the datastore on an LV in the free rest of the OS volume group (the format opt-in
+# above has no effect), and the steps below mount and use that LV like a datastore disk.
 
 - name: List whole disks
   ansible.builtin.command: lsblk -J -d -o NAME,SERIAL,TYPE,SIZE,TRAN,MODEL
@@ -36,14 +40,20 @@
       {{ (pbs_dsk_lsblk.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk')
          | selectattr('serial', 'equalto', pbs_datastore_disk_serial | string) | list }}
 
-- name: Exactly one attached disk has the datastore serial, and it is not the OS disk
+- name: Shared-disk mode?
+  ansible.builtin.set_fact:
+    pbs_dsk_shared: "{{ pbs_os_on_datastore_disk | default(false) | bool }}"
+
+- name: Exactly one attached disk has the datastore serial; the OS disk only in shared-disk mode
   ansible.builtin.assert:
     that:
       - pbs_dsk_matches | length == 1
-      - pbs_dsk_matches[0].name not in pbs_dsk_root.stdout_lines
+      - (pbs_dsk_matches[0].name in pbs_dsk_root.stdout_lines) == pbs_dsk_shared
     fail_msg: >-
       Datastore disk serial {{ pbs_datastore_disk_serial }}: matches {{ pbs_dsk_matches | map(attribute='name') | list }},
-      OS disk {{ pbs_dsk_root.stdout_lines }}. Attach the USB disk or fix pbs_datastore_disk_serial (hosts.yml).
+      OS disk {{ pbs_dsk_root.stdout_lines }}, pbs_os_on_datastore_disk {{ pbs_dsk_shared }}.
+      {{ 'The OS must be installed on this disk (shared-disk mode).' if pbs_dsk_shared
+         else 'Attach the USB disk or fix pbs_datastore_disk_serial (hosts.yml).' }}
       Disks seen (name, serial, size, transport):
       {{ pbs_dsk_all | map(attribute='name') | zip(pbs_dsk_all | map(attribute='serial'),
          pbs_dsk_all | map(attribute='size'), pbs_dsk_all | map(attribute='tran')) | list }}
@@ -51,7 +61,7 @@
 - name: Remember the device; is formatting opted in and confirmed for exactly this disk?
   ansible.builtin.set_fact:
     pbs_dsk_dev: "/dev/{{ pbs_dsk_matches[0].name }}"
-    pbs_dsk_optin: "{{ pbs_datastore_format_disk | bool }}"
+    pbs_dsk_optin: "{{ pbs_datastore_format_disk | bool and not pbs_dsk_shared }}"
     pbs_dsk_confirmed: >-
       {{ (pbs_datastore_format_confirm_serial | default('', true) | string) != ''
          and (pbs_datastore_format_confirm_serial | string) == (pbs_datastore_disk_serial | string)
@@ -65,6 +75,17 @@
       pbs_datastore_format_disk is true, but pbs_datastore_format_confirm_serial
       ({{ pbs_datastore_format_confirm_serial | default('', true) or 'unset' }}) does not equal the disk's serial
       ({{ pbs_dsk_matches[0].serial }}, configured {{ pbs_datastore_disk_serial }}): refusing to format anything.
+
+- name: Shared disk - the format opt-in is ignored (the disk holds the OS; it is never wiped)
+  ansible.builtin.debug:
+    msg: >-
+      pbs_datastore_format_disk is true, but pbs_os_on_datastore_disk is true too: the role does not wipe
+      {{ pbs_dsk_dev }}. It only creates the datastore volume in free space. Set the flag back to false.
+  when: pbs_dsk_shared and pbs_datastore_format_disk | bool
+
+- name: Shared disk - datastore logical volume in the OS volume group
+  ansible.builtin.include_tasks: datastore_lv.yml
+  when: pbs_dsk_shared
 
 - name: List the filesystems on the disk
   ansible.builtin.command: lsblk -J -l -o NAME,FSTYPE,UUID,LABEL,MOUNTPOINT,TYPE {{ pbs_dsk_dev }}

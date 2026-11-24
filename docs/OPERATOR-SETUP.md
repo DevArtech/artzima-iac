@@ -34,7 +34,7 @@ See the [public-source security review](PUBLIC-SECURITY-REVIEW.md) for checks, f
 
 The accounts-only check verifies credential presence. Hardware readiness requires the full preflight and installer target checks.
 
-- Install-disk serials for host01, node01, node02, node03 and pbs were collected read-only on 2026-11-23 and are in private configuration; all MACs match. The PBS OS goes onto its eMMC only; its datastore is an external USB disk, recorded by serial and never an install target. Confirm the targets once more in the installer's debug shell if hardware changes.
+- Install-disk serials for host01, node01, node02, node03 and pbs were collected read-only on 2026-11-23 and are in private configuration; all MACs match. The PBS OS and its datastore share the external USB disk, recorded by serial: the Proxmox auto-installer cannot install onto the ZimaBoard's eMMC, so the eMMC stays unused. Confirm the targets once more in the installer's debug shell if hardware changes.
 - The NAS was inspected read-only on 2026-11-23: the media roots and both personal shares are recorded in private configuration ([NAS plan](nas-plan.md)), and Docker and the admin user are present. Still to verify: the NFS rule (B0) and the data folder's owner.
 - Infisical is split into two projects (2026-11-23): the free plan refuses custom roles, so the cluster's secrets get their own project and ESO the built-in Viewer role there only. Before the cloud bootstrap continues: create that project ([A2b](#a2b-the-clusters-infisical-project)), run the one-time migration, and verify that ESO can read `/k8s` and cannot read the main project.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
@@ -209,9 +209,10 @@ Inspected read-only on 2026-11-23 (G.A.R.T.H.): `volume1` 7.3T (6.9T free), Dock
 - [x] Which personal shares to back up off-site? → `nas_personal_shares` (private `backups.yml`):
   both shares from the start, including the one that is still empty. Their `#recycle` folders are
   excluded (`nas_backup_excludes`).
-- [x] UGOS **Docker** app installed (Docker 26.1); your NAS user is in `admin` and can `sudo` (asked
-  once per `make up`/`make nas-backup`, the `-K` prompt).
-- [ ] Folders: `sudo mkdir -p /volume1/Artzima/{backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume}`.
+- [x] UGOS **Docker** app installed (Docker 26.1); your NAS user is in `admin` and can `sudo`. Its password
+  goes in Infisical (main project, prod) as `/ansible/NAS_SUDO_PASSWORD`; `make nas-backup` reads it
+  from there. Without that entry: `make nas-backup NAS_ANSIBLE_ARGS=-K` and type it.
+- [x] (2026-11-23) Folders: `sudo mkdir -p /volume1/Artzima/{backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume}`.
 - [x] Previous backup identified: a container on the NAS (recorded in `nas_existing_backup`). **Keep it
   running** until Backrest's first full backup and a test restore are verified; retiring it is
   manual ([backup-provider transition](backups.md#backup-provider-transition), C below).
@@ -220,7 +221,7 @@ Inspected read-only on 2026-11-23 (G.A.R.T.H.): `volume1` 7.3T (6.9T free), Dock
 
 - [x] (2026-11-23) [`ansible/hosts.yml`](../ansible/hosts.yml) is an example. Edit `.private/site/ansible/hosts.yml` instead: for every Proxmox/PBS machine `mac` (primary
   NIC), `install_disk` and **`install_disk_serial`**; for pbs also `pbs_datastore_disk_serial` (the USB
-  datastore disk). All filled in; `make answers` refuses an install serial that overlaps the datastore disk. The answer server only answers machines with
+  datastore disk). All filled in; `make answers` refuses an install serial that overlaps the datastore disk, except for pbs, where `pbs_os_on_datastore_disk: true` puts the OS on that same disk on purpose (B1). The answer server only answers machines with
   a known MAC and installs only onto the disk with that serial. <a id="disk-serials"></a>**Disk
   serials:** on the target system `udevadm info -q property -n /dev/nvme0n1 | grep ^ID_SERIAL=`
   (or `lsblk -d -o NAME,SERIAL,MODEL`); in the installer's debug shell the same command. A
@@ -251,15 +252,30 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **NAS address** (UGOS, still reachable on the home network): *Control Panel → Network →
   (wired LAN) → IPv4 Manual*: `192.0.2.156` / `255.255.255.0`, gateway `192.0.2.1`, DNS
   `192.0.2.1`. The UI drops; continue with the Firewalla.
-- [ ] **Firewalla → Router mode:** WAN = the port to the Xfinity (DHCP), LAN = the port to the lab
-  switch. LAN `192.0.2.1/24`, DHCP on with pool `192.0.2.210`-`192.0.2.249` (static hosts `.100`-`.160`
-  stay static, `.72` and `.204` stay out of the pool), DHCP DNS = `192.0.2.1`, WAN DNS
-  upstreams `9.9.9.9` and `1.1.1.1`. Allow all outbound, new-device quarantine **off**, **no
-  port forwards** (Cloudflare Tunnel and Tailscale need none). No DHCP reservations: every
-  lab machine and guest is static.
-- [ ] **Workstation lab NIC:** static `192.0.2.72/24`, no gateway, no DNS. On this workstation,
-  `tailscale set --accept-routes=false`, so the Tailscale lab route doesn't shadow the wired NIC.
-  Allow inbound TCP 8000 for the answer server. Check: `ping 192.0.2.1`.
+- **Firewalla** (the same steps as
+  [disaster recovery P5](disaster-recovery.md#p5-firewalla-replace-or-factory-reset); `make firewalla-plan`
+  checks the settings, read-only):
+  - [x] (2026-11-23) **Router mode:** WAN = the port to the Xfinity (DHCP), LAN = the port to the lab switch.
+  - [x] (2026-11-23) **LAN** `192.0.2.1/24`, DHCP on with pool `192.0.2.210`-`192.0.2.249` (static
+    hosts `.100`-`.160` stay static, `.72` and `.204` stay out of the pool), DHCP DNS = `192.0.2.1`.
+    No DHCP reservations: every lab machine and guest is static.
+  - [x] (2026-11-23, plan PASS) New-device quarantine **off**, Active Protect **on**, **no port
+    forwards**, UPnP off, no country or category rules (Cloudflare Tunnel and Tailscale need no forwards).
+  - [ ] **WAN DNS upstreams `9.9.9.9` and `1.1.1.1`** (*Network Manager → WAN → DNS*). The plan on
+    2026-11-23: FAIL, the box still uses the Xfinity's DNS from DHCP.
+  - [ ] **Ad Block off** (system-wide, so also the lab). The plan on 2026-11-23: FAIL, it is on.
+  - [x] (2026-11-23) **WireGuard VPN server** on port 51820, server `203.0.113.1`, client profile
+    `workstation` edited to `Endpoint = <Firewalla WAN address>:51820`,
+    `AllowedIPs = 192.0.2.0/24, 203.0.113.1/32`, no `DNS =` line. The workstation reaches the lab
+    only through this tunnel.
+  - [x] (2026-11-23) **SSH key:** the workstation's `~/.ssh/id_ed25519.pub` in `pi`'s
+    `authorized_keys`; host key in `~/.ssh/known_hosts_lab`.
+  - [ ] **Rules from git:** `make firewalla-plan`, review, then `make firewalla-apply`: block the
+    lab from opening connections to the home network, except the answer server (tcp 8000 on the
+    workstation's home address `198.51.100.72`). Only rules marked `artzima-iac:<id>` are touched.
+- [ ] **Workstation:** WireGuard tunnel `workstation` active (`ping 192.0.2.1`). Allow inbound
+  TCP 8000 for the answer server on its home network profile. If Tailscale runs here too,
+  `tailscale set --accept-routes=false`, so the Tailscale lab route doesn't shadow the tunnel.
 - [ ] **NAS on the lab:** open UGOS at `http://192.0.2.156` from the workstation. *NFS
   permissions* of **Artzima**: rule `192.0.2.0/24` (rw, no_root_squash, sync), old home-network
   rule deleted. Then `showmount -e 192.0.2.156`; if the export is missing, `sudo exportfs -ra`, or
@@ -273,26 +289,32 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 
 ### B1. Install and deploy
 
-- [ ] **PBS install:** unplug the USB datastore disk during the ZimaBoard's install. The OS goes onto the
-  **eMMC only**: the answer file selects it by serial, and `make answers` refuses an install serial that
-  could match the USB disk. Plug the USB disk back in before `make up`.
-- [ ] **PBS datastore, FIRST BUILD ONLY: opt in to wiping the USB disk.** You decided the old
-  contents of the USB backup disk may go. In `.private/site/ansible/hosts.yml`, host `pbs`, set
+- [ ] **PBS install: the USB disk stays PLUGGED IN.** It holds both the PBS OS and the datastore.
+  The Proxmox auto-installer cannot install onto the ZimaBoard's internal eMMC, so the eMMC is not
+  used. The answer file selects the USB disk by serial, **wipes it** (you approved this for the first
+  build: its old backups are gone), and puts the OS in a small slice at the start: about 32 GiB root
+  and 4 GiB swap in the LVM volume group `pbs`. The rest of the disk stays empty for now.
+  In `.private/site/ansible/hosts.yml`, host `pbs`, this is:
   ```yaml
-  pbs_datastore_format_disk: true                         # build day only
-  pbs_datastore_format_confirm_serial: <its serial>       # already pinned; leave it as it is
+  install_disk_serial: <its serial>        # the same as pbs_datastore_disk_serial
+  pbs_os_on_datastore_disk: true           # allows the OS on the datastore disk
+  install_lvm: {hdsize: 38, swapsize: 4, minfree: 1}   # GiB: the OS slice
   ```
-  The role `pbs` (in `make up`) then **wipes that one disk** and creates a fresh datastore on it. It
-  refuses if the confirmation, `pbs_datastore_disk_serial` and the serial the attached disk reports
-  are not identical, and it never touches any other disk. Before wiping, the output lists what it
-  erases. The new filesystem gets the label `artzima-pbs`. A disk with that label, or an already
-  registered datastore, is not formatted again even if the flag is still `true`; it warns and reuses
-  it, so re-running `make up` on build day is safe.
+  `make answers` refuses an install serial that could match a datastore disk unless this flag is
+  `true` and both serials are identical, and it refuses the flag without a small `hdsize`.
+- [ ] **PBS datastore (in `make up`):** the role `pbs` turns the free rest of the USB disk into one
+  new partition, adds it to the volume group `pbs`, and creates the logical volume `datastore` on all
+  free space, with an ext4 filesystem labelled `artzima-pbs`, mounted by UUID at
+  `/mnt/datastore/<name>`. It never wipes or repartitions the disk and never touches the OS
+  partitions. Re-running `make up` reuses the existing volume and filesystem and never formats again.
+  `pbs_datastore_format_disk` (whole-disk formatting) is ignored in this mode; it is still `true`
+  from build-day planning, set it back to `false` after the first `make up` (below).
 - [ ] **USB installs** (hands-off): `make answers` (validates), `install/prepare-iso.sh …`,
   `make answer-server`, then boot each machine from the stick
-  ([install/README.md](../install/README.md)). `<ws-ip>` is the workstation's **lab NIC**,
-  `192.0.2.72`; re-prepare an ISO made with an older address. Unknown MAC or wrong disk serial = the server
-  refuses (HTTP 403/412) and nothing is installed.
+  ([install/README.md](../install/README.md)). `<ws-ip>` is the workstation's **home address**,
+  `198.51.100.72` (the Firewalla rule `lab-to-answer-server` lets the lab reach its tcp 8000);
+  re-prepare an ISO made with an older address. Unknown MAC, wrong ISO or wrong disk serial =
+  the server refuses (HTTP 404/409/412) and nothing is installed.
 - [ ] `make preflight` → every line `PASS`: Infisical keys present, every host on SSH, MAC and
   disk serial match `hosts.yml`, NAS export reachable. Fix any `FAIL` first.
 - [ ] `make up`. It runs, each after showing its plan/task list and your `yes`:
@@ -302,9 +324,10 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
   sudo password) → `eso-bootstrap` → `flux-bootstrap`. If one step fails, fix it and re-run
   `make up` (everything is idempotent), or run the failed step alone (`make <step>`).
 - [ ] **Right after the first successful `make up`: set `pbs_datastore_format_disk: false` again**
-  (`.private/site/ansible/hosts.yml`), then `make private-backup`. From then on the USB disk is only
-  ever mounted and reused. Check: `ssh root@192.0.2.127 proxmox-backup-manager datastore list` shows
-  the datastore on `/mnt/datastore/<name>`, and `lsblk -o NAME,LABEL,SERIAL` shows the label `artzima-pbs`.
+  (`.private/site/ansible/hosts.yml`), then `make private-backup`. From then on the datastore volume is
+  only ever mounted and reused. Check: `ssh root@192.0.2.127 proxmox-backup-manager datastore list` shows
+  the datastore below `/mnt/datastore/<name>`, `lvs pbs` shows `root`, `swap` and `datastore`, and
+  `lsblk -o NAME,LABEL,SIZE` shows the label `artzima-pbs` on `pbs-datastore`.
 - [ ] **Host01 reboot** after the NVIDIA driver (the `site` output says so).
 - [ ] **UPS:** the NAS's *Network UPS slave* points at host01, `192.0.2.100` (B0;
   [manual steps](manual-steps.md#3-ugreen-nas-ugos)), then `make nut-check`.

@@ -274,15 +274,20 @@ The values are in Infisical (`/k8s/backup`), and the endpoint and bucket are in 
   - a prune job (7/4/6) and a weekly GC on `b2`.
 - **The sync job keeps the bucket's own history:** it uses `--remove-vanished false`, so a mistake
   on the local datastore isn't mirrored into the bucket. Pruning `b2` is separate.
-- **Local datastore:** on the ZimaBoard's external USB disk, found by `pbs_datastore_disk_serial`
-  and mounted by UUID (`nofail`) at `/mnt/datastore/<name>`. An existing datastore on it is reused.
-  Formatting is a **one-time opt-in** for the first build: `pbs_datastore_format_disk: true` plus
+- **Local datastore:** on the ZimaBoard's external USB disk, found by `pbs_datastore_disk_serial`.
+  That disk also holds the PBS OS (`pbs_os_on_datastore_disk: true`; the auto-installer cannot use the
+  eMMC): the installer puts the OS in a small slice, and the role `pbs` creates the logical volume
+  `datastore` in the free rest of the volume group `pbs` (ext4, label `artzima-pbs`, created once and
+  never reformatted; `tasks/datastore_lv.yml`), mounted by UUID at `/mnt/datastore/<name>`.
+  **Reinstalling PBS wipes this disk, local backups included**; B2 keeps the offsite copy.
+  Without that flag (a dedicated datastore disk): an existing datastore on it is reused, and
+  formatting is a **one-time opt-in** for the first build: `pbs_datastore_format_disk: true` plus
   `pbs_datastore_format_confirm_serial` pinned to that disk's serial (refused on any mismatch). After it,
   the filesystem is labelled `artzima-pbs` and never formatted again; set the flag back to `false`
   (role `pbs`, `tasks/datastore_disk.yml`; [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)).
   The first build starts this datastore **empty** (the operator chose to wipe the old disk).
 - **Local cache:** PBS wants **64-128 GiB** for it, ideally on its own disk or partition. It may
-  **not** be the local datastore. The ZimaBoard's eMMC (~29 GiB, the OS) is too small. Use a folder on
+  **not** be the local datastore. The PBS root filesystem (~32 GiB) is too small. Use a folder on
   the USB disk **outside** the datastore folder (possible when the datastore sits in a sub-folder of
   that filesystem), or a second disk. Set `pbs_b2_cache_path` accordingly. `make pbs-offsite`
   **refuses** with less than `pbs_offsite_cache_min_free_gib` (64) free, or a path inside the datastore.

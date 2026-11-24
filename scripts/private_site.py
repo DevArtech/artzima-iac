@@ -7,9 +7,11 @@ Commands: run <make targets...>, prepare, backup, restore, check.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -142,6 +144,13 @@ def prepare():
         text = doc.read_text()
         for key in ("lab_subnet", "lab_gateway", "k8s_pod_subnet", "k8s_service_subnet"):
             text = text.replace(str(example_net[key]), str(real_net[key]))
+        # The Firewalla's VPN: only its subnet and server address (the first one), exactly;
+        # its example prefix also appears in unrelated examples.
+        if "firewalla_vpn_subnet" in example_net and "firewalla_vpn_subnet" in real_net:
+            ex_vpn = ipaddress.ip_network(example_net["firewalla_vpn_subnet"])
+            real_vpn = ipaddress.ip_network(real_net["firewalla_vpn_subnet"])
+            for old, new in ((ex_vpn, real_vpn), (ex_vpn.network_address + 1, real_vpn.network_address + 1)):
+                text = re.sub(r"(?<![\d.])" + re.escape(str(old)) + r"(?!\d)", str(new), text)
         # Lab prefix, and the home network on the Firewalla WAN side (documentation only).
         for key in ("lab_subnet", "home_subnet"):
             if key not in example_net or key not in real_net:

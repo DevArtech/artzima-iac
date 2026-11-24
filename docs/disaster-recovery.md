@@ -303,13 +303,17 @@ For every machine in `ansible/hosts.yml` (host01, node01-03, pbs, artnas):
 - `install_disk` and **`install_disk_serial`** (in the installer's debug shell:
   `proxmox-auto-install-assistant device-info -t disk` and
   `udevadm info -q property -n /dev/<disk> | grep ^ID_SERIAL=`; a unique part is enough);
-- for pbs: `pbs_datastore_disk_serial`, the external USB datastore disk (`lsblk -d -o NAME,SERIAL,TRAN`).
-  If the old USB disk **survived**, plug it in and leave `pbs_datastore_format_disk: false`:
-  `make up` reuses the datastore on it (its backups come back with it; a disk labelled `artzima-pbs`
-  is never formatted again anyway). For a **new** disk, record its serial in `pbs_datastore_disk_serial`
-  **and** `pbs_datastore_format_confirm_serial`, and set `pbs_datastore_format_disk: true` for that one
-  build only, as in [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy). Then set it back to
-  `false`. Unplug the disk during the PBS install (the installer targets the eMMC by serial).
+- for pbs: the external USB disk holds **both the PBS OS and the local datastore** (the Proxmox
+  auto-installer cannot install onto the ZimaBoard's eMMC, which stays unused). Record its serial
+  (`lsblk -d -o NAME,SERIAL,TRAN`) in `pbs_datastore_disk_serial` **and** `install_disk_serial`, keep
+  `pbs_os_on_datastore_disk: true` and the small OS slice `install_lvm` (`hdsize`), as in
+  [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy). Keep the disk plugged in during the
+  PBS install. After the install, `make up` creates the datastore volume in the free rest of the disk
+  (once; later runs reuse it). `pbs_datastore_format_disk` has no effect in this mode; leave it `false`.
+  **Reinstalling PBS wipes that disk, local backups included.** What survives is the offsite copy in
+  Backblaze B2 (datastore `b2`, [backups](backups.md)). If the old USB disk survived and its local
+  backups are still needed, do **not** boot the automated install with it attached: decide first
+  (for example, install onto a new disk and keep the old one aside to read from).
 
 For a first boot just to read these: boot the prepared USB stick (D7) and choose *Advanced Options →
 Install (Automated) with debug shell*; the answer server refuses unknown machines, so nothing is
@@ -400,9 +404,10 @@ new ones have new IDs). Keep the admin key and the kit's read-all key.
 
 - **Firewalla** (kit: router login): if it survived, nothing changes. Hosts are static and keep their
   addresses after a hardware swap, because the pool `192.0.2.210`-`.249` never overlaps them. If it
-  was lost, set up the replacement in **Router mode** exactly as in
-  [manual steps §2.1](manual-steps.md#21-firewalla-router-mode): WAN to the Xfinity, LAN `192.0.2.1/24`
-  to the lab switch, that DHCP pool, DNS, no port forwards, new-device quarantine off.
+  was lost or reset, set up the replacement as in
+  [P5. Firewalla: replace or factory-reset](#p5-firewalla-replace-or-factory-reset): Router mode, WAN
+  to the Xfinity, LAN `192.0.2.1/24` to the lab switch, that DHCP pool, DNS, no port forwards,
+  new-device quarantine off, the VPN, then `make firewalla-apply`.
 - **Xfinity gateway:** no lab reservations (the lab is behind the Firewalla). A replacement only
   needs to hand the Firewalla's WAN a DHCP lease.
 - **The DR laptop on the lab:** cable it to the lab switch. Use a static `192.0.2.72/24` without a
@@ -442,9 +447,10 @@ make answer-server POSTINST_WEBHOOK_URL=http://<laptop lab IP>:8000/installed
 (`--platform linux/amd64`). **No container runtime?** Install host01 by hand from the stock ISO
 (same hostname, IP and disk as its answer file), run the assistant there, then re-install host01
 automated.
-**Expect:** each machine fetches its answer (the server logs `served <host>`), installs, reboots;
+**Expect:** each machine fetches its answer (the server logs `serving the answer for <host>`), installs, reboots;
 `install/answers/installed/<host>.json` appears.
-**If this fails:** `403 unknown MAC` → D1 `mac`; `412 install disk serial … not present` → D1
+**If this fails:** `404 no answer file` (unknown MAC) → D1 `mac`; `409 wrong ISO` → boot the other
+stick; `412 install disk serial … not present` → D1
 `install_disk_serial`; nothing reaches the server → the laptop's firewall (macOS: allow incoming
 for python) or a different subnet.
 
@@ -691,6 +697,82 @@ Talos or Kubernetes; the apps don't notice.
    `artzima-pg` modification times), so nothing newer is lost.
 
 Prevention (open item, README TODOs): keep the encrypted state files off the workstation too.
+
+### P5. Firewalla: replace or factory-reset
+
+The Firewalla Purple SE is the lab's router, DHCP server and DNS. Without it the lab has no
+internet access, but the machines keep their static addresses and the data is untouched. Most of
+it is set up in the Firewalla app (phone). The rules then come from git (`make firewalla-apply`).
+Exact menu names vary between app versions; the values do not.
+
+Addresses (the printed runbook shows the real ones): lab `192.0.2.0/24`, Firewalla LAN
+`192.0.2.1`, DHCP pool `192.0.2.210`-`192.0.2.249`, VPN server `203.0.113.1`
+(`firewalla_vpn_subnet` in `network.yml`, first address), home network `198.51.100.0/24`.
+
+1. **Cables:** Xfinity gateway → the Firewalla port you pick as **WAN**; the other port → the lab
+   switch (**LAN**). Factory reset (if the box is confused or second-hand): hold the reset button
+   while powering on, per the Firewalla manual, then wait for the LED to blink.
+2. **App → add the box** (*+* → *Firewalla*, scan the QR code on the box, follow the pairing).
+   Choose **Router mode**. WAN = the Xfinity-facing port, connection type **DHCP**.
+3. **LAN** (*Network Manager → LAN*):
+   - [ ] Address **`192.0.2.1`**, netmask **`255.255.255.0`** (`/24`).
+   - [ ] DHCP **on**, pool **`192.0.2.210` - `192.0.2.249`**. No DHCP reservations (every lab
+     machine is static).
+   - [ ] DNS handed out by DHCP: the Firewalla itself (`192.0.2.1`).
+4. **WAN DNS** (*Network Manager → WAN (ISP 1) → DNS*, custom): **`9.9.9.9`** and **`1.1.1.1`**.
+   Not the Xfinity's DNS.
+5. **Protection, and nothing else:**
+   - [ ] **Active Protect on**.
+   - [ ] **New Device Quarantine off** (otherwise every reinstalled machine is cut off).
+   - [ ] **Ad Block off**. **No country blocks, no category or family rules.** Why: "block all
+     countries except US" broke Tailscale and `1.1.1.1` without any visible error
+     ([manual steps §2](manual-steps.md#2-firewalla-lab-router-and-the-xfinity-gateway), lessons).
+   - [ ] **No port forwards, no DMZ, UPnP off.** Cloudflare Tunnel and Tailscale need none.
+   - [ ] The default inbound *Block traffic from the internet* rule stays (the ingress firewall).
+6. **WireGuard VPN server** (*VPN Server → WireGuard*): on, port **51820**, server address
+   **`203.0.113.1`**. Add a client (*+ Add Client / Device*) named **`workstation`**.
+   Share its config to yourself (or *Copy*) and **edit** it before importing it into WireGuard on
+   the workstation:
+   ```ini
+   [Interface]
+   # PrivateKey and Address: as the app made them. Delete the DNS = line.
+   [Peer]
+   # PublicKey: as the app made it
+   Endpoint = <Firewalla WAN address>:51820
+   AllowedIPs = 192.0.2.0/24, 203.0.113.1/32
+   ```
+   The WAN address is in the app under *Network Manager → WAN (ISP 1)* (an address in
+   `198.51.100.0/24`). Activate the tunnel. **Expect:** `ping 203.0.113.1` and `ping 192.0.2.1`
+   answer from the workstation.
+   **If this fails:** the Endpoint still names the public address or a DDNS name (it must be the
+   WAN address on the home network); `AllowedIPs` lacks the lab subnet; the Windows firewall
+   (allow the WireGuard tunnel).
+7. **SSH key** for `make firewalla-*`. The SSH password: app → the box → *Settings → Advanced →
+   Configurations → SSH Console* (it changes when the box resets). From the workstation
+   (PowerShell; asks for that password once):
+   ```powershell
+   type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh pi@203.0.113.1 "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+   ```
+   Linux/macOS (the DR laptop): the same with `cat ~/.ssh/id_ed25519.pub | ssh pi@203.0.113.1 "…"`.
+   After a reset the box has a **new host key**; remove the old one first:
+   `ssh-keygen -R 203.0.113.1 -f ~/.ssh/known_hosts_lab`.
+   **Expect:** `ssh -o UserKnownHostsFile=~/.ssh/known_hosts_lab pi@203.0.113.1 hostname` prints
+   `Firewalla` without asking for a password.
+8. **Rules from git:**
+   ```bash
+   make firewalla-plan
+   make firewalla-apply
+   ```
+   **Expect:** the plan lists `+ create lab-to-answer-server` and `+ create lab-to-home-block`
+   (block the lab from opening connections to the home network, except the answer server, tcp 8000
+   on the workstation's home address), then every settings line `PASS`. Apply shows the same plan,
+   asks `yes`, prints `created …` twice. A second `make firewalla-plan` shows `nothing to do`.
+   **If this fails:** `LAN with address … found 0` → step 3; a settings `FAIL` → the step above
+   that names it (the script never changes settings); `CONFLICT` → a rule with the same shape
+   was made in the app: delete it there and apply again.
+9. **Check from a lab machine** (e.g. `ssh root@192.0.2.100`): `ping -c1 1.1.1.1` works,
+   `curl -m5 http://<a home device's address>` times out (blocked). The Xfinity gateway itself
+   (`198.51.100.1`) stays reachable: the Firewalla always lets traffic to its gateways through.
 
 ---
 

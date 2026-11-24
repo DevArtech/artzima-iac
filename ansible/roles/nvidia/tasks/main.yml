@@ -37,9 +37,27 @@
       KERNEL=="nvidia", RUN+="/bin/bash -c '/usr/bin/nvidia-smi -L && /usr/bin/nvidia-modprobe -c0 -u'"
       KERNEL=="nvidia_uvm", RUN+="/bin/bash -c '/usr/bin/nvidia-modprobe -c0 -u'"
 
+- name: NVIDIA apt repository (cuda-keyring)
+  ansible.builtin.apt:
+    deb: "{{ nvidia_repo_url }}/cuda-keyring_1.1-1_all.deb"
+  register: nvidia_keyring
+
+- name: Pin the NVIDIA driver packages to nvidia_driver_version
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/nvidia-driver
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      Package: nvidia-* libnvidia-* libcuda1 libnvcuvid1 libnvoptix1 xserver-xorg-video-nvidia firmware-nvidia-*
+      Pin: version {{ nvidia_driver_version }}-*
+      Pin-Priority: 1001
+  register: nvidia_pin
+
 - name: Install the NVIDIA driver
   ansible.builtin.apt:
     name: "{{ nvidia_packages }}"
     state: present
-    update_cache: "{{ nvidia_sources is changed }}"
+    update_cache: "{{ nvidia_sources is changed or nvidia_keyring is changed or nvidia_pin is changed }}"
   notify: Reboot reminder

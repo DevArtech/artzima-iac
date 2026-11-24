@@ -3,9 +3,4 @@
 # userspace packages, which keeps driver and libraries in lockstep.
 nvidia_packages:
   - proxmox-default-headers
-  - nvidia-kernel-dkms
-  - nvidia-driver
-  - nvidia-smi
-  - nvidia-persistenced
-  - nvidia-modprobe
-  - firmware-misc-nonfree
+  - "nvidia-open={{ nvidia_driver_version }}-*"  # open kernel modules (DKMS) + driver + userspace

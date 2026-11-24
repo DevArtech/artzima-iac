@@ -15,7 +15,7 @@ PY        := $(ARTZIMA_TOOLS)/venv/bin/python
 #   ~/.config/artzima/infisical.env  ~/.config/artzima/infisical-project.env  ./local.env
 # plus any --set VAR=/folder/KEY fetched from Infisical into its environment (never to disk).
 WITH_INF  := $(PY) $(CURDIR)/scripts/infisical_exec.py
-PLAYBOOK  := cd ansible && $(WITH_INF) -- ansible-playbook
+PLAYBOOK  := cd ansible && $(WITH_INF) --optional NAS_SUDO_PASSWORD=/ansible/NAS_SUDO_PASSWORD -- ansible-playbook
 # The state passphrase must exist before OpenTofu reads state: from Infisical.
 TOFU_ENV  := $(WITH_INF) --set TF_VAR_state_passphrase=/tofu/TOFU_STATE_PASSPHRASE --
 POSTINST_WEBHOOK_URL ?=
@@ -51,7 +51,7 @@ endef
 .PHONY: help deps render answers answer-server clean-answers \
         preflight bootstrap up verify gen-secrets ids-init ids-plan ids-apply \
         site common network cluster pbs storage nut nut-check tailscale host-prep \
-        proxmox-api lxc-devices ts-routers jellyfin \
+        proxmox-api lxc-devices ts-routers jellyfin firewalla-plan firewalla-apply \
         tofu-init tofu-plan tofu-apply tofu-destroy talos-env flux-bootstrap eso-bootstrap \
         cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
         lint lint-yaml lint-ansible lint-tofu lint-k8s lint-flux lint-python lint-images
@@ -130,6 +130,15 @@ common network cluster pbs storage nut tailscale host-prep proxmox-api lxc-devic
 nut-check: ## Only the NUT killpower checks (read-only)
 	$(PLAYBOOK) playbooks/nut.yml --limit host01 --tags nut_check $(ANSIBLE_ARGS)
 
+# ---------------------------------------------------------------- 2b. firewalla (firewalla/baseline.yaml)
+# Over SSH through the WireGuard VPN; only rules marked artzima-iac:<id> are ever changed.
+firewalla-plan: ## Firewalla: rule diff against firewalla/baseline.yaml + PASS/FAIL of its settings (read-only)
+	$(PY) scripts/firewalla.py plan
+firewalla-apply: ## Firewalla: plan, confirm, then create/replace/delete the MANAGED rules (never the others)
+	$(PY) scripts/firewalla.py plan
+	@$(CONFIRM) "firewalla: apply the rule changes above (managed rules only)"
+	$(PY) scripts/firewalla.py apply
+
 # ---------------------------------------------------------------- 3. tofu
 tofu-init: ## tofu init (providers pinned in tofu/versions.tf + lock file)
 	$(TOFU_ENV) tofu -chdir=tofu init -input=false
@@ -160,8 +169,9 @@ b2-apply: ## Plan + confirm + apply; writes each bucket's backup + maintenance k
 	$(call tofu_apply,tofu/backblaze,backblaze.tfplan)
 pbs-offsite: ## PBS: S3 datastore on the B2 bucket + local sync/prune/GC jobs (after make b2-apply)
 	$(call ansible_apply,pbs-offsite)
-# The NAS user needs sudo: -K asks for its password. NAS_ANSIBLE_ARGS= if sudo is passwordless.
-NAS_ANSIBLE_ARGS ?= -K
+# The NAS user needs sudo. Its password comes from Infisical /ansible/NAS_SUDO_PASSWORD (optional);
+# without that entry, run with NAS_ANSIBLE_ARGS=-K to type it.
+NAS_ANSIBLE_ARGS ?=
 nas-backup: ## Backrest (restic) on the NAS -> B2 (after make b2-apply); -e nas_backup_deploy=false = render only
 	$(call ansible_apply,nas-backup,$(NAS_ANSIBLE_ARGS))
 
@@ -231,6 +241,7 @@ lint-python: ## Byte-compile the Python helpers + render check
 	$(PY) scripts/render.py --check
 	$(PY) scripts/secrets_check.py --lint
 	$(PY) scripts/emergency_kit.py --lint
+	$(PY) scripts/firewalla.py --lint
 	$(PY) scripts/check_tool_pins.py # scripts/dr-tools.sh pins == scripts/install-tools.sh
 	$(PY) -c 'import json; json.load(open("renovate.json"))' # Renovate config parses
 	bash -n install/prepare-iso.sh install/first-boot.sh scripts/*.sh

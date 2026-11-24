@@ -38,12 +38,47 @@ import labdata  # noqa: E402
 
 PRODUCT_BY_GROUP = {"pve_nodes": "pve", "pbs_servers": "pbs"}
 
+# install_lvm (hosts.yml) -> [disk-setup] lvm.* (ext4/xfs on LVM), sizes in GiB.
+# The schema also accepts maxroot/maxvz, but the PBS installer ignores both: on PBS
+# root = OS partition (hdsize) - swapsize - minfree. To keep a disk mostly free on PBS,
+# cap the OS partition with hdsize; the rest of the disk stays unpartitioned.
+LVM_KEYS = {"pve": ("hdsize", "swapsize", "maxroot", "maxvz", "minfree"),
+            "pbs": ("hdsize", "swapsize", "minfree")}
+# Shared disk (pbs_os_on_datastore_disk): the OS slice must stay small next to the datastore.
+SHARED_DISK_MAX_HDSIZE = 128
+
+
+def lvm_options(name: str, product: str, h: dict, shared: bool) -> dict | None:
+    lvm = h.get("install_lvm")
+    if lvm in (None, {}):
+        if shared:
+            raise SystemExit(f"{name}: pbs_os_on_datastore_disk is true, so install_lvm.hdsize must cap "
+                             "the OS partition (otherwise the OS takes the whole disk)")
+        return None
+    if not isinstance(lvm, dict):
+        raise SystemExit(f"{name}: install_lvm must be a mapping of {LVM_KEYS[product]} (GiB)")
+    unknown = sorted(set(lvm) - set(LVM_KEYS[product]))
+    if unknown:
+        raise SystemExit(f"{name}: install_lvm keys {unknown} are not used by the {product} installer "
+                         f"(allowed: {', '.join(LVM_KEYS[product])})")
+    for k, v in lvm.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            raise SystemExit(f"{name}: install_lvm.{k} must be a number of GiB >= 0")
+    if shared:
+        hd = lvm.get("hdsize")
+        if not hd or hd > SHARED_DISK_MAX_HDSIZE:
+            raise SystemExit(f"{name}: pbs_os_on_datastore_disk is true, so install_lvm.hdsize must be set "
+                             f"(1-{SHARED_DISK_MAX_HDSIZE} GiB); the rest of the disk is the datastore")
+        if lvm.get("swapsize", 0) + lvm.get("minfree", 0) >= hd:
+            raise SystemExit(f"{name}: install_lvm swapsize + minfree leave no room for root inside hdsize")
+    return dict(lvm)
+
 
 def toml_value(v) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
-    if isinstance(v, int):
-        return str(v)
+    if isinstance(v, (int, float)):
+        return repr(v)
     if isinstance(v, list):
         return "[" + ", ".join(toml_value(x) for x in v) + "]"
     s = str(v).replace("\\", "\\\\").replace('"', '\\"')
@@ -111,8 +146,10 @@ def render(webhook: str | None = None, allow_placeholder: bool = False) -> dict[
     pw_hash = root_hash()  # one hash for all hosts in this render
     out: dict[str, dict] = {}
     # Disks that hold data and must never be an install target (the PBS datastore
-    # disk, often USB and attached during the install).
-    protected = {f"{n}.pbs_datastore_disk_serial": str(h["pbs_datastore_disk_serial"]).strip()
+    # disk, often USB and attached during the install). Single exception: a PBS host
+    # with pbs_os_on_datastore_disk: true installs its OS onto its OWN datastore disk
+    # (exact serial match only); the role pbs then puts the datastore on the rest of it.
+    protected = {n: str(h["pbs_datastore_disk_serial"]).strip()
                  for n, h in data["hosts"].items()
                  if str(h.get("pbs_datastore_disk_serial") or "").strip() not in ("", "None")}
 
@@ -127,11 +164,26 @@ def render(webhook: str | None = None, allow_placeholder: bool = False) -> dict[
                 raise SystemExit(f"{name}: install_disk_serial is not set in ansible/hosts.yml "
                                  "(the answer file targets the install disk by serial)")
             serial = "PLACEHOLDER-SERIAL"
+        flag = h.get("pbs_os_on_datastore_disk", False)
+        if flag not in (None, True, False):
+            raise SystemExit(f"{name}: pbs_os_on_datastore_disk must be true or false")
+        shared = flag is True
+        if shared:
+            if product != "pbs":
+                raise SystemExit(f"{name}: pbs_os_on_datastore_disk is only for PBS hosts")
+            if name not in protected or protected[name] != serial:
+                raise SystemExit(f"{name}: pbs_os_on_datastore_disk is true, but install_disk_serial is not "
+                                 "exactly pbs_datastore_disk_serial (set both to the same disk)")
         for where, keep in protected.items():
+            if shared and where == name:
+                continue  # the OS goes on this host's own datastore disk, on purpose
             # The filter is a glob *<serial>*: refuse any overlap in either direction.
             if serial.lower() in keep.lower() or keep.lower() in serial.lower():
-                raise SystemExit(f"{name}: install_disk_serial {serial!r} overlaps {where} {keep!r}: "
-                                 "the installer would be able to select the datastore disk")
+                raise SystemExit(f"{name}: install_disk_serial {serial!r} overlaps "
+                                 f"{where}.pbs_datastore_disk_serial {keep!r}: the installer would be able "
+                                 "to select the datastore disk (a PBS host that shares its OS and datastore "
+                                 "disk on purpose sets pbs_os_on_datastore_disk: true)")
+        lvm = lvm_options(name, product, h, shared)
         doc = {
             "global": {
                 "keyboard": lab["keyboard"],
@@ -162,13 +214,18 @@ def render(webhook: str | None = None, allow_placeholder: bool = False) -> dict[
                 "filesystem": "ext4",
                 "filter-match": "all",
                 "filter": {"ID_SERIAL": f"*{serial}*"},
+                **({"lvm": lvm} if lvm else {}),
             },
             "first-boot": {
                 "source": "from-iso",
                 "ordering": "network-online",
             },
         }
-        if webhook:
+        # PBS 4.2's installer breaks on its own post-installation webhook ("failed to find
+        # installed kernel image path"): the install itself succeeds, but the installer then
+        # aborts to a root shell instead of rebooting. So PBS gets no webhook; after its
+        # install, record it by hand (answers/installed/pbs.json) or just pull the stick.
+        if webhook and product != "pbs":
             doc["post-installation-webhook"] = {"url": webhook}
         text = (
             f"# {name} ({product}), generated by install/render_answers.py; DO NOT EDIT.\n"
