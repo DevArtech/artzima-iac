@@ -307,7 +307,9 @@ def arr(api: Api, kind: str, cfg: dict) -> None:
         {"sonarr": "tvCategory", "radarr": "movieCategory", "lidarr": "musicCategory"}[kind]: cfg["category"],
     }
     upsert(api, f"{api.prefix}/downloadclient", "QBittorrent", "qBittorrent", qbt_fields,
-           {"enable": True, "protocol": "torrent", "priority": 1,
+           # no "protocol": the schema item has it, and Lidarr reports it as "TorrentDownloadProtocol"
+           # (Sonarr/Radarr "torrent"), which made every run rewrite Lidarr's client
+           {"enable": True, "priority": 1,
             "removeCompletedDownloads": True, "removeFailedDownloads": True})
     events = ["onDownload", "onUpgrade", "onRename", "onImportComplete",
               "onReleaseImport", "onArtistDelete", "onAlbumDelete", "onTrackRetag",
@@ -470,8 +472,10 @@ def bazarr(api: Api, targets: dict) -> None:
     for kind, t in targets.items():
         sect = cur.get(kind, {})
         want = {"ip": t["host"], "port": t["port"], "apikey": t["key"], "base_url": "/", "ssl": False}
+        # Bazarr stores base_url "/" as "": compare it without slashes.
+        norm_val = (lambda k, v: str(v).strip("/") if k == "base_url" else str(v).lower())
         if not cur.get("general", {}).get(f"use_{kind}") or any(
-                str(sect.get(k)).lower() != str(v).lower() for k, v in want.items()):
+                norm_val(k, sect.get(k)) != norm_val(k, v) for k, v in want.items()):
             form[f"settings-general-use_{kind}"] = "true"
             for k, v in want.items():
                 form[f"settings-{kind}-{k}"] = str(v).lower() if isinstance(v, bool) else str(v)
