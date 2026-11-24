@@ -105,7 +105,6 @@ standard webhook JSON; Backrest and the NAS maintenance container post to the sa
 | Alexandria library | (NFS PVC) | restic: `alexandria/alexandria-library` | 01:21 UTC | same |
 | Grafana | (NFS PVC) | restic: `monitoring/kube-prometheus-stack-grafana` | 01:28 UTC | same |
 | arr configs (Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, qBittorrent, Seerr) | (NFS PVCs; the arrs also write their own zip backups to `/config/Backups`) | restic: `media/<app>` | 04:00-04:42 UTC | same |
-| Home Assistant backups | HA writes them to `/volume1/Artzima/homeassistant/backups` | restic: `backup/homeassistant-backups` | 05:00 UTC | same |
 | Proxmox guests (vzdump) | PBS datastore `artzima` (ZimaBoard) | bucket **pbs**: S3 datastore `b2` | sync 04:30 (PBS local time) | PBS prune: 7 daily, 4 weekly, 6 monthly; GC Sat 06:00 |
 | **Media library** (`/volume1/Artzima/data/media`: rips, downloads) | the NAS | bucket **nas**: restic by **Backrest on the NAS** (plans `media-daily`, `media-weekly-full`) | 01:00 daily, Sun 03:00 `--force` (NAS local time) | 7 daily, 4 weekly, 12 monthly; monthly `check --read-data-subset=5%` |
 | **Personal files** (the NAS's other shares, outside the lab; read-only) | the NAS | bucket **nas**: Backrest plan `personal-daily` | 00:30 daily | same |
@@ -151,12 +150,7 @@ Schedules and retention are variables in `backups.yml`. Restic and VolSync times
 5. `make pbs-offsite` (PBS ≥ 4.2; see [PBS](#pbs-proxmox-guests)). Also
    `make nas-backup` (asks for the NAS sudo password), Backrest on the NAS for the media library and personal shares
    ([NAS media and personal files](#nas-media-and-personal-files)). It doesn't depend on the cluster.
-6. **Home Assistant:** *Settings → System → Storage → Add network storage*: name `artnas`, usage
-   **Backup**, server `192.0.2.156`, protocol **NFS**, remote share
-   `/volume1/Artzima/homeassistant/backups`. Then *Settings → System → Backups → Backup settings*:
-   location **artnas**, automatic backups daily. Create the folder on the NAS first:
-   `sudo mkdir -p /volume1/Artzima/homeassistant/backups`.
-7. **Check** after the first night:
+6. **Check** after the first night:
    ```bash
    kubectl get replicationsources -A           # LAST SYNC set, no errors
    kubectl -n vaultwarden get backups.postgresql.cnpg.io   # *-db-b2-* completed
@@ -280,9 +274,18 @@ The values are in Infisical (`/k8s/backup`), and the endpoint and bucket are in 
   - a prune job (7/4/6) and a weekly GC on `b2`.
 - **The sync job keeps the bucket's own history:** it uses `--remove-vanished false`, so a mistake
   on the local datastore isn't mirrored into the bucket. Pruning `b2` is separate.
+- **Local datastore:** on the ZimaBoard's external USB disk, found by `pbs_datastore_disk_serial`
+  and mounted by UUID (`nofail`) at `/mnt/datastore/<name>`. An existing datastore on it is reused.
+  Formatting is a **one-time opt-in** for the first build: `pbs_datastore_format_disk: true` plus
+  `pbs_datastore_format_confirm_serial` pinned to that disk's serial (refused on any mismatch). After it,
+  the filesystem is labelled `artzima-pbs` and never formatted again; set the flag back to `false`
+  (role `pbs`, `tasks/datastore_disk.yml`; [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)).
+  The first build starts this datastore **empty** (the operator chose to wipe the old disk).
 - **Local cache:** PBS wants **64-128 GiB** for it, ideally on its own disk or partition. It may
-  **not** be the local datastore. On the ZimaBoard, that means the datastore disk needs a separate
-  partition or a second disk. Set `pbs_b2_cache_path` accordingly before `make pbs-offsite`.
+  **not** be the local datastore. The ZimaBoard's eMMC (~29 GiB, the OS) is too small. Use a folder on
+  the USB disk **outside** the datastore folder (possible when the datastore sits in a sub-folder of
+  that filesystem), or a second disk. Set `pbs_b2_cache_path` accordingly. `make pbs-offsite`
+  **refuses** with less than `pbs_offsite_cache_min_free_gib` (64) free, or a path inside the datastore.
 - **Unverified:**
   - Whether a pull sync job **without** `--remote` copies between two local datastores. The CLI
     allows it; the docs have no worked example. If PBS rejects it, add a remote that points at
@@ -338,7 +341,7 @@ and that `existing`/`off` create none.
 | Check | monthly `restic check --read-data-subset=5%` (1st, 05:00; `nas_backup_check_*`) |
 | Bandwidth | `--limit-upload=<nas_backup_upload_limit_kib>` KiB/s on every restic call (default 2500 KiB/s ≈ 20 Mbit/s; 0 = unlimited). restic runs with low CPU and IO priority |
 | Schedule window | Start times are the cron values above. An optional **hard stop** at `nas_backup_window_stop_hour` restarts the container from root's crontab on the NAS, which stops a still-running backup; restic reuses what was already uploaded on the next run, and `autoUnlock` clears the stale lock. UGOS updates may reset the crontab, so re-run `make nas-backup` after one |
-| Web UI | `http://192.0.2.156:9898`: published on the NAS **LAN address only**, so reachable on the LAN and over the Tailscale subnet routers, never port-forwarded. Login from Infisical (below) |
+| Web UI | `http://192.0.2.156:9898`: published on the NAS **lab-LAN address only**, so reachable from the lab LAN and, from the home network or anywhere else, over the Tailscale subnet routers; never port-forwarded. Login from Infisical (below) |
 
 **restic is always incremental:** each run uploads only new or changed data. "Weekly" (`--force`)
 re-reads every file to catch content changes that size/mtime don't reveal. That costs disk reads,
@@ -357,7 +360,8 @@ but plans or repos edited in the UI are overwritten by the next `make nas-backup
 2. **Bucket and keys:** `make b2-apply` (part of `make bootstrap`) creates `b2_bucket_nas` and
    writes `/ansible/NAS_B2_*` (backup) and `/ansible/NAS_B2_MAINT_*` (maintenance).
 3. **Shares:** after inspecting the NAS (`ls -la /volume1`), list the personal shares in
-   `nas_personal_shares` (`{ name: photos, path: /volume1/Photos }`). A share inside `/volume1/Artzima`
+   `nas_personal_shares` (`{ name: photos, path: /volume1/Photos }`; quote paths with spaces or `'`,
+   no `:`). `nas_backup_excludes` (default `#recycle`, UGOS's per-share recycle bin) applies to every plan. A share inside `/volume1/Artzima`
    is refused.
 4. **UGOS prerequisites:**
    - the **Docker** app is installed (`docker0` exists, so it is);
@@ -464,11 +468,20 @@ The order is fixed. Keep the existing backup until the new one is **verified**:
      with the originals.
    - Confirm that the healthchecks.io checks are green and that a deliberately broken run alerts.
      For example, pause the bucket key in B2 for one manual run, then restore it.
-4. **Only then, MANUALLY (never automated by this repo):**
-   - disable the previous backup job in its management interface;
-   - after another week or two of green Backrest runs, review retirement of the previous job and its stored snapshots according to the retention policy:
-     its bucket or prefix, and any provider-specific B2 key;
-   - update `nas_existing_backup`'s notes (retired, date). `backup_nas_media` stays `restic-on-nas`.
+   - A share that is still **empty** (allowed: it is backed up from day one) has nothing to restore;
+     check that its folder appears in the latest `personal-daily` snapshot.
+4. **Only then, MANUALLY (never automated by this repo).** What the previous backup is (the tool,
+   container name, config folder, bucket) is recorded in `nas_existing_backup`; the private
+   [NAS plan](nas-plan.md) shows it.
+   - **Stop it.** If it is a Docker container on the NAS:
+     `sudo docker update --restart=no <container> && sudo docker stop <container>`. If it is a UGOS
+     app, disable its job there. Keep its **config folder**: it holds the job definition and the
+     passphrase you would need to read the old backup.
+   - After another week or two of green Backrest runs: **remove** the container
+     (`sudo docker rm <container>`), then **delete its B2 data** in the B2 web UI (its bucket or
+     prefix, and any key made only for it), according to the retention policy. Delete the old
+     config folder last.
+   - Update `nas_existing_backup`'s notes (retired, date). `backup_nas_media` stays `restic-on-nas`.
 5. **Temporary double cost:** while both copies exist, B2 bills both, at about
    `(size of the media + shares in TB) × $6.95` per month **extra**, for the weeks of the
    migration. A 4 TB library costs about $28/month more until the previous backup copy is retired.

@@ -64,7 +64,8 @@ def infisical_dates(items: list[dict]) -> dict[str, str]:
             continue
         folder, _, key = ref.rpartition("/")
         if folder not in folders:
-            res = c.secrets.list_secrets(project_id=cfg["infisical_project_id"], environment_slug=cfg["infisical_env"],
+            from infisical_projects import project_id
+            res = c.secrets.list_secrets(project_id=project_id(cfg, folder), environment_slug=cfg["infisical_env"],
                                          secret_path=folder, view_secret_value=False,
                                          expand_secret_references=False, include_imports=False)
             folders[folder] = {s.secretKey: s for s in res.secrets}

@@ -12,8 +12,9 @@ mock_provider "b2" {
 mock_provider "infisical" {}
 
 variables {
-  state_passphrase     = "placeholder-passphrase-for-tests"
-  infisical_project_id = "test-project"
+  state_passphrase         = "placeholder-passphrase-for-tests"
+  infisical_project_id     = "test-project"
+  infisical_k8s_project_id = "test-k8s-project"
 }
 
 run "buckets_private_encrypted_with_lifecycle" {
@@ -80,13 +81,26 @@ run "keys_written_to_their_consumers" {
   command = plan
 
   assert {
-    condition = (infisical_secret.pg_key_id.folder_path == "/k8s/backup" && infisical_secret.pg_key_id.name == "PG_B2_KEY_ID"
-      && infisical_secret.pg_maint_key_id.name == "PG_B2_MAINT_KEY_ID"
-      && infisical_secret.restic_key_id.folder_path == "/k8s/backup" && infisical_secret.restic_application_key.name == "RESTIC_B2_APPLICATION_KEY"
-      && infisical_secret.restic_maint_application_key.name == "RESTIC_B2_MAINT_APPLICATION_KEY"
+    condition = (infisical_secret.k8s_backup["PG_B2_KEY_ID"].folder_path == "/k8s/backup"
+      && toset(keys(infisical_secret.k8s_backup)) == toset(["PG_B2_KEY_ID", "PG_B2_APPLICATION_KEY", "PG_B2_MAINT_KEY_ID",
+        "PG_B2_MAINT_APPLICATION_KEY", "RESTIC_B2_KEY_ID", "RESTIC_B2_APPLICATION_KEY", "RESTIC_B2_MAINT_KEY_ID",
+      "RESTIC_B2_MAINT_APPLICATION_KEY"])
     && infisical_secret.pbs_key_id.folder_path == "/ansible" && infisical_secret.pbs_application_key.name == "PBS_B2_APPLICATION_KEY")
     error_message = "each key goes to the Infisical path its consumer reads"
   }
+  assert {
+    condition = (alltrue([for s in infisical_secret.k8s_backup : s.workspace_id == "test-k8s-project"])
+    && infisical_secret.pbs_key_id.workspace_id == "test-project" && infisical_secret.nas_maint_key_id[0].workspace_id == "test-project")
+    error_message = "the cluster's keys go to the k8s project, the PBS/NAS keys stay in the main project"
+  }
+}
+
+run "k8s_project_must_be_configured" {
+  command = plan
+  variables {
+    infisical_k8s_project_id = "REPLACE_VIA_INFISICAL_PROJECT_ENV"
+  }
+  expect_failures = [infisical_secret.k8s_backup]
 }
 
 # NAS media/personal files: the DEFAULT is Backrest (restic) on the NAS -> a dedicated

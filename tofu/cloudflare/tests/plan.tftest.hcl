@@ -24,9 +24,10 @@ mock_provider "infisical" {
 }
 
 variables {
-  state_passphrase     = "placeholder-passphrase-for-tests"
-  infisical_project_id = "test-project"
-  access_apps          = [] # default (null) would read CLOUDFLARE_ACCESS_APPS from Infisical
+  state_passphrase         = "placeholder-passphrase-for-tests"
+  infisical_project_id     = "test-project"
+  infisical_k8s_project_id = "test-k8s-project"
+  access_apps              = [] # default (null) would read CLOUDFLARE_ACCESS_APPS from Infisical
 }
 
 run "one_rule_and_record_per_app" {
@@ -68,6 +69,10 @@ run "one_rule_and_record_per_app" {
   assert {
     condition     = infisical_secret.tunnel_token.folder_path == "/k8s/cloudflared" && infisical_secret.tunnel_token.name == "TUNNEL_TOKEN"
     error_message = "the tunnel token must land where ESO reads it (k8s/secrets/cloudflared/tunnel-token.yaml)"
+  }
+  assert {
+    condition     = infisical_secret.tunnel_token.workspace_id == "test-k8s-project" && data.infisical_secrets.settings.workspace_id == "test-project"
+    error_message = "the tunnel token goes to the cluster's project; /settings is read from the main project"
   }
 }
 

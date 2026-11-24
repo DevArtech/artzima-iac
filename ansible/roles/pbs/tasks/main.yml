@@ -8,14 +8,54 @@
   ansible.builtin.set_fact:
     pbs_has_datastore: "{{ pbs_datastore_name in (pbs_ds.stdout | from_json | map(attribute='name') | list) }}"
 
-- name: Create datastore on a dedicated disk (FORMATS the disk)
+# Local datastore. Preferred: a dedicated disk identified by SERIAL (USB HDD on the ZimaBoard),
+# handled in datastore_disk.yml: reused if it holds a datastore, formatted only on request.
+- name: Datastore disk by serial
+  ansible.builtin.include_tasks: datastore_disk.yml
+  when: pbs_datastore_disk_serial | default(none) not in [none, '', 'null', 'TODO']
+
+- name: An existing datastore must be the one on that disk
+  ansible.builtin.assert:
+    that:
+      - (pbs_ds.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name) | first).path == pbs_datastore_path
+    fail_msg: >-
+      Datastore {{ pbs_datastore_name }} is configured at
+      {{ (pbs_ds.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name) | first).path }},
+      expected {{ pbs_datastore_path }} on disk {{ pbs_datastore_disk_serial }}. Check by hand; nothing was changed.
+  when:
+    - pbs_has_datastore
+    - pbs_datastore_disk_serial | default(none) not in [none, '', 'null', 'TODO']
+
+- name: Register the datastore found on the disk (REUSED, contents untouched)
   ansible.builtin.command: >-
-    proxmox-backup-manager disk fs create {{ pbs_datastore_name }}
-    --disk {{ pbs_datastore_disk }} --filesystem ext4 --add-datastore true
+    proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
+    --reuse-datastore true
   when:
     - not pbs_has_datastore
-    - pbs_datastore_disk is not none
+    - pbs_dsk_reuse | default(false)
   changed_when: true
+
+- name: Create a new datastore in the disk's sub-folder
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
+  when:
+    - not pbs_has_datastore
+    - pbs_datastore_disk_serial | default(none) not in [none, '', 'null', 'TODO']
+    - not (pbs_dsk_reuse | default(false))
+    - not (pbs_dsk_created | default(false))
+  changed_when: true
+
+# Legacy: a disk by DEVICE NAME is never formatted any more (names can change between boots).
+- name: Refuse the device-name mode
+  ansible.builtin.fail:
+    msg: >-
+      pbs_datastore_disk={{ pbs_datastore_disk }}: formatting by device name is not supported. Use
+      pbs_datastore_disk_serial, and for a first build the one-time opt-in pbs_datastore_format_disk +
+      pbs_datastore_format_confirm_serial (docs/OPERATOR-SETUP.md).
+  when:
+    - not pbs_has_datastore
+    - pbs_datastore_disk_serial | default(none) in [none, '', 'null', 'TODO']
+    - pbs_datastore_disk is not none
 
 - name: Ensure datastore directory exists
   ansible.builtin.file:
@@ -26,6 +66,7 @@
     mode: "0750"
   when:
     - not pbs_has_datastore
+    - pbs_datastore_disk_serial | default(none) in [none, '', 'null', 'TODO']
     - pbs_datastore_disk is none
 
 - name: Create datastore on an existing path
@@ -33,6 +74,7 @@
     proxmox-backup-manager datastore create {{ pbs_datastore_name }} {{ pbs_datastore_path }}
   when:
     - not pbs_has_datastore
+    - pbs_datastore_disk_serial | default(none) in [none, '', 'null', 'TODO']
     - pbs_datastore_disk is none
   changed_when: true
 

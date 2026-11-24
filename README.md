@@ -13,7 +13,7 @@ from USB installs through to running apps:
 |---|---|---|
 | OS install (Proxmox VE ×4, PBS ×1) | Proxmox automated installer + answer server | [`install/`](install/README.md) |
 | Host config, cluster, QDevice, storage, backups, UPS, Tailscale, API token | Ansible | `ansible/` |
-| VMs/LXCs: Talos ×3, Jellyfin, Home Assistant OS, Tailscale routers ×2; Talos bootstrap | OpenTofu (bpg/proxmox, siderolabs/talos) | `tofu/` |
+| VMs/LXCs: Talos ×3, Jellyfin, Tailscale routers ×2; Talos bootstrap | OpenTofu (bpg/proxmox, siderolabs/talos) | `tofu/` |
 | Kubernetes platform and apps | Flux + Helm | `k8s/` |
 | Media stack: Prowlarr, Sonarr, Radarr, Lidarr, Bazarr, qBittorrent (only via Surfshark, gluetun sidecar), Seerr, Recyclarr; wired to the Jellyfin LXC | Flux + app-template, one idempotent wiring Job | `k8s/apps/media/` ([below](#media-stack)) |
 | Paperless-ngx (**tailnet only**: `http://paperless`) with Valkey, Tika, Gotenberg, CNPG Postgres; nightly `document_exporter` | Flux + app-template, CNPG, CronJob | `k8s/apps/paperless/` ([manual steps §13](docs/manual-steps.md#13-paperless-ngx)) |
@@ -43,11 +43,14 @@ emergency kit that must exist outside the lab (`make emergency-kit`).
 - **`.private/site/ansible/hosts.yml`** holds every machine and guest: name, MAC, role, Proxmox node, and
   `host_index`.
 - **`.private/site/ansible/group_vars/all/network.yml`** holds `lab_subnet`, `lab_gateway`, `lab_vlan_id`, `lab_dns`,
-  `lab_domain`, and the k8s API VIP offset.
+  `lab_domain`, and the k8s API VIP offset. It also holds the documentation-only plan for the
+  Firewalla LAN: `lab_dhcp_pool`, the unmanaged lab addresses (`lab_unmanaged`: admin workstation,
+  a reserved address), and the home network on its WAN side (`home_subnet`).
 - **`.private/site/ansible/group_vars/all/lab.yml`** holds cluster and datastore names, timezone, the NAS
-  export, and the HAOS version.
+  export.
 - **`.private/site/ansible/group_vars/all/infisical.yml`** says where the secrets are: the Infisical host
-  (default `https://app.infisical.com`), the project and the environment.
+  (default `https://app.infisical.com`), the two projects (main, and the cluster's own project, which
+  holds only `/k8s/**`) and the environment.
 - **`apps.yaml`** (repo root) holds the list of published apps (name, namespace, Service, port).
   Every app is `https://<name>.<domain>`, where the domain is the Infisical secret
   `/settings/PUBLIC_DOMAIN`. This one list drives the Traefik routes, the Cloudflare tunnel
@@ -86,7 +89,7 @@ UPS wiring and the physical topology are private. The CI inventory is fictional.
 ```
 install/      answer-file renderer, answer server (stdlib), first-boot hook, ISO prep
 ansible/      hosts.yml, group_vars/, roles/, playbooks/ (site.yml runs them in order)
-tofu/         Talos VMs + bootstrap, Jellyfin LXC, HAOS VM, ts-router LXCs
+tofu/         Talos VMs + bootstrap, Jellyfin LXC, ts-router LXCs
               tofu/cloudflare (tunnel, DNS, Access), tofu/backblaze (B2 buckets + scoped keys),
               tofu/bootstrap (Tailscale auth keys + the ESO identity, derived from root credentials)
 k8s/          clusters/artzima (Flux entry), infrastructure/ (incl. external-secrets), apps/,
@@ -121,12 +124,11 @@ mounted read-only. Actual NAS paths and source selections belong in private conf
 
 | Path | Writer |
 |---|---|
-| `dump/`, `template/`, `snippets/`, `import/` | Proxmox storage `artnas` (`make storage`: content `backup,iso,vztmpl,snippets,import`, never VM/CT disks). Nightly backups go to PBS, not here |
+| `dump/`, `template/`, `snippets/` | Proxmox storage `artnas` (`make storage`: content `backup,iso,vztmpl,snippets`, never VM/CT disks). Nightly backups go to PBS, not here |
 | `k8s/` | the `nfs-artnas` StorageClass (`Retain`), incl. CNPG volume-snapshot tarballs |
 | `paperless/{data,media,consume}/` | Paperless-ngx (static PVs, `Retain`); it removes files from `consume/` once it has imported them |
 | `backups/paperless/` | the nightly `document_exporter` (static PV, `Retain`), an incremental mirror; `--delete` removes **only** files of documents deleted in Paperless, inside this folder |
 | `backrest/` | Backrest on the NAS (`make nas-backup`): config, data, cache, and `restore/` (its only writable restore target) |
-| `homeassistant/backups/` | Home Assistant itself (network storage), read by VolSync for the off-site copy |
 | `backups/vaultwarden/` | the Vaultwarden backup CronJob (static PV, `Retain`): encrypted dumps; it rotates **only its own** `vaultwarden-*.gpg` files |
 | `data/` | the static media PV (`Retain`), the `media-wiring` Job (folder tree, `.recycle/`), Sonarr/Radarr/qBittorrent, and `make media-adopt` (links under `data/media/`) |
 
@@ -150,7 +152,7 @@ the Infisical key names) and waits for `yes` (`AUTO_APPROVE=1` = no questions).
 |---|---|---|
 | 0 | `preflight` | **Refuses** unless every `by: operator` key exists in Infisical (names only), every Proxmox/PBS host answers on SSH with the inventory MAC and install-disk serial, and the NAS exports `/volume1/Artzima`. Read-only. `PREFLIGHT_ARGS=--accounts-only` = only Infisical |
 | 1 | `bootstrap` | Infisical folders; `gen-secrets` (every missing random secret, straight into Infisical); `ids-apply` (Tailscale auth keys + the read-only ESO identity); `b2-apply` (buckets, a backup key and a maintenance key per bucket); `cf-apply` (tunnel, DNS, Access, tunnel token). Doesn't touch the lab |
-| 2 | `up` | `preflight`, then `site` (all host playbooks: common, network, cluster + QDevice, PBS (writes `PBS_FINGERPRINT`), storage, NUT, Tailscale, GPU, Proxmox API tokens) → `tofu-apply` (Talos VMs, Jellyfin LXC, HAOS VM, ts-routers; kubeconfig into `tofu/out/`) → `lxc-devices` → `ts-routers` → `jellyfin` → `pbs-offsite` → `nas-backup` → `eso-bootstrap` → `flux-bootstrap` |
+| 2 | `up` | `preflight`, then `site` (all host playbooks: common, network, cluster + QDevice, PBS (writes `PBS_FINGERPRINT`), storage, NUT, Tailscale, GPU, Proxmox API tokens) → `tofu-apply` (Talos VMs, Jellyfin LXC, ts-routers; kubeconfig into `tofu/out/`) → `lxc-devices` → `ts-routers` → `jellyfin` → `pbs-offsite` → `nas-backup` → `eso-bootstrap` → `flux-bootstrap` |
 | 3 | `verify` | Read-only report: nodes, Flux Kustomizations + HelmReleases, ExternalSecrets, PVCs, certificates, CNPG + VolSync backups < 26 h, last restore self-checks, every public URL |
 
 Before phase 2 the machines are installed from USB (`make answers`, `install/prepare-iso.sh`,
@@ -231,10 +233,12 @@ until all are synced from Infisical) → infra-controllers → infra-configs →
 `https://<app>.<domain>` → Cloudflare edge (TLS, optional Access) → tunnel →
 one of the 2 `cloudflared` pods → `http://traefik.traefik.svc.cluster.local:80` →
 Traefik matches the Host header against the app's generated IngressRoute →
-the app Service. For Jellyfin and Home Assistant, that Service is a selector-less
-Service with an EndpointSlice pointing at the LXC/VM lab IP.
-Nothing on the LAN listens for the internet, and the router has no port forwards.
-Admin access (Proxmox, SSH, talosctl, kubectl) goes over Tailscale.
+the app Service. For Jellyfin (the only app outside Kubernetes), that Service is a selector-less
+Service with an EndpointSlice pointing at the LXC's lab IP.
+Nothing on the LAN listens for the internet, and neither router (the Firewalla in front of the
+lab, the Xfinity in front of it) has port forwards. Admin access (Proxmox, SSH, talosctl,
+kubectl) goes over Tailscale, or from the admin workstation's wired lab NIC. Home devices
+reach the lab and the NAS only over Tailscale ([manual steps §4a](docs/manual-steps.md#4a-reaching-the-lab-from-the-home-network)).
 
 **Adding an app:** deploy it (a HelmRelease with its chart ingress **disabled**), then add **one
 entry** to `/apps.yaml` (name, namespace, Service, port). After that:
@@ -341,7 +345,7 @@ copy, the bytes would still be there under the original path, and the arrs' recy
    (Jellyfin reads as "other"; fixing that means `chmod o+r` on the originals, which is your call).
 5. **Apply:** `make media-adopt MEDIA_ADOPT_ARGS=--apply`. It creates the folders (owned by
    `media_puid:media_pgid`, `2775`) and one hardlink per file under
-   `<data>/media/{movies,tv}/<same relative path>`. It never overwrites: a different file already at a
+   `<data>/media/{movies,tv}/<same relative path>` (loose movie files: `<name>/<file>`, step 7). It never overwrites: a different file already at a
    destination is reported as a **conflict** and skipped. Re-running is safe.
 6. **Verify:** the apply run ends each source with the counts and sizes of the originals and the
    links, the combined disk usage (hardlinks are counted once, so it equals the originals), and
@@ -362,44 +366,48 @@ copy, the bytes would still be there under the original path, and the arrs' recy
      Radarr/Sonarr, choose the root folder, profile **Owned rip**, monitor **None**, tag
      **owned-rip**. Use *Manual Import* for odd layouts, and **never** "Move"; Radarr/Sonarr then
      only point at the existing link.
-   - **Loose files** in a source root (no title folder): create a folder in the *data* layout and
+   - **Loose movie files** in a source root (no title folder) are handled by the script: a video
+     `<name>.mkv` is linked as `movies/<name>/<name>.mkv`, and its sidecars (`<name>.en.srt`, `<name>.nfo`)
+     join it. Name the original `Title (Year).mkv` and Radarr matches it. Other loose files (and loose
+     files in tv/music roots) are linked flat with a warning: create a folder in the *data* layout and
      `mv` the **link** into it on the NAS (the original is untouched).
    - **Releasing a title:** remove its `owned-rip` tag (for example, to let it upgrade later).
-8. **Jellyfin:** point its libraries at **`/data/media/movies`** and **`/data/media/tv`**
-   (*Dashboard → Libraries*, [manual steps §10.3](docs/manual-steps.md#103-first-logins)), and
-   scan. Once every title shows up from the new paths, remove the **old** library paths
-   (e.g. a former `/media/...` folder) from the library in Jellyfin. That only edits Jellyfin's
-   library list and deletes no files. Watched state follows the files when Jellyfin re-matches them
-   by metadata. Check a few titles before removing the old path.
+8. **Jellyfin** starts fresh: its first-run wizard creates the admin user, and its libraries are
+   **`/data/media/movies`**, **`/data/media/tv`** and **`/data/media/music`** (*Dashboard → Libraries*,
+   [manual steps §10.3](docs/manual-steps.md#103-first-logins)). Scan once; the adopted rips appear
+   there. Nothing from the old Jellyfin (users, watch history) is carried over.
 9. **Keep the originals** until you decide otherwise. They cost no extra space while the links
    exist (same inodes). Deleting the originals later is a separate, manual decision, and is
    never done by this repo.
 
-## Moving the lab to a VLAN later
+## Moving the lab to another subnet or a VLAN
 
-Do the network hardware first, as described in [manual steps](docs/manual-steps.md#5-later-vlans): a TL-SG108E
-plus a lab router, with trunk ports to the hosts. Then:
+The lab sits on its own untagged LAN behind the Firewalla ([decisions](docs/decisions.md#the-lab-network-behind-a-firewalla-no-vlans-2026-11-23)).
+Every address is `cidrhost(lab_subnet, host_index)`, so a new subnet keeps every host's last
+octet. A VLAN is only needed if a managed switch is added ([manual steps §5](docs/manual-steps.md#5-later-vlans-only-with-a-managed-switch)).
 
-1. Edit **only** `ansible/group_vars/all/network.yml`:
+1. Edit **only** `network.yml` (the private one, `.private/site/...`):
    ```yaml
    lab_subnet: 198.51.100.0/24   # new lab network (if it changes)
    lab_gateway: 198.51.100.1
-   lab_vlan_id: 20             # was null
-   lab_dns: [198.51.100.1]        # or keep public resolvers
+   lab_vlan_id: 20               # only with a managed switch; null = untagged
+   lab_dns: [198.51.100.1, 9.9.9.9, 1.1.1.1]
    ```
-2. `make render`, which updates Flux `cluster-vars.yaml`, then commit and push.
-3. `make network`. This runs one host at a time (`serial: 1`). Management moves to
+2. `make render` (and `make private-prepare`: the private `cluster-vars` and `addresses.md`).
+3. `make network`. This runs one host at a time (`serial: 1`). With a VLAN, management moves to
    `vmbr0.<vid>`, and `vmbr0` stays VLAN-aware for guests. **Keep console access**:
-   the host is unreachable until its switch port is tagged correctly.
+   the host is unreachable until its switch port (or the router) matches.
 4. `make common`, to update `/etc/hosts`.
 5. `make tofu-plan tofu-apply`. Guest NICs get `vlan_id`, and Talos and LXC IPs follow
    the new `lab_subnet`. Talos nodes need the new IP in cloud-init: re-apply, or
    `talosctl edit` if a node does not pick it up.
 6. If the subnet changed, also update: the corosync link addresses (`pvecm`;
-   see the Proxmox docs "Separate cluster network"), the NAS NFS allow rule, the
-   NAS "Network UPS slave" IP, and the Tailscale route approval.
+   see the Proxmox docs "Separate cluster network"), the NAS address, its NFS allow rule and
+   "Network UPS slave" IP, the admin workstation's lab NIC, and the Tailscale route
+   approval ([manual steps §2-§4a](docs/manual-steps.md#2-firewalla-lab-router-and-the-xfinity-gateway)).
 
-The installer itself always runs untagged. Install on a native/untagged port.
+On a **fresh build** (nothing installed yet) steps 3-5 are simply part of `make up`. The installer
+itself always runs untagged; install on a native/untagged port.
 
 ## Pinned versions (looked up 2026-11-22; media stack 2026-11-23)
 
@@ -431,7 +439,6 @@ The installer itself always runs untagged. Install on a native/untagged port.
 | Workstation tools (looked up 2026-11-23) | kubectl v1.37.2, uv 0.13.9, ansible-core 2.22.0, ansible-lint 26.11.0, yamllint 1.38.0, PyYAML 6.0.4, netaddr 1.3.0, jmespath 1.1.0, argon2-cffi 25.1.0, bcrypt 5.0.0 (`scripts/install-tools.sh`, Renovate-annotated) |
 | Derived credentials (`tofu/bootstrap`) | tailscale/tailscale provider = 0.30.0, infisical/infisical = 0.20.18 |
 | Maintenance + self-checks + alerts (looked up 2026-11-23) | `restic/restic:0.20.0` (retention, restore tests; also on the NAS), `alpine/k8s:1.37.2` (Postgres restore test), `ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0` (barman-cloud-backup-delete), `druggeri/nut_exporter:3.3.0`, pve-exporter 3.12.0 (verified) |
-| Home Assistant OS | 18.4 (18.5 is a Raspberry-Pi-only release) |
 | Debian LXC template | debian-13-standard 13.6-1 |
 | Ansible collections | community.proxmox 2.1.0, community.general 14.0.1, ansible.posix 2.2.2, ansible.utils 6.1.1, infisical.vault 1.2.3, community.crypto 3.6.0 |
 | Paperless (looked up 2026-11-23) | `ghcr.io/paperless-ngx/paperless-ngx:3.5.1`, `apache/tika:3.3.1.0`, `gotenberg/gotenberg:8.38.1` (both as upstream's compose), Valkey 9.2.0 (image `docker.io/valkey/valkey`, tag `9.2.0-alpine3.24`), exporter `registry.k8s.io/kubectl:v1.36.6` |
@@ -479,8 +486,11 @@ What *you* do lives in [`docs/OPERATOR-SETUP.md`](docs/OPERATOR-SETUP.md). Open 
 
 - [ ] **NUT killpower (2026-11-22):** the UPS did not cut its outlets after the forced
       shutdown. Run `make nut-check` and see the comments in `ansible/roles/nut/tasks/main.yml`.
-- [ ] `hosts.yml`: `install_disk` + `install_disk_serial` per host, `pbs_datastore_disk`, the
-      ZimaBoard's second NIC MAC; `lab.yml`: `timezone` (OPERATOR-SETUP A6).
+- [x] `hosts.yml`: `install_disk` + `install_disk_serial` per host, the PBS datastore disk
+      (`pbs_datastore_disk_serial`, USB), the ZimaBoard's second NIC MAC (2026-11-23, private).
+- [ ] `lab.yml`: `timezone` (OPERATOR-SETUP A6).
+- [ ] PBS S3 cache (`pbs_b2_cache_path`): the ZimaBoard's eMMC is too small (~29 GiB for 64-128 GiB);
+      `make pbs-offsite` refuses until the cache is on the USB disk outside the datastore, or on another disk.
 - [ ] Check the Jellyfin GPU device list (`ls -l /dev/nvidia*` on
       host01) against `lxc_devices` in `hosts.yml`.
 - [ ] PBS + B2 Object Lock: verify PBS's S3 datastore with a locked bucket before setting

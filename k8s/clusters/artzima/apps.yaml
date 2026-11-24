@@ -19,6 +19,6 @@ spec:
       - kind: ConfigMap
         name: cluster-vars
       # public_domain (and other private, non-secret values) from Infisical
-      # /settings, synced by ESO: k8s/secrets/flux-system/cluster-secret-vars.yaml
+      # /k8s/settings, synced by ESO: k8s/secrets/flux-system/cluster-secret-vars.yaml
       - kind: Secret
         name: cluster-secret-vars

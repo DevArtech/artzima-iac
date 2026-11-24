@@ -21,6 +21,12 @@ variable "infisical_project_id" {
   default     = null
 }
 
+variable "infisical_k8s_project_id" {
+  description = "The cluster's Infisical project ID (/k8s/** only). null = ansible/group_vars/all/infisical.yml"
+  type        = string
+  default     = null
+}
+
 variable "infisical_env" {
   description = "Infisical environment slug. null = infisical_env in ansible/group_vars/all/infisical.yml (prod)"
   type        = string

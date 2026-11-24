@@ -1,11 +1,19 @@
 ---
 # One PVE API token -> one Infisical secret. Lookups and the Infisical modules
 # run on the controller with the artzima-admin identity from the environment.
+# The project follows the path (secrets.manifest.yaml `projects:`): /k8s/** = the
+# cluster's project (the pve-exporter token), everything else = main (the OpenTofu token).
+- name: Pick the Infisical project for this destination
+  ansible.builtin.set_fact:
+    proxmox_api_project: >-
+      {{ artzima_infisical_k8s_project if (proxmox_api_tok.dest.path ~ '/').startswith('/k8s/')
+         else artzima_infisical_project }}
+
 - name: Check whether Infisical already holds the token
   ansible.builtin.set_fact:
     proxmox_api_in_infisical: >-
       {{ proxmox_api_tok.dest.name in (query('infisical.vault.read_secrets', url=artzima_infisical_url,
-      project_id=artzima_infisical_project, env_slug=artzima_infisical_env,
+      project_id=proxmox_api_project, env_slug=artzima_infisical_env,
       path=proxmox_api_tok.dest.path, as_dict=True)[0] | default({}, true)) }}
   no_log: true
 
@@ -53,7 +61,7 @@
     - name: Create the Infisical secret
       infisical.vault.create_secret:
         <<: *proxmox_api_auth
-        project_id: "{{ artzima_infisical_project }}"
+        project_id: "{{ proxmox_api_project }}"
         env_slug: "{{ artzima_infisical_env }}"
         path: "{{ proxmox_api_tok.dest.path }}"
         secret_name: "{{ proxmox_api_tok.dest.name }}"
@@ -63,7 +71,7 @@
     - name: Update the Infisical secret
       infisical.vault.update_secret:
         <<: *proxmox_api_auth
-        project_id: "{{ artzima_infisical_project }}"
+        project_id: "{{ proxmox_api_project }}"
         env_slug: "{{ artzima_infisical_env }}"
         path: "{{ proxmox_api_tok.dest.path }}"
         secret_name: "{{ proxmox_api_tok.dest.name }}"

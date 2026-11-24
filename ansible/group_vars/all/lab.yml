@@ -36,9 +36,11 @@ ntp_servers:
 # Name of the pinned primary NIC (installer interface-name pinning by MAC).
 primary_nic_name: lan0
 
-# Guest images (read by Ansible guest_images and by OpenTofu).
-# HAOS 18.5 is a Raspberry-Pi-only release; 18.4 is the current x86 OVA.
-haos_version: "18.4"
 
 # Public apps, the public domain and the Cloudflare Tunnel hostnames live in
 # ONE file: /apps.yaml (repo root). Not here.
+
+# Folders of an OLD lab inside artnas_export, listed for the post-build cleanup review
+# (docs/OPERATOR-SETUP.md C, generated list: docs/nas-plan.md). NEVER deleted by this repo.
+# Example: - { name: images, size: 100G, note: old VM disks }
+artnas_legacy_dirs: []

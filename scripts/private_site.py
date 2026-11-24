@@ -142,10 +142,15 @@ def prepare():
         text = doc.read_text()
         for key in ("lab_subnet", "lab_gateway", "k8s_pod_subnet", "k8s_service_subnet"):
             text = text.replace(str(example_net[key]), str(real_net[key]))
-        example_prefix = str(example_net["lab_subnet"]).rsplit(".", 1)[0] + "."
-        real_prefix = str(real_net["lab_subnet"]).rsplit(".", 1)[0] + "."
-        if str(real_net["lab_subnet"]).endswith("/24"):
-            text = text.replace(example_prefix, real_prefix)
+        # Lab prefix, and the home network on the Firewalla WAN side (documentation only).
+        for key in ("lab_subnet", "home_subnet"):
+            if key not in example_net or key not in real_net:
+                continue
+            text = text.replace(str(example_net[key]), str(real_net[key]))
+            example_prefix = str(example_net[key]).rsplit(".", 1)[0] + "."
+            real_prefix = str(real_net[key]).rsplit(".", 1)[0] + "."
+            if str(real_net[key]).endswith("/24") and str(example_net[key]).endswith("/24"):
+                text = text.replace(example_prefix, real_prefix)
         secure_write(doc, text)
     print("Private runtime prepared.", flush=True)
     return env

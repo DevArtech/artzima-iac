@@ -41,27 +41,24 @@
 - Caveat: with an even node count, Proxmox recommends the default `ffsplit`
   algorithm (the default). Re-run `pvecm qdevice setup` after adding or removing nodes.
 
-## GPU workloads and Home Assistant stay outside Kubernetes
+## GPU workloads stay outside Kubernetes
 
 - **Jellyfin in an LXC on host01:** a GPU-enabled host provides hardware acceleration in the reference design.
   Inside k8s it would mean the NVIDIA device plugin, Talos NVIDIA extensions and
   driver/kernel lockstep, all for a workload pinned to one machine anyway. An LXC
   shares the host driver directly (`devN:` lines). That is simple, and NVENC works.
-- **Home Assistant OS as a VM:** HAOS is a full appliance with its own supervisor,
-  add-ons, updates, and USB radio passthrough. It is designed for a VM. In k8s you lose
-  the supervisor and add-ons. It must keep running when the k8s cluster is broken: it
-  runs the house, not the lab.
-- Both are backed up by vzdump to PBS like any other guest.
+- It is backed up by vzdump to PBS like any other guest.
+- **Home Assistant is not part of the lab** (removed 2026-11-23, [below](#home-assistant-leaves-the-lab-2026-11-23)).
 
 ## One reverse proxy behind one Cloudflare Tunnel
 
 - **No open ports.** `cloudflared` only makes *outbound* connections to
-  Cloudflare. The Xfinity gateway has no port forwards, and there is no public IP or DynDNS to
+  Cloudflare. Neither the Firewalla nor the Xfinity gateway has port forwards, and there is no public IP or DynDNS to
   keep in sync. CGNAT or an IP change doesn't matter.
 - **One way in, one place to look.** The tunnel has exactly one origin,
   `http://traefik.traefik.svc.cluster.local:80`. Every hostname, in-cluster or not, is a
-  Traefik route. Jellyfin and Home Assistant stay outside k8s (see above) but are published
-  through the same Traefik via selector-less Service + EndpointSlice objects. Logging,
+  Traefik route. Jellyfin stays outside k8s (see above) but is published
+  through the same Traefik via a selector-less Service + EndpointSlice. Logging,
   metrics and routing rules are therefore uniform, and there is no second proxy on host01.
 - **TLS at the edge.** Cloudflare terminates HTTPS with its certificate for `<app>.<domain>`.
   The tunnel to cloudflared is encrypted, and cloudflared → Traefik is plain HTTP on the
@@ -92,6 +89,72 @@
   streams go through Cloudflare, so check their terms for video before relying on it.
   Tailscale or the LAN option is the fallback. Cloudflare sees the plaintext at the edge.
 
+## The lab network: behind a Firewalla, no VLANs (2026-11-23)
+
+- **Decision:** a Firewalla Purple SE in **Router mode** sits between the Xfinity gateway (WAN
+  side, the home network) and the lab's own switch (LAN side). The whole lab **and the NAS** sit on
+  their own subnet behind it (`lab_subnet`, gateway and first DNS = the Firewalla), untagged
+  (`lab_vlan_id: null`). Every machine kept its host offset (`host_index`), so only
+  `network.yml` changed.
+- **Why no VLANs:** the lab already has its own physical switch (the unmanaged UGREEN 2.5G), and
+  nothing else is plugged into it. Physical separation plus a router between the two networks gives
+  the same result as a tagged VLAN: a separate broadcast domain, a separate subnet, and a firewall
+  between the lab and the home devices. It needs no managed switch, no trunk ports and no tagged
+  host bridges. The earlier VLAN plan needed both a managed switch and a lab router; the router
+  alone is enough when the cabling already separates the two networks.
+- **What the Firewalla gives:** the home network can't open connections into the lab (NAT; the
+  Xfinity can't hold a static route to it anyway). The lab's outbound traffic can be watched and,
+  later, restricted. Lab DHCP and DNS are under the operator's control, independent of the
+  Xfinity, so a Pi-hole for the lab later is a single Firewalla DNS setting.
+- **Cost:** home devices (phones, the TV) reach the NAS and lab services only over Tailscale, via
+  the two subnet routers, which already exist for remote access ([manual steps §4a](manual-steps.md#4a-reaching-the-lab-from-the-home-network)).
+  The NAS moved with the lab, so every home client that used it needs Tailscale. Public apps
+  are unchanged: Cloudflare Tunnel and Tailscale only make outbound connections, so there are still no
+  port forwards (now double NAT, which both handle).
+- **When VLANs come back:** only if a managed switch is added and one cable has to carry several
+  networks (for example IoT devices on the same switch). The Firewalla can then serve the VLANs;
+  the repo already supports `lab_vlan_id` ([manual steps §5](manual-steps.md#5-later-vlans-only-with-a-managed-switch)).
+- **Alternatives:** a lab VLAN on a TL-SG108E plus a separate router (more hardware, same
+  result here); leaving the lab on the Xfinity LAN (no separation, no control over DHCP/DNS); a
+  static route on the Xfinity (not possible).
+
+## Home Assistant leaves the lab (2026-11-23)
+
+- **Decision (the operator):** Home Assistant is no longer part of this lab. The HAOS VM, its image
+  staging (the Ansible `guest_images` role and the `import` storage content), its public route and
+  `/apps.yaml` entry, its Traefik external Service, its off-site backups (the NAS folder and its
+  VolSync/restic repository) and its Firewalla reservation are removed. Nothing else depended on it.
+- **Consequence:** Jellyfin is the only app outside Kubernetes; every lab guest has a static
+  address, so the Firewalla needs no DHCP reservations.
+- **Not migrated:** no Home Assistant backup is saved before the wipe (the fresh-lab decision,
+  [journal](JOURNAL.md)). If Home Assistant returns, it is a separate project.
+
+## Infisical: two projects (2026-11-23)
+
+- **Decision (the operator):** the secrets are split into two Infisical projects. The **main**
+  project keeps the operator, Ansible and OpenTofu secrets (`/settings`, `/bare-metal`, `/ansible`,
+  `/tofu`, `/operator`). A new **k8s** project holds only what the cluster reads (`/k8s/**`, plus
+  `/k8s/settings/PUBLIC_DOMAIN`, a copy of `/settings/PUBLIC_DOMAIN`). The ESO identity has the
+  built-in **Viewer** role on the k8s project and no access to the main project.
+- **Why:** the first design gave ESO a custom project role limited to `/k8s/**` and
+  `/settings/PUBLIC_DOMAIN`. Infisical's free plan refuses it (confirmed through the API:
+  "Failed to create custom role due to plan RBAC restriction. Upgrade to Infisical Enterprise
+  plan"; `make ids-apply` failed at that resource). The only built-in read-only role, Viewer, reads
+  a whole project. In a single project that would expose the root credentials, the NAS restic
+  password and the state passphrase to a compromised cluster. A second project draws the same line
+  with a free feature: project membership.
+- **How:** one rule (`projects:` in `secrets.manifest.yaml`: `/k8s/**` = k8s project) used by every
+  tool (`scripts/infisical_projects.py`), checked by `make lint` for OpenTofu and Ansible. Writers
+  of `/k8s` keys write into the k8s project (`gen-secrets`, `tofu/backblaze`, `tofu/cloudflare`,
+  the Proxmox exporter token); the ClusterSecretStore names only the k8s project. A one-time,
+  verified `make secrets-migrate-k8s` moved the secrets that already existed.
+- **Costs:** a second project to create and to back up in the emergency kit, and one mirrored
+  value (`PUBLIC_DOMAIN`) that `make secrets-check` keeps equal. Inside the k8s project there is no
+  per-app isolation (Viewer reads all of it), the same as the custom role would have allowed.
+- **Alternatives:** a paid plan for custom roles (cost, for one boundary); Viewer on a single project
+  (exposes everything); the Infisical Kubernetes operator with per-namespace service tokens (more
+  moving parts, a second sync path).
+
 ## Other choices
 
 - **`pvecm` over SSH, not `community.proxmox.proxmox_cluster`:** the module's join
@@ -102,11 +165,10 @@
   passthrough and bind mounts, and API tokens (OpenTofu) can't. OpenTofu creates the containers and
   ignores `device_passthrough` and `mount_point`. `make lxc-devices` adds the lines from the
   inventory (`lxc_devices`, `lxc_mounts`).
-- **HAOS staged by Ansible:** HAOS ships `.qcow2.xz`, and the provider's download can't
-  decompress xz. Ansible stages it as `local:import/…qcow2` for `import_from`.
-- **Static IPs + DHCP reservations:** the Xfinity gateway can't be configured by
-  code. Static config keeps the lab independent of it, and reservations keep the
-  gateway from leasing the same addresses.
+- **Static IPs, DHCP pool outside them:** the router (now the Firewalla) is configured by
+  hand, not by code. Static config keeps the lab independent of it. The Firewalla's DHCP pool
+  (`lab_dhcp_pool`) sits outside every static address, which `make render` checks, so no
+  reservations are needed (every guest has a static address).
 - **Postgres via CNPG on NFS** is a compromise. NFS is the only shared storage. Backups
   are CSI volume snapshots on the same NAS. Add barman-cloud plus S3 for real off-box backups.
 - **OpenTofu state** is local, gitignored, and **encrypted** (native state
@@ -194,7 +256,8 @@
 - **One imperative bootstrap secret:** ESO's own Infisical credentials
   (`make eso-bootstrap`), once per cluster. Everything else converges from git + Infisical.
 - **Two machine identities:** an admin identity (workstation: Ansible, OpenTofu) and a
-  read-only one for ESO. A compromised cluster can't write secrets.
+  read-only one for ESO. A compromised cluster can't write secrets, and since 2026-11-23 it can't
+  read the operator's secrets either ([two projects](#infisical-two-projects-2026-11-23)).
 - **Trade-offs:**
   - Applying anything now needs Infisical reachable, which also means internet while on
     Infisical Cloud.
@@ -544,7 +607,7 @@ Details, schedules and restore runbooks: [backups](backups.md).
     do-it-yourself cost.
   - **Restore without Kubernetes:** the restic CLI can still restore everything.
   - **Copy method:** `Direct`. The mover mounts the live NFS volume, which needs no snapshots and
-    works for static PVs (Paperless, Home Assistant backups).
+    works for static PVs (Paperless).
 - **PBS: an S3 datastore.** PBS 4.2 made S3-backed datastores fully supported. A local sync job copies
   the local datastore into the B2-backed one, which keeps its own prune/GC history, so local mistakes
   are not mirrored. The alternatives were a second PBS off-site (more hardware) or rclone of the

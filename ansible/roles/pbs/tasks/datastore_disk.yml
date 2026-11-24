@@ -1,0 +1,256 @@
+---
+# The local datastore on a dedicated (typically external USB) disk, found by its SERIAL
+# (pbs_datastore_disk_serial in hosts.yml) and mounted by filesystem UUID.
+#
+# Never destructive by default:
+#   - an existing PBS datastore on the disk (a `.chunks` folder) is REUSED;
+#   - a usable filesystem without a datastore gets a NEW datastore in a sub-folder
+#     (nothing on the disk is removed).
+# Formatting (WIPES the disk, an old datastore included) is a ONE-TIME, explicit opt-in:
+#   pbs_datastore_format_disk: true               (build day only; back to false afterwards)
+#   pbs_datastore_format_confirm_serial: <serial>  (pinned to exactly this disk)
+# Both in hosts.yml. The role refuses if the confirmation, pbs_datastore_disk_serial and the
+# serial the attached disk reports are not identical. After formatting, the filesystem gets the
+# label pbs_datastore_fs_label; a disk with that label, or an already registered datastore, is
+# never formatted again, even if the flag was left true (it warns instead).
+# The disk holding / (the eMMC) is never a candidate.
+
+- name: List whole disks
+  ansible.builtin.command: lsblk -J -d -o NAME,SERIAL,TYPE,SIZE,TRAN,MODEL
+  register: pbs_dsk_lsblk
+  changed_when: false
+
+- name: Find the disks holding the root filesystem
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    lsblk -n -s -r -o NAME,TYPE "$(findmnt -n -o SOURCE /)" | awk '$2 == "disk" {print $1}'
+  args:
+    executable: /bin/bash
+  register: pbs_dsk_root
+  changed_when: false
+
+- name: Select the datastore disk by serial
+  ansible.builtin.set_fact:
+    pbs_dsk_all: "{{ (pbs_dsk_lsblk.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | list }}"
+    pbs_dsk_matches: >-
+      {{ (pbs_dsk_lsblk.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk')
+         | selectattr('serial', 'equalto', pbs_datastore_disk_serial | string) | list }}
+
+- name: Exactly one attached disk has the datastore serial, and it is not the OS disk
+  ansible.builtin.assert:
+    that:
+      - pbs_dsk_matches | length == 1
+      - pbs_dsk_matches[0].name not in pbs_dsk_root.stdout_lines
+    fail_msg: >-
+      Datastore disk serial {{ pbs_datastore_disk_serial }}: matches {{ pbs_dsk_matches | map(attribute='name') | list }},
+      OS disk {{ pbs_dsk_root.stdout_lines }}. Attach the USB disk or fix pbs_datastore_disk_serial (hosts.yml).
+      Disks seen (name, serial, size, transport):
+      {{ pbs_dsk_all | map(attribute='name') | zip(pbs_dsk_all | map(attribute='serial'),
+         pbs_dsk_all | map(attribute='size'), pbs_dsk_all | map(attribute='tran')) | list }}
+
+- name: Remember the device; is formatting opted in and confirmed for exactly this disk?
+  ansible.builtin.set_fact:
+    pbs_dsk_dev: "/dev/{{ pbs_dsk_matches[0].name }}"
+    pbs_dsk_optin: "{{ pbs_datastore_format_disk | bool }}"
+    pbs_dsk_confirmed: >-
+      {{ (pbs_datastore_format_confirm_serial | default('', true) | string) != ''
+         and (pbs_datastore_format_confirm_serial | string) == (pbs_datastore_disk_serial | string)
+         and (pbs_datastore_format_confirm_serial | string) == (pbs_dsk_matches[0].serial | string) }}
+
+- name: The format opt-in must be confirmed for exactly this disk's serial
+  ansible.builtin.assert:
+    that:
+      - not pbs_dsk_optin or pbs_dsk_confirmed
+    fail_msg: >-
+      pbs_datastore_format_disk is true, but pbs_datastore_format_confirm_serial
+      ({{ pbs_datastore_format_confirm_serial | default('', true) or 'unset' }}) does not equal the disk's serial
+      ({{ pbs_dsk_matches[0].serial }}, configured {{ pbs_datastore_disk_serial }}): refusing to format anything.
+
+- name: List the filesystems on the disk
+  ansible.builtin.command: lsblk -J -l -o NAME,FSTYPE,UUID,LABEL,MOUNTPOINT,TYPE {{ pbs_dsk_dev }}
+  register: pbs_dsk_fs_raw
+  changed_when: false
+
+- name: Decide whether to format (opted in, confirmed, and not formatted by this repo before)
+  ansible.builtin.set_fact:
+    pbs_dsk_ours: >-
+      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices | selectattr('label', 'equalto', pbs_datastore_fs_label)
+         | list | length > 0 }}
+    pbs_dsk_format: >-
+      {{ pbs_dsk_optin and pbs_dsk_confirmed and not (pbs_has_datastore | default(false) | bool)
+         and not ((pbs_dsk_fs_raw.stdout | from_json).blockdevices
+                  | selectattr('label', 'equalto', pbs_datastore_fs_label) | list | length > 0) }}
+
+- name: One-time only - the flag is still true, but this disk was already formatted for the lab
+  ansible.builtin.debug:
+    msg: >-
+      NOT formatting {{ pbs_dsk_dev }} again: {{ 'its filesystem has the label ' ~ pbs_datastore_fs_label
+      if pbs_dsk_ours else 'datastore ' ~ pbs_datastore_name ~ ' is already registered' }}. It is reused.
+      Set pbs_datastore_format_disk back to false in hosts.yml (docs/OPERATOR-SETUP.md).
+  when: pbs_dsk_optin and not pbs_dsk_format
+
+- name: Usable filesystems on it
+  ansible.builtin.set_fact:
+    pbs_dsk_fs_all: >-
+      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices
+         | selectattr('fstype', 'in', pbs_datastore_fs_types) | list }}
+
+- name: Narrow to pbs_datastore_fs_uuid, if set
+  ansible.builtin.set_fact:
+    pbs_dsk_fs: >-
+      {{ pbs_dsk_fs_all | selectattr('uuid', 'equalto', pbs_datastore_fs_uuid) | list
+         if pbs_datastore_fs_uuid else pbs_dsk_fs_all }}
+
+- name: At most one candidate filesystem
+  ansible.builtin.assert:
+    that:
+      - pbs_dsk_fs | length <= 1
+    fail_msg: >-
+      {{ pbs_dsk_dev }} has several filesystems ({{ pbs_dsk_fs | map(attribute='uuid') | list }}):
+      set pbs_datastore_fs_uuid in hosts.yml to the one holding the datastore.
+
+# ------------------------------------------------------------------ read-only probe
+- name: Look for an existing datastore (read-only)
+  when: pbs_dsk_fs | length == 1
+  block:
+    - name: Probe directory
+      ansible.builtin.file:
+        path: "{{ pbs_datastore_probe_dir }}"
+        state: directory
+        mode: "0700"
+      when: not pbs_dsk_fs[0].mountpoint
+
+    - name: Mount read-only for the probe (only if it is not mounted already; fstab untouched)
+      ansible.posix.mount:
+        path: "{{ pbs_datastore_probe_dir }}"
+        src: "UUID={{ pbs_dsk_fs[0].uuid }}"
+        fstype: "{{ pbs_dsk_fs[0].fstype }}"
+        opts: ro
+        state: ephemeral
+      when: not pbs_dsk_fs[0].mountpoint
+      changed_when: false
+
+    - name: Find datastores (folders containing .chunks)
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        find {{ (pbs_dsk_fs[0].mountpoint or pbs_datastore_probe_dir) | quote }}
+        -maxdepth {{ pbs_datastore_search_depth }} -type d -name .chunks -prune -printf '%h\n'
+        | sed 's|^{{ (pbs_dsk_fs[0].mountpoint or pbs_datastore_probe_dir) }}|ds:|' | sort
+      args:
+        executable: /bin/bash
+      register: pbs_dsk_found
+      changed_when: false
+  always:
+    - name: Unmount the probe (fstab untouched)
+      ansible.posix.mount:
+        path: "{{ pbs_datastore_probe_dir }}"
+        state: unmounted
+      when:
+        - pbs_dsk_fs | length == 1
+        - not pbs_dsk_fs[0].mountpoint
+      changed_when: false
+
+# Each line is "ds:<path below the filesystem root>"; "ds:" alone = a datastore at the root
+# (the marker keeps that case from becoming an empty, ignored line).
+- name: Existing datastores on the disk (paths relative to the filesystem root; '' = the root)
+  ansible.builtin.set_fact:
+    pbs_dsk_stores: "{{ pbs_dsk_found.stdout_lines | default([]) | select('match', '^ds:') | map('regex_replace', '^ds:', '') | list }}"
+
+- name: What formatting will ERASE on this disk
+  ansible.builtin.debug:
+    msg: >-
+      FORMATTING {{ pbs_dsk_dev }} (serial {{ pbs_dsk_matches[0].serial }}, confirmed): erasing filesystems
+      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices | rejectattr('fstype', 'none') | map(attribute='fstype') | list }}
+      and the datastores on it {{ pbs_dsk_stores }}.
+  when: pbs_dsk_format
+
+- name: One datastore, or the chosen sub-folder
+  when: not pbs_dsk_format
+  ansible.builtin.assert:
+    that:
+      - pbs_dsk_stores | length <= 1 or pbs_datastore_subdir is not none
+      - pbs_datastore_subdir is none or pbs_dsk_stores | length == 0 or ('/' ~ pbs_datastore_subdir | regex_replace('^/', '')) in pbs_dsk_stores
+    fail_msg: >-
+      Datastores found on {{ pbs_dsk_dev }}: {{ pbs_dsk_stores }}. Set pbs_datastore_subdir (hosts.yml)
+      to the one to use (relative to the filesystem root).
+
+- name: Without a usable filesystem, formatting must be requested explicitly
+  ansible.builtin.assert:
+    that:
+      - pbs_dsk_fs | length == 1 or pbs_dsk_format
+    fail_msg: >-
+      {{ pbs_dsk_dev }} (serial {{ pbs_datastore_disk_serial }}) has no {{ pbs_datastore_fs_types }} filesystem.
+      To FORMAT it (all data on it is lost), once: in hosts.yml set pbs_datastore_format_disk: true and
+      pbs_datastore_format_confirm_serial: {{ pbs_datastore_disk_serial }} (docs/OPERATOR-SETUP.md).
+
+# ------------------------------------------------------------------ format (one-time opt-in only)
+- name: Format the disk as a new datastore (opted in and confirmed for this serial)
+  when: pbs_dsk_format
+  block:
+    - name: Wipe partition and filesystem signatures (partitions first, then the disk)
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        lsblk -n -r -o PATH,TYPE {{ pbs_dsk_dev }} | awk '$2 == "part" {print $1}' | xargs -r wipefs --all &&
+        wipefs --all {{ pbs_dsk_dev }} && udevadm settle
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Create the filesystem, its mount unit and the datastore (PBS)
+      ansible.builtin.command: >-
+        proxmox-backup-manager disk fs create {{ pbs_datastore_name }}
+        --disk {{ pbs_dsk_dev | basename }} --filesystem ext4 --add-datastore true
+      changed_when: true
+
+    - name: Find the new partition
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        lsblk -n -r -o PATH,TYPE,FSTYPE {{ pbs_dsk_dev }} | awk '$2 == "part" && $3 == "ext4" {print $1}'
+      args:
+        executable: /bin/bash
+      register: pbs_dsk_newpart
+      changed_when: false
+
+    - name: Exactly one new ext4 partition
+      ansible.builtin.assert:
+        that:
+          - pbs_dsk_newpart.stdout_lines | length == 1
+        fail_msg: "Unexpected layout after formatting {{ pbs_dsk_dev }}: {{ pbs_dsk_newpart.stdout_lines }}"
+
+    - name: Label it, so this disk is never formatted again by the opt-in
+      ansible.builtin.command: e2label {{ pbs_dsk_newpart.stdout_lines[0] }} {{ pbs_datastore_fs_label }}
+      changed_when: true
+
+    - name: The datastore path is the PBS mount point
+      ansible.builtin.set_fact:
+        pbs_datastore_path: "/mnt/datastore/{{ pbs_datastore_name }}"
+        pbs_dsk_created: true
+
+# ------------------------------------------------------------------ mount + reuse/create
+- name: Mount the existing filesystem permanently by UUID and use it
+  when: not pbs_dsk_format
+  block:
+    - name: Mount by UUID (nofail; PBS still boots without the USB disk)
+      when: pbs_dsk_fs[0].mountpoint != pbs_datastore_mount # already there (e.g. PBS's own mount unit)
+      ansible.posix.mount:
+        path: "{{ pbs_datastore_mount }}"
+        src: "UUID={{ pbs_dsk_fs[0].uuid }}"
+        fstype: "{{ pbs_dsk_fs[0].fstype }}"
+        opts: "{{ pbs_datastore_mount_opts }}"
+        state: mounted
+
+    - name: The datastore path on the disk
+      ansible.builtin.set_fact:
+        pbs_datastore_path: >-
+          {{ pbs_datastore_mount ~ ('/' ~ pbs_datastore_subdir | regex_replace('^/', '') if pbs_datastore_subdir
+             else (pbs_dsk_stores[0] if pbs_dsk_stores | length == 1 else '/' ~ pbs_datastore_name)) }}
+        pbs_dsk_reuse: "{{ pbs_dsk_stores | length > 0 }}"
+
+    - name: Sub-folder for a NEW datastore (the disk had none)
+      ansible.builtin.file:
+        path: "{{ pbs_datastore_path }}"
+        state: directory
+        owner: backup
+        group: backup
+        mode: "0750"
+      when: not pbs_dsk_reuse

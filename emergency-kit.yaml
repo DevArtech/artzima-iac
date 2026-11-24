@@ -21,8 +21,8 @@ items:
     kept_at: TODO
     last_rotated: null
   - id: infisical-recovery
-    title: Infisical account login + 2FA recovery codes (organisation owner)
-    needed_for: A2, B5 (recreate the admin machine identity)
+    title: Infisical account login + 2FA recovery codes (organisation owner); BOTH projects (main + the cluster's k8s project, slugs in the private settings)
+    needed_for: A2, B5 (recreate the admin machine identity), P3 (recreate both projects)
     kept_at: TODO
     last_rotated: null
   - id: github-recovery
@@ -37,7 +37,7 @@ items:
     last_rotated: null
   - id: backblaze-read-all-key
     title: A Backblaze application key that can READ ALL backup buckets (key id + key)
-    needed_for: C (restore the NAS before anything else exists), E3 (restic CLI)
+    needed_for: C (restore the NAS before anything else exists), drills (restic CLI against a cluster repository)
     kept_at: TODO
     last_rotated: null
   - id: nas-restic-password
@@ -48,7 +48,7 @@ items:
     infisical: /ansible/NAS_RESTIC_PASSWORD
   - id: cluster-restic-password
     title: restic password of the cluster repositories (bucket artzima-restic, VolSync)
-    needed_for: E3 (Home Assistant backups), P3 (Infisical lost); restores without Infisical
+    needed_for: E2 (VolSync restores), P3 (Infisical lost); restores without Infisical
     kept_at: TODO
     last_rotated: null
     infisical: /k8s/backup/RESTIC_PASSWORD
@@ -64,8 +64,8 @@ items:
     kept_at: TODO
     last_rotated: null
   - id: router-login
-    title: Internet router / gateway admin login (DHCP reservations, Xfinity account)
-    needed_for: D6 (DHCP reservations for the new MACs)
+    title: Router logins (Firewalla app account for the lab router; Xfinity gateway admin + account)
+    needed_for: D6 (Firewalla lab LAN, DHCP pool, or setting up a replacement Firewalla)
     kept_at: TODO
     last_rotated: null
   - id: cloudflare-recovery
@@ -85,7 +85,7 @@ items:
     last_rotated: null
   - id: pbs-encryption-key
     title: "OPTIONAL: PBS client-side encryption key (only if enabled on the PVE pbs storage)"
-    needed_for: E4 (PBS restore from B2)
+    needed_for: E3 (PBS restore from B2)
     kept_at: TODO
     last_rotated: null
   - id: infisical-export-key

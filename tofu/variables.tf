@@ -110,19 +110,6 @@ variable "jellyfin_lxc" {
   }
 }
 
-variable "haos_vm" {
-  type = object({
-    cores     = number
-    memory_mb = number
-    disk_gb   = number
-  })
-  default = {
-    cores     = 2
-    memory_mb = 4096
-    disk_gb   = 32
-  }
-}
-
 variable "ts_router_lxc" {
   type = object({
     cores     = number

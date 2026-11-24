@@ -110,3 +110,48 @@ publication workflows were then removed from the public repository. A separate p
 builder was prepared with repository and package privacy checks before application builds.
 Its GitHub repository is not yet created. No server deployment occurred. Public removal
 cannot establish whether anyone downloaded a copy during the exposure window.
+
+## 23 November 2026 — Lab network behind a Firewalla (decided, not executed)
+
+- Decision by the operator: a Firewalla Purple SE moves from Bridge to **Router mode** on build day,
+  between the Xfinity gateway (home network) and the lab switch. The whole lab and the NAS move to
+  their own untagged lab LAN; every machine keeps its host offset. Rationale:
+  [decisions](decisions.md#the-lab-network-behind-a-firewalla-no-vlans-2026-11-23).
+- Repository changes: only the private `network.yml` addressing changed (subnet, gateway, DNS = the
+  Firewalla plus public fallbacks). The documentation-only pool, unmanaged addresses and home network
+  were added, and the build-day steps written ([OPERATOR-SETUP B0](OPERATOR-SETUP.md#b0-network-firewalla-nas-workstation)).
+- Pending on build day: Firewalla switch-over, NAS address, NFS rule and UPS host, the workstation's
+  lab NIC, and deleting the obsolete Xfinity lab reservations from 22 November.
+
+## 23 November 2026 — PBS datastore disk for the first build (decided, not executed)
+
+- Decision by the operator: for the first build, the ZimaBoard's external USB backup disk may be
+  wiped and reformatted as a fresh PBS datastore. The old local PBS backups on it are given up; the
+  installer still never touches that disk (the OS goes on the eMMC).
+- Implemented as a one-time opt-in in private configuration (`pbs_datastore_format_disk`, `false` by
+  default, plus a confirmation pinned to the disk's serial). It is set `true` for build day only and
+  back to `false` afterwards ([OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)).
+
+## 23 November 2026 — Home Assistant removed; Jellyfin starts fresh (decided)
+
+- Decision by the operator: **Home Assistant leaves the lab entirely.** Removed from the code and
+  docs: the HAOS VM (OpenTofu) and its image staging, the public route and `/apps.yaml` entry, the
+  Traefik external Service, its NAS backup folder and VolSync/restic backup, and its Firewalla
+  reservation. Rationale: [decisions](decisions.md#home-assistant-leaves-the-lab-2026-11-23).
+- **No pre-wipe saving:** neither a Home Assistant backup nor Jellyfin's users and watch history are
+  kept. Jellyfin starts fresh: its first-run wizard creates the admin user, and its libraries are
+  `/data/media/{movies,tv,music}`.
+- If the Infisical setting `/settings/CLOUDFLARE_ACCESS_APPS` lists `homeassistant`, remove that
+  entry before the next `make cf-plan` (it refuses unknown apps).
+
+## 23 November 2026 — Infisical split into two projects (implemented in code; not applied)
+
+- Found by G.A.R.T.H. through the API: Infisical's free plan refuses custom roles ("Failed to create
+  custom role due to plan RBAC restriction"). `make ids-apply` failed at the ESO custom role; the
+  resources created before it remain in the `tofu/bootstrap` state and are adopted unchanged.
+- Already done before the split: `make gen-secrets` (38 secrets, main project), `make b2-apply`
+  (4 buckets, 7 keys). `make cf-apply` not yet run.
+- Decision by the operator: a second project only for the cluster (`/k8s/**`), ESO = built-in
+  Viewer on it alone ([decisions](decisions.md#infisical-two-projects-2026-11-23)). The project is
+  created once by the operator; existing `/k8s` secrets move with `make secrets-migrate-k8s`
+  ([OPERATOR-SETUP A2b](OPERATOR-SETUP.md#a2b-the-clusters-infisical-project)).

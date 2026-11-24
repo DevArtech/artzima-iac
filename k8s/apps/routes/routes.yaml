@@ -147,21 +147,3 @@ spec:
       services:
         - name: jellyfin
           port: 80
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: public-homeassistant
-  namespace: external
-  labels:
-    app.kubernetes.io/managed-by: artzima-render
-    artzima.io/public-app: homeassistant
-spec:
-  entryPoints:
-    - web
-  routes:
-    - kind: Rule
-      match: Host(`homeassistant.${public_domain}`)
-      services:
-        - name: homeassistant
-          port: 80

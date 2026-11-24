@@ -1,5 +1,20 @@
 ---
 pbs_datastore_path: "/mnt/datastore/{{ pbs_datastore_name }}"
+# Datastore disk by serial (hosts.yml pbs_datastore_disk_serial; tasks/datastore_disk.yml).
+pbs_datastore_disk_serial: null
+# ONE-TIME format opt-in (tasks/datastore_disk.yml). Set BOTH in hosts.yml for the first
+# build only; the role refuses unless the confirmation equals the attached disk's serial.
+# Afterwards set pbs_datastore_format_disk back to false (the label also prevents a repeat).
+pbs_datastore_format_disk: false
+pbs_datastore_format_confirm_serial: ""
+pbs_datastore_fs_label: artzima-pbs # written after formatting (ext4 label, max 16 chars)
+pbs_datastore_mount: "/mnt/datastore/{{ pbs_datastore_name }}"
+pbs_datastore_mount_opts: defaults,nofail,x-systemd.device-timeout=30s
+pbs_datastore_fs_types: [ext4, xfs]
+pbs_datastore_fs_uuid: null # pick one filesystem if the disk has several
+pbs_datastore_subdir: null # pick one datastore folder if the filesystem has several
+pbs_datastore_search_depth: 3 # how deep below the filesystem root to look for .chunks
+pbs_datastore_probe_dir: /run/artzima-pbs-probe
 pbs_gc_schedule: "daily"
 pbs_pve_user: pve@pbs
 pbs_prune_jobs:

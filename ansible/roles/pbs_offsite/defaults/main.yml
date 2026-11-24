@@ -8,3 +8,5 @@ pbs_offsite_prune_job_id: "{{ pbs_b2_datastore }}-prune"
 pbs_offsite_reuse_datastore: false
 # PBS 4.2 made S3 datastores fully supported (tech preview before).
 pbs_offsite_min_version: "4.2"
+# Minimum free space on the S3 cache's filesystem (PBS recommends 64-128 GiB).
+pbs_offsite_cache_min_free_gib: 64

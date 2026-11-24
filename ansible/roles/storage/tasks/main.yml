@@ -9,7 +9,7 @@
   ansible.builtin.set_fact:
     storage_ids: "{{ storage_list.stdout | from_json | map(attribute='storage') | list }}"
 
-- name: Allow import/iso/templates on local
+- name: Allow iso/templates/backups on local
   ansible.builtin.command: pvesm set local --content {{ storage_local_content }}
   changed_when: false
 

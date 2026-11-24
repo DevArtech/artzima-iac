@@ -1,6 +1,6 @@
 ---
 storage_nfs_id: artnas
-storage_nfs_content: backup,iso,vztmpl,snippets,import
+storage_nfs_content: backup,iso,vztmpl,snippets
 storage_nfs_options: vers=4.1
 storage_pbs_id: pbs
 storage_pbs_user: pve@pbs
@@ -18,5 +18,5 @@ storage_backup_jobs:
     notes_template: "{{ '{{guestname}}' }}"
     prune_backups: keep-all=1
 
-# Enable the "import" content on local storage (HAOS qcow2 import, PVE >= 8.4).
-storage_local_content: iso,vztmpl,backup,import
+# Content types on local storage (no "import": nothing imports disk images any more).
+storage_local_content: iso,vztmpl,backup

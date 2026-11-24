@@ -110,6 +110,11 @@ def render(webhook: str | None = None, allow_placeholder: bool = False) -> dict[
     keys, email = admin_inputs(allow_placeholder)
     pw_hash = root_hash()  # one hash for all hosts in this render
     out: dict[str, dict] = {}
+    # Disks that hold data and must never be an install target (the PBS datastore
+    # disk, often USB and attached during the install).
+    protected = {f"{n}.pbs_datastore_disk_serial": str(h["pbs_datastore_disk_serial"]).strip()
+                 for n, h in data["hosts"].items()
+                 if str(h.get("pbs_datastore_disk_serial") or "").strip() not in ("", "None")}
 
     for name, h in sorted(data["hosts"].items()):
         product = next((PRODUCT_BY_GROUP[g] for g in h["groups"] if g in PRODUCT_BY_GROUP), None)
@@ -122,6 +127,11 @@ def render(webhook: str | None = None, allow_placeholder: bool = False) -> dict[
                 raise SystemExit(f"{name}: install_disk_serial is not set in ansible/hosts.yml "
                                  "(the answer file targets the install disk by serial)")
             serial = "PLACEHOLDER-SERIAL"
+        for where, keep in protected.items():
+            # The filter is a glob *<serial>*: refuse any overlap in either direction.
+            if serial.lower() in keep.lower() or keep.lower() in serial.lower():
+                raise SystemExit(f"{name}: install_disk_serial {serial!r} overlaps {where} {keep!r}: "
+                                 "the installer would be able to select the datastore disk")
         doc = {
             "global": {
                 "keyboard": lab["keyboard"],

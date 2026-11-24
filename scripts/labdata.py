@@ -50,8 +50,45 @@ def load() -> dict:
         if ipaddress.ip_address(h["ip"]) not in subnet:
             raise SystemExit(f"{name}: host_index {h['host_index']} outside {subnet}")
 
+    # The PBS one-time format opt-in must be pinned to that host's datastore disk serial.
+    for name, h in hosts.items():
+        if h.get("pbs_datastore_format_disk") is True:
+            want = str(h.get("pbs_datastore_disk_serial") or "").strip()
+            got = str(h.get("pbs_datastore_format_confirm_serial") or "").strip()
+            if not want or got != want:
+                raise SystemExit(f"{name}: pbs_datastore_format_disk is true, but pbs_datastore_format_confirm_serial "
+                                 f"({got or 'unset'}) is not pbs_datastore_disk_serial ({want or 'unset'})")
+        elif h.get("pbs_datastore_format_disk") not in (None, False):
+            raise SystemExit(f"{name}: pbs_datastore_format_disk must be true or false")
+
+    # Documentation-only addresses (network.yml): unmanaged lab devices and the
+    # Firewalla DHCP pool. The pool must never hand out a static address.
+    vip_index = int(net["k8s_api_vip_index"])
+    static = {int(h["host_index"]): name for name, h in hosts.items()}
+    static[vip_index] = "k8s API VIP"
+    unmanaged = []
+    for u in net.get("lab_unmanaged") or []:
+        idx = int(u["host_index"])
+        if idx in static:
+            raise SystemExit(f"network.yml: lab_unmanaged {u['name']} reuses host_index {idx} of {static[idx]}")
+        static[idx] = u["name"]
+        unmanaged.append({**u, "ip": str(subnet.network_address + idx)})
+    pool = net.get("lab_dhcp_pool")
+    if pool is not None:
+        first, last = (int(x) for x in pool)
+        if not 1 < first <= last < subnet.num_addresses - 1:
+            raise SystemExit(f"network.yml: lab_dhcp_pool {pool} is not a valid range inside {subnet}")
+        if ipaddress.ip_address(net["lab_gateway"]) in {subnet.network_address + i for i in range(first, last + 1)}:
+            raise SystemExit("network.yml: lab_dhcp_pool contains lab_gateway")
+        clash = sorted(n for i, n in static.items() if first <= i <= last)
+        if clash:
+            raise SystemExit(f"network.yml: lab_dhcp_pool {pool} overlaps static addresses: {', '.join(clash)}")
+        pool = [str(subnet.network_address + first), str(subnet.network_address + last)]
+
     out = {
         "net": net,
+        "unmanaged": unmanaged,
+        "dhcp_pool": pool,
         "lab": lab,
         "media": media,
         "backups": backups,
@@ -70,9 +107,19 @@ def load() -> dict:
         name, path = str(s.get("name", "")), str(s.get("path", ""))
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", name) or not path.startswith("/") or ".." in path.split("/"):
             raise SystemExit(f"backups.yml: bad nas_personal_shares entry {s!r} (name: lowercase-dashes, path: absolute)")
+    ex = backups.get("nas_backup_excludes", [])
+    if not isinstance(ex, list) or not all(isinstance(x, str) and x and "\n" not in x for x in ex):
+        raise SystemExit("backups.yml: nas_backup_excludes must be a list of restic exclude patterns")
+    for s in backups.get("nas_personal_shares") or []:
+        if ":" in str(s.get("path", "")):
+            raise SystemExit(f"backups.yml: nas_personal_shares path {s.get('path')!r} must not contain ':' (docker volume syntax)")
+    for leg in lab.get("artnas_legacy_dirs") or []:
+        name = str(leg.get("name", ""))
+        if not name or "/" in name or name in ("..", "."):
+            raise SystemExit(f"lab.yml: artnas_legacy_dirs entry {leg!r}: name is one folder directly in artnas_export")
     # Every NAS write location must be inside artnas_export (raises otherwise).
     for sub in (lab["artnas_k8s_subdir"], media["media_data_subdir"], lab["artnas_backups_subdir"],
-                lab["artnas_paperless_subdir"], backups["artnas_homeassistant_backups_subdir"],
+                lab["artnas_paperless_subdir"],
                 backups["nas_backrest_subdir"]):
         nas_path(out, sub)
     return out
@@ -95,10 +142,17 @@ def load_infisical(env: bool = True) -> dict:
     import os
     cfg = yaml.safe_load((ANSIBLE / "group_vars/all/infisical.yml").read_text())
     for key, var in (("infisical_host", "INFISICAL_HOST"), ("infisical_project_id", "INFISICAL_PROJECT_ID"),
-                     ("infisical_project_slug", "INFISICAL_PROJECT_SLUG"), ("infisical_env", "INFISICAL_ENV")):
+                     ("infisical_project_slug", "INFISICAL_PROJECT_SLUG"), ("infisical_env", "INFISICAL_ENV"),
+                     ("infisical_k8s_project_id", "INFISICAL_K8S_PROJECT_ID"),
+                     ("infisical_k8s_project_slug", "INFISICAL_K8S_PROJECT_SLUG")):
         if env and os.environ.get(var):
             cfg[key] = os.environ[var]
     cfg["infisical_host"] = cfg["infisical_host"].rstrip("/")
+    for key in ("infisical_k8s_project_slug", "infisical_k8s_project_id"):
+        if not cfg.get(key):
+            raise SystemExit(f"infisical.yml: {key} is missing (the cluster's Infisical project, docs/secrets.md)")
+    if cfg["infisical_k8s_project_slug"] == cfg["infisical_project_slug"]:
+        raise SystemExit("infisical.yml: the k8s project must be a different project than the main one")
     return cfg
 
 

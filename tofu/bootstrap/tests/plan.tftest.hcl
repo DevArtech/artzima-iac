@@ -8,7 +8,10 @@ mock_provider "tailscale" {
 
 mock_provider "infisical" {
   mock_data "infisical_projects" {
-    defaults = { id = "proj-1", org_id = "org-1" }
+    defaults = { id = "proj-k8s", org_id = "org-1" }
+  }
+  mock_resource "infisical_project" {
+    defaults = { id = "proj-k8s-new" }
   }
   mock_resource "infisical_identity" {
     defaults = { id = "ident-1" }
@@ -41,6 +44,10 @@ run "tailnet_keys_for_hosts_and_routers" {
     && infisical_secret.tailnet_key["routers"].name == "TAILSCALE_ROUTER_AUTHKEY")
     error_message = "the keys go where the Ansible tailscale role reads them"
   }
+  assert {
+    condition     = ephemeral.infisical_secret.ts_client_id.workspace_id == "proj-k8s"
+    error_message = "the Tailscale OAuth client is read from the cluster's project (/k8s/tailscale)"
+  }
 }
 
 run "eso_identity_is_read_only" {
@@ -51,30 +58,56 @@ run "eso_identity_is_read_only" {
     error_message = "the ESO identity has no organization-level access"
   }
   assert {
-    condition     = length(infisical_project_identity.eso.roles) == 1 && one(infisical_project_identity.eso.roles).role_slug == infisical_project_role.eso.slug
-    error_message = "ESO uses only the runtime role, never project Viewer"
+    condition     = length(infisical_project_identity.eso.roles) == 1 && one(infisical_project_identity.eso.roles).role_slug == "viewer"
+    error_message = "ESO gets exactly the built-in read-only role (viewer)"
+  }
+  assert {
+    condition     = infisical_project_identity.eso.project_id == "proj-k8s" && infisical_project_identity.eso.project_id != "test-project"
+    error_message = "ESO joins ONLY the cluster's project, never the main project"
   }
   assert {
     condition     = infisical_secret.eso_client_id.folder_path == "/tofu" && infisical_secret.eso_client_secret.name == "ESO_CLIENT_SECRET"
     error_message = "its credentials go to /tofu/ESO_CLIENT_* (make eso-bootstrap)"
   }
+  assert {
+    condition     = infisical_secret.eso_client_id.workspace_id == "test-project" && infisical_secret.tailnet_key["hosts"].workspace_id == "test-project"
+    error_message = "ESO and Tailscale credentials stay in the MAIN project (the cluster can't read them)"
+  }
+  assert {
+    condition     = length(infisical_project.k8s) == 0 && length(data.infisical_projects.k8s) == 1
+    error_message = "by default the cluster's project already exists (created by the operator) and is looked up"
+  }
 }
 
-run "eso_permissions_exclude_admin_secrets" {
+run "no_custom_role_anywhere" {
   command = plan
+  variables {
+    eso_project_role = "artzima-runtime-secrets"
+  }
+  expect_failures = [var.eso_project_role]
+}
+
+run "eso_never_on_the_main_project" {
+  command = plan
+  override_data {
+    target = data.infisical_projects.k8s[0]
+    values = { id = "test-project", org_id = "org-1" }
+  }
+  expect_failures = [infisical_project_identity.eso]
+}
+
+run "k8s_project_created_with_delete_protection" {
+  command = plan
+  variables {
+    k8s_project_create = true
+  }
   assert {
-    condition = (
-      length(infisical_project_role.eso.permissions_v2) == 2 &&
-      alltrue([for p in infisical_project_role.eso.permissions_v2 :
-        p.subject == "secrets" && !p.inverted &&
-        p.action == toset(["describeSecret", "readValue"]) &&
-        jsondecode(p.conditions).environment == "prod"
-      ]) &&
-      jsondecode(infisical_project_role.eso.permissions_v2[0].conditions).secretPath["$glob"] == "/k8s/**" &&
-      jsondecode(infisical_project_role.eso.permissions_v2[1].conditions).secretPath == "/settings" &&
-      jsondecode(infisical_project_role.eso.permissions_v2[1].conditions).secretName == "PUBLIC_DOMAIN"
-    )
-    error_message = "ESO must read only runtime /k8s secrets and PUBLIC_DOMAIN, never admin folders."
+    condition     = length(infisical_project.k8s) == 1 && infisical_project.k8s[0].has_delete_protection && infisical_project.k8s[0].slug == "example-k8s-project"
+    error_message = "a project created by OpenTofu is delete-protected and uses the configured slug"
+  }
+  assert {
+    condition     = length(data.infisical_projects.k8s) == 0 && infisical_project_identity.eso.project_id == "proj-k8s-new"
+    error_message = "the created project is the one ESO joins"
   }
 }
 

@@ -65,7 +65,7 @@ def main() -> None:
     print("# Watch: kubectl get replicationdestination -A  (latestMoverStatus.result: Successful)")
     for v in skipped:
         print(f"# SKIPPED {v['namespace']}/{v['pvc']}: read-only volume, restore it by hand "
-              "(docs/disaster-recovery.md, Home Assistant)")
+              "(docs/disaster-recovery.md)")
     for d in docs:
         print("---")
         print(yaml.safe_dump(d, sort_keys=False), end="")

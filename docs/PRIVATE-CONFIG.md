@@ -59,7 +59,7 @@ Never use the public example addresses as installation targets.
 
 `make private-backup` stores the private site bundle in Infisical at
 `/settings/PRIVATE_SITE_CONFIG`. It contains metadata, not root credential values.
-The cluster's scoped runtime identity cannot read this setting.
+The cluster's identity cannot read this setting: it is a member of the cluster's Infisical project only, and this lives in the main project.
 
 On a replacement workstation, clone the public repository, install the tools and
 restore the local Infisical identity/project configuration from the emergency kit.

@@ -34,9 +34,9 @@ See the [public-source security review](PUBLIC-SECURITY-REVIEW.md) for checks, f
 
 The accounts-only check verifies credential presence. Hardware readiness requires the full preflight and installer target checks.
 
-- Install-disk serials for host01, node01, node02, node03 and pbs are placeholders. Collect real serials read-only and confirm each target disk before preparing install answers.
-- `media_existing_paths` and `nas_personal_shares` are empty. Inspect the NAS and record the media roots and personal shares to preserve/back up. Verify NFS, ownership, Docker and sudo prerequisites.
-- Verify the scoped ESO role supports runtime reads and denies administrator-secret reads during cloud bootstrap.
+- Install-disk serials for host01, node01, node02, node03 and pbs were collected read-only on 2026-11-23 and are in private configuration; all MACs match. The PBS OS goes onto its eMMC only; its datastore is an external USB disk, recorded by serial and never an install target. Confirm the targets once more in the installer's debug shell if hardware changes.
+- The NAS was inspected read-only on 2026-11-23: the media roots and both personal shares are recorded in private configuration ([NAS plan](nas-plan.md)), and Docker and the admin user are present. Still to verify: the NFS rule (B0) and the data folder's owner.
+- Infisical is split into two projects (2026-11-23): the free plan refuses custom roles, so the cluster's secrets get their own project and ESO the built-in Viewer role there only. Before the cloud bootstrap continues: create that project ([A2b](#a2b-the-clusters-infisical-project)), run the one-time migration, and verify that ESO can read `/k8s` and cannot read the main project.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
 - Emergency-kit locations and rotation dates remain unrecorded (`TODO`/empty). Finish the independent recovery credentials and printed kit before destructive work.
 - The reviewed initial commit is published to `https://github.com/DevArtech/artzima-iac` on `main`. Public-tree and history scans passed. GitHub CI/security passed for the initial publication. All four image builds completed, but their packages were public. The four public packages were removed and anonymous pulls fail. Public registry workflows are removed. A private builder is prepared locally; its private GitHub repository must be created before private image builds and deployment.
@@ -55,12 +55,14 @@ Prepare the workstation, accounts, private inventory and NAS before deployment.
   ([secrets](secrets.md#local-configuration)). It must be allowed to create the cluster's own
   identity: <https://app.infisical.com> → *Organization → Access Control → Identities →
   artzima-admin*: organization role **Admin** (or a custom role with "Identities: create, edit");
-  *Project example-project → Access Control → Machine Identities → artzima-admin*: role **Admin**.
+  *Project example-project → Access Control → Machine Identities → artzima-admin*: role **Admin**,
+  and the same on the cluster's project ([A2b](#a2b-the-clusters-infisical-project)).
 
 ### A2. Accounts and the other four root credentials
 
-Each value goes into Infisical (<https://app.infisical.com> → your actual project (read its name from the private settings) →
-environment **prod** → the folder → *Add secret*). The folders appear with `make secrets-folders`.
+Each value goes into Infisical (<https://app.infisical.com> → the project that holds the folder:
+`/k8s/...` = the cluster's project, everything else = the main project (names in the private
+settings) → environment **prod** → the folder → *Add secret*). The folders appear with `make secrets-folders`.
 
 - [ ] `make secrets-folders` (creates the empty folder layout; no values).
 - [ ] **Cloudflare** (ROOT CREDENTIAL #2). The domain must be a zone in your Cloudflare account.
@@ -113,6 +115,39 @@ environment **prod** → the folder → *Add secret*). The folders appear with `
 - [ ] **Check:** `make preflight PREFLIGHT_ARGS=--accounts-only` → `PASS`. While something is
   missing, `make secrets-check` lists it (names only) under "MISSING: you provide these".
 
+### A2b. The cluster's Infisical project
+
+Two projects, because Infisical's free plan refuses custom roles ([secrets](secrets.md#project-layout-two-projects)):
+the main project keeps `/settings`, `/bare-metal`, `/ansible`, `/tofu`, `/operator`; the cluster's
+project holds **only** `/k8s/**`, and the cluster's identity `artzima-eso` gets the built-in
+**Viewer** role on that project alone.
+
+- [ ] **Create the project, once (you, in the UI).** `artzima-admin`'s organization role may not
+  create projects, so this is a manual step. <https://app.infisical.com> → *Organization → Projects
+  → Add project*: type **Secrets Management**, name `Artzima K8s`, slug **as in the private settings**
+  (`infisical_k8s_project_slug`, e.g. `artzima-k8s`). Then in that project:
+  *Settings → Delete protection* **on**; *Access Control → Machine Identities → Add* `artzima-admin`,
+  role **Admin**. Keep the default `prod` environment. Do **not** add `artzima-eso` (OpenTofu does,
+  as Viewer) and never put anything but `/k8s/**` into this project.
+  (Alternative only if `artzima-admin` may create projects: `TF_VAR_k8s_project_create=true make ids-plan`
+  shows OpenTofu creating it, delete-protected; a permission error means: do it by hand as above.)
+- [ ] **Record its ID** (not secret): project → *Settings* → **Copy Project ID**, then add to
+  `~/.config/artzima/infisical-project.env` (mode 600):
+  ```
+  INFISICAL_K8S_PROJECT_ID=<the id>
+  INFISICAL_K8S_PROJECT_SLUG=<the slug>
+  ```
+  and `make private-backup` (the slug is in the private settings).
+- [ ] `make secrets-folders`: creates the folders in **both** projects (the `/k8s` tree in the new one).
+- [ ] **Move the cluster's secrets, once:** `make secrets-migrate-k8s` (dry run, names only: what
+  is copied, what OpenTofu moves, conflicts), then `make secrets-migrate-k8s MIGRATE_ARGS=--apply`
+  (copies, then verifies hash equality without showing values). `make secrets-check` must show no
+  missing keys and no mirror difference.
+- [ ] **Later, after `make bootstrap` and a verified `make secrets-check`:**
+  `make secrets-migrate-k8s MIGRATE_ARGS=--delete-old` removes the old `/k8s` copies from the main
+  project (it re-verifies first and refuses otherwise). Delete the then-empty `/k8s` folders of
+  the main project in the UI.
+
 ### A3. Fill Infisical with everything else: `make bootstrap`
 
 - [ ] **Existing DNS records use the same hostnames?** Review conflicts with the managed
@@ -120,10 +155,15 @@ environment **prod** → the folder → *Add secret*). The folders appear with `
 - [ ] `make bootstrap`. In order, each with its plan and a `yes`:
   generated secrets (`make gen-secrets`: random passwords, API keys, hashes; only **missing** keys,
   existing ones are never touched) → Tailscale auth keys + the cluster's read-only Infisical
-  identity (`tofu/bootstrap`) → Backblaze buckets + per-bucket keys (`tofu/backblaze`) → Cloudflare
-  tunnel, DNS, Access (`tofu/cloudflare`). Re-running it is safe.
+  identity, Viewer on the cluster's project only (`tofu/bootstrap`) → Backblaze buckets + per-bucket
+  keys; the cluster's keys go to the cluster's project (`tofu/backblaze`) → Cloudflare tunnel, DNS,
+  Access; the tunnel token goes to the cluster's project (`tofu/cloudflare`). Re-running it is safe.
+- [ ] **Check the ESO boundary once** (with ESO's credentials from `/tofu/ESO_CLIENT_*`): a read of
+  a `/k8s` key in the cluster's project works, a read of `/tofu/B2_ADMIN_APPLICATION_KEY` in the main
+  project is **denied** ([secrets](secrets.md#runtime-identity-boundary)).
 - [ ] **Copy the logins for people** into your password manager: Infisical folder `/operator`
-  (`VAULTWARDEN_ADMIN_PASSWORD`, `BACKREST_PASSWORD`), plus `/k8s/paperless/ADMIN_PASSWORD`,
+  (main project: `VAULTWARDEN_ADMIN_PASSWORD`, `BACKREST_PASSWORD`), plus, in the cluster's project,
+  `/k8s/paperless/ADMIN_PASSWORD`,
   `/k8s/monitoring/GRAFANA_ADMIN_PASSWORD`, `/k8s/alexandria/LOGIN_PASSWORD`,
   `/k8s/media/QBITTORRENT_PASSWORD`.
 - [ ] `make secrets-check`: only "pending (automation writes these)" may be non-empty
@@ -151,43 +191,107 @@ G.A.R.T.H. are all gone: only the kit and a borrowed laptop remain.
 ### A5. NAS configuration
 
 All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual steps §3](manual-steps.md#3-ugreen-nas-ugos).
+Until build day the NAS is still on the home network at its old address; it moves to the lab
+LAN in [B0](#b0-network-firewalla-nas-workstation), and the NFS rule and UPS host change with it.
 
-- [ ] Record the media sources and personal backup shares in private configuration. Verify permissions, mount boundaries and an independent backup before changing storage.
+Inspected read-only on 2026-11-23 (G.A.R.T.H.): `volume1` 7.3T (6.9T free), Docker 26.1, user
+`devartech` in `admin`. The private [NAS plan](nas-plan.md) lists the results.
+
+- [x] Record the media sources and personal backup shares in private configuration (2026-11-23).
+  Permissions, mount boundaries and an independent backup are still verified before changing storage.
 - [ ] NFS export `/volume1/Artzima` allowed for the lab subnet (no_root_squash where §3 says).
 - [ ] The media data folder and its owner (`/volume1/Artzima/data`, §3).
-- [ ] Where are the existing rips? → `media_existing_paths` in `ansible/group_vars/all/media.yml`
-  (then `make media-adopt` later, dry-run first).
-- [ ] Which personal shares to back up off-site? → `nas_personal_shares` in `backups.yml`.
-- [ ] UGOS **Docker** app installed (Backrest runs there); your NAS user can `sudo` (asked once
-  per `make up`/`make nas-backup`, the `-K` prompt).
-- [ ] Folders: `sudo mkdir -p /volume1/Artzima/{backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume,homeassistant/backups}`.
-- [ ] If a backup provider already exists, retain it until Backrest completes a verified backup and test restore ([backup-provider transition](backups.md#backup-provider-transition)).
+- [x] Where are the existing rips? → `media_existing_paths` (private `media.yml`): two roots on the
+  same volume as the data folder, so hardlinks work. The movies are loose files; `make media-adopt`
+  gives each one its own title folder. The originals belong to an old LXC uid: the dry-run reports
+  any that aren't world-readable (fixing that is a `chmod o+r` on the originals, your call).
+  Run `make media-adopt` later, dry-run first.
+- [x] Which personal shares to back up off-site? → `nas_personal_shares` (private `backups.yml`):
+  both shares from the start, including the one that is still empty. Their `#recycle` folders are
+  excluded (`nas_backup_excludes`).
+- [x] UGOS **Docker** app installed (Docker 26.1); your NAS user is in `admin` and can `sudo` (asked
+  once per `make up`/`make nas-backup`, the `-K` prompt).
+- [ ] Folders: `sudo mkdir -p /volume1/Artzima/{backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume}`.
+- [x] Previous backup identified: a container on the NAS (recorded in `nas_existing_backup`). **Keep it
+  running** until Backrest's first full backup and a test restore are verified; retiring it is
+  manual ([backup-provider transition](backups.md#backup-provider-transition), C below).
 
 ### A6. Private deployment inventory
 
-- [ ] [`ansible/hosts.yml`](../ansible/hosts.yml) is an example. Edit `.private/site/ansible/hosts.yml` instead: for every Proxmox/PBS machine `mac` (primary
-  NIC), `install_disk` and **`install_disk_serial`**. The answer server only answers machines with
+- [x] (2026-11-23) [`ansible/hosts.yml`](../ansible/hosts.yml) is an example. Edit `.private/site/ansible/hosts.yml` instead: for every Proxmox/PBS machine `mac` (primary
+  NIC), `install_disk` and **`install_disk_serial`**; for pbs also `pbs_datastore_disk_serial` (the USB
+  datastore disk). All filled in; `make answers` refuses an install serial that overlaps the datastore disk. The answer server only answers machines with
   a known MAC and installs only onto the disk with that serial. <a id="disk-serials"></a>**Disk
   serials:** on the target system `udevadm info -q property -n /dev/nvme0n1 | grep ^ID_SERIAL=`
   (or `lsblk -d -o NAME,SERIAL,MODEL`); in the installer's debug shell the same command. A
   unique part of `ID_SERIAL` is enough (the match is `*<serial>*`).
-- [ ] `timezone` in `ansible/group_vars/all/lab.yml`.
+- [x] (2026-11-23) `timezone` (America/Los_Angeles) in `.private/site/ansible/group_vars/all/lab.yml`.
 - [ ] `make render`, `make lint`, `make check-public` → all green. Commit and push to GitHub
   (**public**). Create the separate private image builder; its workflow verifies privacy before building
   application images ([manual steps §7](manual-steps.md#7-private-images-ghcr-pat-and-pull-secret) steps 1-2).
 
 ### A7. Hardware and network prerequisites
 
-- [ ] Verify BIOS settings and DHCP reservations: [manual steps §1-2](manual-steps.md#1-bios--firmware-on-every-machine).
+- [ ] Verify BIOS settings: [manual steps §1](manual-steps.md#1-bios--firmware-on-every-machine).
+- [ ] Read [manual steps §2](manual-steps.md#2-firewalla-lab-router-and-the-xfinity-gateway) once: the
+  lab moves behind the Firewalla on build day ([B0](#b0-network-firewalla-nas-workstation)). There are no
+  reservations to make on the Xfinity any more.
 - [ ] Confirm the intended storage paths and independent backup coverage before deployment.
 
 ---
 
 ## B. Build day
 
+### B0. Network: Firewalla, NAS, workstation
+
+Before the USB installs. Lab `192.0.2.0/24`, gateway and DNS `192.0.2.1` (the Firewalla);
+every machine keeps its last octet ([addresses](addresses.md)). Details and the reasoning:
+[manual steps §2](manual-steps.md#2-firewalla-lab-router-and-the-xfinity-gateway), [§3](manual-steps.md#3-ugreen-nas-ugos), [§4a](manual-steps.md#4a-reaching-the-lab-from-the-home-network).
+
+- [ ] **NAS address** (UGOS, still reachable on the home network): *Control Panel → Network →
+  (wired LAN) → IPv4 Manual*: `192.0.2.156` / `255.255.255.0`, gateway `192.0.2.1`, DNS
+  `192.0.2.1`. The UI drops; continue with the Firewalla.
+- [ ] **Firewalla → Router mode:** WAN = the port to the Xfinity (DHCP), LAN = the port to the lab
+  switch. LAN `192.0.2.1/24`, DHCP on with pool `192.0.2.210`-`192.0.2.249` (static hosts `.100`-`.160`
+  stay static, `.72` and `.204` stay out of the pool), DHCP DNS = `192.0.2.1`, WAN DNS
+  upstreams `9.9.9.9` and `1.1.1.1`. Allow all outbound, new-device quarantine **off**, **no
+  port forwards** (Cloudflare Tunnel and Tailscale need none). No DHCP reservations: every
+  lab machine and guest is static.
+- [ ] **Workstation lab NIC:** static `192.0.2.72/24`, no gateway, no DNS. On this workstation,
+  `tailscale set --accept-routes=false`, so the Tailscale lab route doesn't shadow the wired NIC.
+  Allow inbound TCP 8000 for the answer server. Check: `ping 192.0.2.1`.
+- [ ] **NAS on the lab:** open UGOS at `http://192.0.2.156` from the workstation. *NFS
+  permissions* of **Artzima**: rule `192.0.2.0/24` (rw, no_root_squash, sync), old home-network
+  rule deleted. Then `showmount -e 192.0.2.156`; if the export is missing, `sudo exportfs -ra`, or
+  `sudo exportfs -o rw,sync,no_root_squash,no_subtree_check 192.0.2.0/24:/volume1/Artzima`
+  ([UGOS quirk](manual-steps.md#3-ugreen-nas-ugos)). *UPS → Network UPS slave*, server
+  `192.0.2.100` (host01).
+- [ ] **Xfinity admin site:** delete the lab reservations from 2026-11-22
+  (`198.51.100.100`-`.103`, `.127`, `.156`); leave the home devices alone.
+- [ ] **Home devices that use the NAS:** Tailscale with *accept routes* ([§4a](manual-steps.md#4a-reaching-the-lab-from-the-home-network)).
+  This works once ts-router-1/2 are up (end of `make up`).
+
+### B1. Install and deploy
+
+- [ ] **PBS install:** unplug the USB datastore disk during the ZimaBoard's install. The OS goes onto the
+  **eMMC only**: the answer file selects it by serial, and `make answers` refuses an install serial that
+  could match the USB disk. Plug the USB disk back in before `make up`.
+- [ ] **PBS datastore, FIRST BUILD ONLY: opt in to wiping the USB disk.** You decided the old
+  contents of the USB backup disk may go. In `.private/site/ansible/hosts.yml`, host `pbs`, set
+  ```yaml
+  pbs_datastore_format_disk: true                         # build day only
+  pbs_datastore_format_confirm_serial: <its serial>       # already pinned; leave it as it is
+  ```
+  The role `pbs` (in `make up`) then **wipes that one disk** and creates a fresh datastore on it. It
+  refuses if the confirmation, `pbs_datastore_disk_serial` and the serial the attached disk reports
+  are not identical, and it never touches any other disk. Before wiping, the output lists what it
+  erases. The new filesystem gets the label `artzima-pbs`. A disk with that label, or an already
+  registered datastore, is not formatted again even if the flag is still `true`; it warns and reuses
+  it, so re-running `make up` on build day is safe.
 - [ ] **USB installs** (hands-off): `make answers` (validates), `install/prepare-iso.sh …`,
   `make answer-server`, then boot each machine from the stick
-  ([install/README.md](../install/README.md)). Unknown MAC or wrong disk serial = the server
+  ([install/README.md](../install/README.md)). `<ws-ip>` is the workstation's **lab NIC**,
+  `192.0.2.72`; re-prepare an ISO made with an older address. Unknown MAC or wrong disk serial = the server
   refuses (HTTP 403/412) and nothing is installed.
 - [ ] `make preflight` → every line `PASS`: Infisical keys present, every host on SSH, MAC and
   disk serial match `hosts.yml`, NAS export reachable. Fix any `FAIL` first.
@@ -197,9 +301,13 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   → `lxc-devices` → `ts-routers` → `jellyfin` → `pbs-offsite` → `nas-backup` (asks for the NAS
   sudo password) → `eso-bootstrap` → `flux-bootstrap`. If one step fails, fix it and re-run
   `make up` (everything is idempotent), or run the failed step alone (`make <step>`).
+- [ ] **Right after the first successful `make up`: set `pbs_datastore_format_disk: false` again**
+  (`.private/site/ansible/hosts.yml`), then `make private-backup`. From then on the USB disk is only
+  ever mounted and reused. Check: `ssh root@192.0.2.127 proxmox-backup-manager datastore list` shows
+  the datastore on `/mnt/datastore/<name>`, and `lsblk -o NAME,LABEL,SERIAL` shows the label `artzima-pbs`.
 - [ ] **Host01 reboot** after the NVIDIA driver (the `site` output says so).
-- [ ] **UPS:** on the NAS set *Network UPS slave* to host01 ([manual steps](manual-steps.md#3-ugreen-nas-ugos)),
-  then `make nut-check`.
+- [ ] **UPS:** the NAS's *Network UPS slave* points at host01, `192.0.2.100` (B0;
+  [manual steps](manual-steps.md#3-ugreen-nas-ugos)), then `make nut-check`.
 - [ ] Wait ~15 minutes, then `make verify`. Backups and restore tests show `FAIL` ("never") until
   their first run: check again the next morning.
 
@@ -207,7 +315,9 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
 
 ## C. After
 
-- [ ] **Jellyfin:** `https://jellyfin.<domain>` → setup wizard, libraries `/data/media/{movies,tv,music}`
+- [ ] **Jellyfin (starts fresh):** nothing is carried over from the old server: no users, watch history
+  or settings. `https://jellyfin.<domain>` → the first-run wizard creates the **admin user** → libraries
+  **Movies** `/data/media/movies`, **Shows** `/data/media/tv`, **Music** `/data/media/music`
   ([manual steps §10.3](manual-steps.md#103-first-logins)), *Dashboard → API Keys → +* (name
   `arr-stack`) → put the key into Infisical `/k8s/media/JELLYFIN_API_KEY` (replace the empty value).
   Until then the wiring Job skips only the Sonarr/Radarr/Lidarr → Jellyfin connection; to apply it
@@ -223,8 +333,6 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   create the `hq` user and its **API token for Headquarters** (stored in HQ, not here)
   ([manual steps §13.2-13.3](manual-steps.md#132-first-login)).
 - [ ] **Alexandria:** first logins ([manual steps §8](manual-steps.md#8-alexandria-secrets-library-first-login-embedder)).
-- [ ] **Home Assistant:** configure a fresh installation, `trusted_proxies` = Talos node IPs, network storage
-  for backups ([backups](backups.md#setup-order) step 6).
 - [ ] **Backrest on the NAS:** <http://192.0.2.156:9898>, user `admin` / `/operator/BACKREST_PASSWORD`.
   When the first **full** upload has finished and a test restore worked: **review any existing backup-provider transition** ([backups](backups.md#backup-provider-transition)).
 - [ ] **Alerts:** when Headquarters has its endpoint, put the https URL into
@@ -235,6 +343,13 @@ All on artnas (UGOS web UI, or `ssh devartech@192.0.2.156`). Details: [manual st
   in *Settings → Branches* protect `main`: require the `ci / lint` check, allow auto-merge.
   Patch/digest updates then merge themselves after CI; majors wait for your approval on the
   Dependency Dashboard issue.
+- [ ] **Retire the previous NAS backup** only after Backrest's first full backup **and** a test restore
+  are verified: stop and remove its container, then delete its B2 data. All manual
+  ([backup-provider transition](backups.md#backup-provider-transition)).
+- [ ] **Old lab folders on the NAS (cleanup review, never automated):** the list with sizes is in the
+  private [NAS plan](nas-plan.md). Delete by hand only what you no longer need, after the build is
+  verified. `dump/` and `template/` are also used by the new Proxmox storage: remove old files there,
+  never the folders. The rip sources (`media_existing_paths`) stay as long as you want the originals.
 - [ ] **Next morning:** `make verify` → all `PASS`.
 
 Self-checks run by themselves from now on: the 1st of each month a restic repository is restored
@@ -245,9 +360,10 @@ queried. A `FAIL` alerts; the quarterly manual test is still worth doing ([backu
 
 ## D. Later
 
-- [ ] **Firewalla + VLAN switch-over:** [README](../README.md#moving-the-lab-to-a-vlan-later) and
-  [manual steps §5](manual-steps.md#5-later-vlans).
-- [ ] **Pi-hole:** on hold (not in this repo yet).
+- [ ] **VLANs:** not needed; the Firewalla already separates the lab. Only an option if a managed
+  switch is added ([manual steps §5](manual-steps.md#5-later-vlans-only-with-a-managed-switch)).
+- [ ] **Pi-hole:** on hold (not in this repo yet). The Firewalla can hand it out as the lab's DNS
+  when it exists; the home side stays on the Xfinity's DNS ([manual steps §5](manual-steps.md#5-later-vlans-only-with-a-managed-switch)).
 - [ ] **Major updates** from Renovate: read the changelog, approve on the Dependency Dashboard,
   merge after CI.
 - [ ] **Rotations:** Tailscale auth keys live 90 days and are re-minted by `make ids-apply` (only

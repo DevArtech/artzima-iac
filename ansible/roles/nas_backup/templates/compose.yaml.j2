@@ -24,7 +24,7 @@ services:
       # Sources, READ-ONLY:
       - {{ artnas_export }}/{{ media_data_subdir }}/media:/userdata/media:ro
 {% for s in nas_personal_shares %}
-      - {{ s.path }}:/userdata/{{ s.name }}:ro
+      - {{ (s.path ~ ':/userdata/' ~ s.name ~ ':ro') | to_json }} # quoted: share names may contain ' or spaces
 {% endfor %}
     ports:
       # LAN address only (also reachable through the Tailscale subnet routers);

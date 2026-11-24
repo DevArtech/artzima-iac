@@ -16,8 +16,10 @@ locals {
   inf                  = yamldecode(file("${path.module}/../../ansible/group_vars/all/infisical.yml"))
   infisical_host       = coalesce(var.infisical_host, local.inf.infisical_host)
   infisical_project_id = coalesce(var.infisical_project_id, local.inf.infisical_project_id)
-  infisical_env        = coalesce(var.infisical_env, local.inf.infisical_env)
-  settings             = { for k, v in data.infisical_secrets.settings.secrets : k => v.value }
+  # The cluster's project (/k8s/** only): the tunnel token goes there.
+  infisical_k8s_project_id = coalesce(var.infisical_k8s_project_id, local.inf.infisical_k8s_project_id)
+  infisical_env            = coalesce(var.infisical_env, local.inf.infisical_env)
+  settings                 = { for k, v in data.infisical_secrets.settings.secrets : k => v.value }
 }
 
 provider "infisical" {
@@ -55,10 +57,17 @@ data "infisical_secrets" "settings" {
 # Write-only: this resource stores no copy of the value. The version follows
 # the tunnel id, so a re-created tunnel (= new token) re-writes it.
 resource "infisical_secret" "tunnel_token" {
-  workspace_id     = local.infisical_project_id
+  workspace_id     = local.infisical_k8s_project_id # the cluster's project (ESO reads it)
   env_slug         = local.infisical_env
   folder_path      = "/k8s/cloudflared"
   name             = "TUNNEL_TOKEN"
   value_wo         = data.cloudflare_zero_trust_tunnel_cloudflared_token.artzima.token
   value_wo_version = parseint(substr(sha256(cloudflare_zero_trust_tunnel_cloudflared.artzima.id), 0, 7), 16)
+
+  lifecycle {
+    precondition {
+      condition     = !strcontains(upper(local.infisical_k8s_project_id), "REPLACE")
+      error_message = "Set INFISICAL_K8S_PROJECT_ID (the cluster's Infisical project) in ~/.config/artzima/infisical-project.env."
+    }
+  }
 }

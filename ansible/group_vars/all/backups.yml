@@ -82,20 +82,15 @@ backup_volumes:
   - { namespace: media, pvc: bazarr, uid: 1000, gid: 1000, hour: 4 }
   - { namespace: media, pvc: qbittorrent, uid: 1000, gid: 1000, hour: 4 }
   - { namespace: media, pvc: seerr, uid: 1000, gid: 1000, hour: 4 }
-  # Home Assistant backups: HA writes its own backups to this NAS folder (network
-  # storage in HA, docs/backups.md); a static PV in namespace `backup` exposes it.
-  # read_only: the PV is mounted read-only; `make dr-volsync-restore` skips it (restore
-  # HA backups into a scratch folder by hand, docs/disaster-recovery.md).
-  - { namespace: backup, pvc: homeassistant-backups, uid: 0, gid: 0, hour: 5, read_only: true }
 
 # The NAS media library (/volume1/Artzima/data/media) and the operator's PERSONAL
 # shares (outside the lab, never written by this repo) go to B2 one of three ways:
 #   restic-on-nas (DEFAULT) restic, run ON THE NAS by Backrest in Docker (Ansible role
 #             nas_backup, `make nas-backup`): independent of the lab, keeps running during
 #             a wipe. Its own bucket (b2_bucket_nas) + scoped key from tofu/backblaze, its own
-#             restic password; shares mounted READ-ONLY. Replaces the unreliable UGOS job
+#             restic password; shares mounted READ-ONLY. Replaces the previous, unreliable backup
 #             (migration: docs/backups.md "NAS media and personal files").
-#   existing  the old UGOS backup app job (kept as an option; record: nas_existing_backup).
+#   existing  keep the previous backup tool (UGOS app or container; record: nas_existing_backup).
 #   off       nothing, documented as not backed up off-site.
 backup_nas_media: restic-on-nas
 
@@ -106,6 +101,11 @@ b2_bucket_nas: artzima-nas
 # never writes there). TODO: fill in after inspecting the NAS (`ls /volume1`).
 # Example: - { name: photos, path: /volume1/Photos }
 nas_personal_shares: []
+
+# restic exclude patterns for every NAS plan (a bare name matches that folder anywhere).
+# UGOS keeps deleted files in each share's #recycle: not backed up by default.
+nas_backup_excludes:
+  - "#recycle"
 
 # ---- Backrest on the NAS (mode restic-on-nas; Ansible role nas_backup)
 # Everything Backrest writes lives here (config, data, cache, restores): inside the lab
@@ -145,7 +145,9 @@ nas_backup_window_stop_hour: null
 
 # ---- mode "existing" only: the old UGOS job, for the record (placeholders)
 nas_existing_backup:
-  app: "UGOS backup app (TODO: exact app name)"
+  app: "TODO: the previous backup tool (a UGOS app or a container on the NAS)"
+  container: null # if it is a container: its name (docker ps)
+  config_path: null
   job_name: "TODO: job name in UGOS"
   bucket: "TODO: B2 bucket name"
   prefix: "TODO: folder/prefix in the bucket, if any"
@@ -155,8 +157,6 @@ nas_existing_backup:
   encryption: "TODO: client-side encryption on/off (password kept where?)"
   notes: "TODO: unreliable per the operator; to be retired after the Backrest migration"
 
-# Home Assistant's backup folder on the NAS (inside artnas_export).
-artnas_homeassistant_backups_subdir: homeassistant/backups
 
 # ---------------------------------------------------------------- PBS -> B2
 # PBS 4.2+ S3 datastore on the B2 bucket, filled by a local sync job from the

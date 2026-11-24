@@ -99,7 +99,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: backup # VolSync sources for plain NAS folders (Home Assistant backups, optional media)
+  name: backup # backup maintenance + restore self-check CronJobs; VolSync sources for plain NAS folders
   annotations:
     # Movers here run as root (uid 0 in backups.yml) so they can read files of any
     # owner in those NAS folders; read-only use, docs/backups.md.

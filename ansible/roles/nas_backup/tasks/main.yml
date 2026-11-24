@@ -10,11 +10,20 @@
       - backup_nas_media == 'restic-on-nas'
     fail_msg: "backup_nas_media is {{ backup_nas_media }}: Backrest on the NAS is not used (backups.yml)"
 
+- name: Validate the exclude patterns (plain strings, no newlines)
+  ansible.builtin.assert:
+    that:
+      - nas_backup_excludes | default([]) is sequence
+      - nas_backup_excludes | default([]) | reject('string') | list | length == 0
+      - nas_backup_excludes | default([]) | select('search', '\n') | list | length == 0
+    fail_msg: "nas_backup_excludes must be a list of restic exclude patterns (backups.yml)"
+
 - name: Validate the personal share list (read-only sources outside the lab share)
   ansible.builtin.assert:
     that:
       - item.name is match('^[a-z0-9][a-z0-9-]*$')
       - item.path is match('^/volume[0-9]+/')
+      - "':' not in item.path" # docker's src:dst:ro syntax
       - "'..' not in item.path"
       - not (item.path ~ '/').startswith(artnas_export ~ '/')
     fail_msg: "nas_personal_shares entry {{ item }}: name lowercase-dashes, path /volumeN/<share>, not inside {{ artnas_export }}"
@@ -56,6 +65,7 @@
            'schedule': {'disabled': true} if (nas_backup_paused | bool) else {'cron': item.cron, 'clock': 'CLOCK_LOCAL'},
            'retention': nas_backup_retention,
            'backup_flags': item.flags,
+           'excludes': nas_backup_excludes | default([]),
            'hooks': [] if (nas_backup_healthchecks_url | trim) == '' else [{
              'conditions': ['CONDITION_SNAPSHOT_START', 'CONDITION_SNAPSHOT_SUCCESS', 'CONDITION_SNAPSHOT_ERROR'],
              'onError': 'ON_ERROR_IGNORE',

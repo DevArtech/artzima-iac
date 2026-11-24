@@ -23,7 +23,7 @@ What survives off-site, and what doesn't:
 |---|---|
 | **GitHub** | this repository (public): <https://github.com/devartech/artzima-iac>, and the private app images (GHCR) |
 | **Infisical** (cloud) | every secret and private setting ([secrets](secrets.md)) |
-| **Backblaze B2** (`s3.us-east-005.backblazeb2.com`) | `artzima-nas` (rips + personal files, restic via Backrest), `artzima-restic` (app volumes, Home Assistant backups), `artzima-pg` (Postgres base backups + WAL), `artzima-pbs` (Proxmox guests). Object Lock: nothing uploaded in the last 30 days can be deleted, not even by a stolen key |
+| **Backblaze B2** (`s3.us-east-005.backblazeb2.com`) | `artzima-nas` (rips + personal files, restic via Backrest), `artzima-restic` (app volumes), `artzima-pg` (Postgres base backups + WAL), `artzima-pbs` (Proxmox guests). Object Lock: nothing uploaded in the last 30 days can be deleted, not even by a stolen key |
 | **Cloudflare** | the zone; the (now dead) tunnel and DNS records |
 | **Tailscale** | the tailnet, its policy, the (now offline) devices |
 | **The emergency kit** | what gets you back *into* all of the above |
@@ -98,7 +98,7 @@ codes** (they change when you use one) for the new kit (F5).
 | Step | Account | Do | Expect / if this fails |
 |---|---|---|---|
 | A1 | **Mailbox** every account resets to | log in with the kit's password + recovery code | inbox visible. Fails: the provider's account recovery (can take days); everything else waits on it |
-| A2 | **Infisical** <https://app.infisical.com> | log in (kit: login + 2FA recovery code) | project **example-project**, environment **prod**, folders `/settings`, `/ansible`, `/k8s/...` present. Fails: Infisical support; meanwhile [P3](#p3-infisical-only) and C (the kit has the restic passwords) |
+| A2 | **Infisical** <https://app.infisical.com> | log in (kit: login + 2FA recovery code) | **two projects**, environment **prod** in each: main **example-project** (`/settings`, `/ansible`, `/tofu`, `/operator`) and the cluster's **example-k8s-project** (`/k8s/...`) present. Fails: Infisical support; meanwhile [P3](#p3-infisical-only) and C (the kit has the restic passwords) |
 | A3 | **Backblaze** <https://secure.backblaze.com> | log in | *Buckets*: `artzima-nas`, `artzima-restic`, `artzima-pg`, `artzima-pbs` with their usual sizes. **Change nothing.** Fails: the kit's read-all key still works for C |
 | A4 | **GitHub** <https://github.com/login> | log in (2FA recovery code) | repo `devartech/artzima-iac`. Not needed to *read* (it's public); needed to push (D2) and for the Flux token |
 | A5 | **Cloudflare** <https://dash.cloudflare.com> | log in | the zone; *Zero Trust → Networks → Tunnels*: `artzima` (down) |
@@ -166,15 +166,17 @@ cat ~/.ssh/id_ed25519.pub
 
 ### B5. Infisical access for `make`
 
-1. Project ID: Infisical → project **example-project** → *Settings* → **Copy Project ID**.
+1. Project IDs: Infisical → project **example-project** → *Settings* → **Copy Project ID**; the same for
+   the cluster's project **example-k8s-project**.
 2. New client secret for the admin identity (the old one burned): *Organization → Access Control
    → Identities → artzima-admin → Universal Auth*: **revoke** every existing client secret, then
    **Create client secret** (copy it now: it is shown once). Note the **Client ID** shown there.
-3. Write the two local files (values are typed, never echoed). Use your actual project slug from Infisical, not the public example:
+3. Write the two local files (values are typed, never echoed). Use your actual project slugs from Infisical, not the public examples:
    ```bash
    mkdir -p ~/.config/artzima && chmod 700 ~/.config/artzima
-   printf 'INFISICAL_HOST=https://app.infisical.com\nINFISICAL_PROJECT_ID=%s\nINFISICAL_PROJECT_SLUG=%s\nINFISICAL_ENV=prod\n' \
-     "$(read -rp 'project id: ' x; echo "$x")" "$(read -rp 'project slug: ' x; echo "$x")" > ~/.config/artzima/infisical-project.env
+   ( umask 077; printf 'INFISICAL_HOST=https://app.infisical.com\nINFISICAL_PROJECT_ID=%s\nINFISICAL_PROJECT_SLUG=%s\nINFISICAL_K8S_PROJECT_ID=%s\nINFISICAL_K8S_PROJECT_SLUG=%s\nINFISICAL_ENV=prod\n' \
+     "$(read -rp 'main project id: ' x; echo "$x")" "$(read -rp 'main project slug: ' x; echo "$x")" \
+     "$(read -rp 'k8s project id: ' x; echo "$x")" "$(read -rp 'k8s project slug: ' x; echo "$x")" > ~/.config/artzima/infisical-project.env )
    ( umask 077; read -rp 'client id: ' id; read -rsp 'client secret: ' sec; echo
      printf 'INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=%s\nINFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=%s\n' "$id" "$sec" \
        > ~/.config/artzima/infisical.env )
@@ -204,10 +206,14 @@ share in `nas_personal_shares`, `ansible/group_vars/all/backups.yml`).
 ### C1. Where to restore
 
 - **(a) New NAS** (recommended; data is downloaded once, straight to its disks): set it up first:
-  UGOS initial setup, then *Control Panel → Network*: give it a fixed address (the router's DHCP
-  reservation for its MAC, D6, or `192.0.2.156` by hand), create the shared folder **`Artzima`** on
+  UGOS initial setup, then *Control Panel → Network*: **IPv4 manual** `192.0.2.156/24`, gateway and DNS
+  `192.0.2.1` (it lives on the lab LAN behind the Firewalla, D6; a reservation is not needed), create the shared folder **`Artzima`** on
   `volume1` and **every personal share with its old name**, enable **SSH** (*Control Panel →
   Terminal*), install the **Docker** app. Your UGOS user must be an administrator.
+  The laptop reaches it only from the lab side: a cable to the lab switch with a static
+  `192.0.2.x/24` outside the DHCP pool (for example `192.0.2.72`, which is free once the workstation is
+  gone), or a lease from the Firewalla pool. A laptop on the home Wi-Fi can't reach the lab
+  until the Tailscale subnet routers exist again (D10).
 - **(b) A USB disk on the laptop** (no NAS yet): format it (exFAT for both macOS and Linux, or
   ext4/APFS), mount it, and use the laptop's `restic` from B3. Later copy it onto the NAS.
 
@@ -297,7 +303,13 @@ For every machine in `ansible/hosts.yml` (host01, node01-03, pbs, artnas):
 - `install_disk` and **`install_disk_serial`** (in the installer's debug shell:
   `proxmox-auto-install-assistant device-info -t disk` and
   `udevadm info -q property -n /dev/<disk> | grep ^ID_SERIAL=`; a unique part is enough);
-- `pbs_datastore_disk` for pbs.
+- for pbs: `pbs_datastore_disk_serial`, the external USB datastore disk (`lsblk -d -o NAME,SERIAL,TRAN`).
+  If the old USB disk **survived**, plug it in and leave `pbs_datastore_format_disk: false`:
+  `make up` reuses the datastore on it (its backups come back with it; a disk labelled `artzima-pbs`
+  is never formatted again anyway). For a **new** disk, record its serial in `pbs_datastore_disk_serial`
+  **and** `pbs_datastore_format_confirm_serial`, and set `pbs_datastore_format_disk: true` for that one
+  build only, as in [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy). Then set it back to
+  `false`. Unplug the disk during the PBS install (the installer targets the eMMC by serial).
 
 For a first boot just to read these: boot the prepared USB stick (D7) and choose *Advanced Options →
 Install (Automated) with debug shell*; the answer server refuses unknown machines, so nothing is
@@ -386,12 +398,24 @@ new ones have new IDs). Keep the admin key and the kit's read-all key.
 
 ### D6. Network and BIOS
 
-- Router (kit: router login): DHCP reservations for the new MACs, same IPs as
-  [addresses](addresses.md). The NAS keeps `192.0.2.156`.
+- **Firewalla** (kit: router login): if it survived, nothing changes. Hosts are static and keep their
+  addresses after a hardware swap, because the pool `192.0.2.210`-`.249` never overlaps them. If it
+  was lost, set up the replacement in **Router mode** exactly as in
+  [manual steps §2.1](manual-steps.md#21-firewalla-router-mode): WAN to the Xfinity, LAN `192.0.2.1/24`
+  to the lab switch, that DHCP pool, DNS, no port forwards, new-device quarantine off.
+- **Xfinity gateway:** no lab reservations (the lab is behind the Firewalla). A replacement only
+  needs to hand the Firewalla's WAN a DHCP lease.
+- **The DR laptop on the lab:** cable it to the lab switch. Use a static `192.0.2.72/24` without a
+  gateway (the old workstation's address) or a pool lease, and use its address as `<laptop lab IP>` for
+  the answer server (D8). If it also runs Tailscale: `tailscale set --accept-routes=false`
+  ([manual steps §2.3](manual-steps.md#23-admin-workstation-windows-wired-lab-nic)).
+- The NAS keeps `192.0.2.156` (static in UGOS, gateway/DNS `192.0.2.1`).
 - BIOS of each machine: [manual steps §1](manual-steps.md#1-bios--firmware-on-every-machine)
   (boot order USB first, power on after AC loss, virtualization on).
-- NAS: the NFS rule for the lab subnet ([manual steps §3](manual-steps.md#3-ugreen-nas-ugos)), and the
-  folders: `sudo mkdir -p /volume1/Artzima/{k8s,backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume,homeassistant/backups}`.
+- NAS: the NFS rule for the lab subnet `192.0.2.0/24` (check with `showmount -e 192.0.2.156`;
+  UGOS quirk: `sudo exportfs -ra`, [manual steps §3](manual-steps.md#3-ugreen-nas-ugos)), *Network
+  UPS slave* = `192.0.2.100`, and the
+  folders: `sudo mkdir -p /volume1/Artzima/{k8s,backups/vaultwarden,backups/paperless,paperless/data,paperless/media,paperless/consume}`.
 
 ### D7. Derived credentials
 
@@ -409,9 +433,9 @@ Tailscale `requested tags are invalid` → the OAuth client lost a tag ([OPERATO
 
 Follow [install/README.md](../install/README.md) steps 2-8. Summary:
 ```bash
-make answers POSTINST_WEBHOOK_URL=http://<laptop LAN IP>:8000/installed
-install/prepare-iso.sh http://<laptop LAN IP>:8000/answer proxmox-ve_*.iso proxmox-backup-server_*.iso
-make answer-server POSTINST_WEBHOOK_URL=http://<laptop LAN IP>:8000/installed
+make answers POSTINST_WEBHOOK_URL=http://<laptop lab IP>:8000/installed
+install/prepare-iso.sh http://<laptop lab IP>:8000/answer proxmox-ve_*.iso proxmox-backup-server_*.iso
+make answer-server POSTINST_WEBHOOK_URL=http://<laptop lab IP>:8000/installed
 ```
 `prepare-iso.sh` needs Debian 13 with the Proxmox repo: on Linux a `debian:trixie` container
 (podman/docker, install/README step 2); on macOS the same with Docker Desktop, OrbStack or podman
@@ -492,8 +516,8 @@ delete it in the B2 web UI after 60 days (Object Lock keeps it 30 days anyway).
    kubectl apply -f /tmp/dr-restore.yaml
    kubectl get replicationdestination -A -w
    ```
-   **Expect:** every row's result `Successful` (minutes to an hour). The Home Assistant backups
-   folder is skipped on purpose (read-only, E3).
+   **Expect:** every row's result `Successful` (minutes to an hour). Read-only volumes, if any are
+   listed in `backup_volumes`, are skipped on purpose and printed as `SKIPPED`.
    **If this fails:** `kubectl -n <ns> describe replicationdestination <name>-dr` and the mover pod's
    log: `wrong password` → `/k8s/backup/RESTIC_PASSWORD` differs from the kit's (fix Infisical,
    wait for ESO or force: `kubectl -n <ns> annotate externalsecret <pvc>-restic force-sync=$(date +%s) --overwrite`).
@@ -506,27 +530,13 @@ delete it in the B2 web UI after 60 days (Object Lock keeps it 30 days anyway).
    flux -n monitoring resume helmrelease kube-prometheus-stack
    ```
 
-### E3. Home Assistant
+### E3. PBS (only if needed)
 
-The new HAOS VM starts empty. Get its newest backup from restic (from the laptop):
-```bash
-export RESTIC_REPOSITORY='s3:https://s3.us-east-005.backblazeb2.com/artzima-restic/backup/homeassistant-backups'
-read -rsp 'cluster restic password (Infisical /k8s/backup/RESTIC_PASSWORD or kit): ' RESTIC_PASSWORD; echo; export RESTIC_PASSWORD
-# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: the kit's read-all key (C2)
-restic snapshots --compact
-restic restore <last id before DR_TIME> --target ./ha-restore --verify && ls ./ha-restore/data
-```
-Open `http://192.0.2.131:8123` → onboarding → **Restore from backup** → upload the newest `.tar`.
-Then re-add the NAS network storage ([backups](backups.md#setup-order) step 6), and delete
-`./ha-restore`.
-
-### E4. PBS (only if needed)
-
-Talos, the LXCs and HAOS are rebuilt by code. The old vzdump backups are in datastore `b2`
+Talos and the LXCs are rebuilt by code. The old vzdump backups are in datastore `b2`
 (attached in D10); restore a guest from it only if you need its old state
 ([backups: PBS restore](backups.md#restore-runbook-pbs-from-b2-the-pbs-box-is-lost)).
 
-### E5. First logins
+### E4. First logins
 
 As in [OPERATOR-SETUP C](OPERATOR-SETUP.md#c-after): Vaultwarden (your account and its data are
 back: log in with the master password from the kit), Paperless, Jellyfin (new setup, libraries,
@@ -555,7 +565,6 @@ make verify
 - [ ] **Apps:** a Vaultwarden item with an attachment opens and existing clients sync; Paperless
       search works; Alexandria answers; Grafana dashboards present; the arrs keep their settings
       and history; the wiring Job is green; Jellyfin libraries scanned.
-- [ ] **Home Assistant:** restored, automations run, backups go to the NAS again.
 - [ ] **Public routes:** `https://<app>.<domain>` loads for every `/apps.yaml` entry; `https://vault.<domain>/admin` → 403.
 - [ ] **Tailnet:** `http://paperless`, `http://vault-admin/admin`, the Backrest UI reachable; subnet routes approved.
 
@@ -615,7 +624,7 @@ with the QDevice (one may fail). Repair the machine or replace it, then:
    make site LIMIT=<node>        # base config, joins the Proxmox cluster, storage, NUT, Tailscale
    make tofu-apply               # re-creates only the guests that lived there (plan shows exactly those)
    ```
-   For **host01** also `make lxc-devices ts-routers jellyfin`, then Home Assistant (E3); for
+   For **host01** also `make lxc-devices ts-routers jellyfin`; for
    **pbs**: [backups: PBS restore](backups.md#restore-runbook-pbs-from-b2-the-pbs-box-is-lost).
 5. `make verify`.
 
@@ -638,21 +647,27 @@ The lab runs, but every Kubernetes volume **and both Postgres databases** lived 
 
 The cluster keeps working (ESO keeps the synced Secrets); only changes and re-runs are blocked.
 
-1. New Infisical project (same or new account): note host, project slug and ID; create the admin
-   machine identity ([secrets](secrets.md#the-two-machine-identities)); write `~/.config/artzima` (B5).
-   Change `ansible/group_vars/all/infisical.yml` to the new slug/host, `make render`.
-2. `make secrets-folders`.
+1. **Two** new Infisical projects (same or new account): the main one and the cluster's one
+   (only `/k8s/**`; [OPERATOR-SETUP A2b](OPERATOR-SETUP.md#a2b-the-clusters-infisical-project): delete
+   protection on). Note host, both slugs and IDs; create the admin machine identity and make it
+   **Admin on both** ([secrets](secrets.md#the-two-machine-identities)); write `~/.config/artzima` (B5).
+   Change the private `infisical.yml` to the new slugs/host (`infisical_project_slug`,
+   `infisical_k8s_project_slug`), `make private-prepare`, `make private-backup`.
+2. `make secrets-folders` (both projects).
 3. Copy everything the cluster still has:
    ```bash
    make dr-secrets-from-cluster                    # names: recoverable / missing / NOT in the cluster
    make dr-secrets-from-cluster DR_ARGS=--apply    # writes the missing ones (values never shown)
    ```
+   Everything the cluster holds is a `/k8s` key, so it lands in the cluster's project; the cluster's
+   `PUBLIC_DOMAIN` copy also restores `/settings/PUBLIC_DOMAIN` in the main project.
 4. By hand, from the kit: `/ansible/NAS_RESTIC_PASSWORD`, `/tofu/TOFU_STATE_PASSPHRASE` (the
    surviving state files need the old one), and new root credentials (OPERATOR-SETUP A2; rotate the old ones).
 5. `make gen-secrets` for the rest (`/ansible` NUT/PBS passwords, `/operator` logins and hashes;
    they are re-applied by `make site`, `make nas-backup`).
-6. The old ESO identity and its state entries point at the dead project:
+6. The old ESO identity and its state entries point at the dead projects:
    `tofu -chdir=tofu/bootstrap state rm infisical_identity.eso infisical_identity_universal_auth.eso infisical_identity_universal_auth_client_secret.eso infisical_project_identity.eso`
+   (and `'infisical_project.k8s[0]'` if OpenTofu had created the cluster's project)
    (through `scripts/infisical_exec.py --set TF_VAR_state_passphrase=/tofu/TOFU_STATE_PASSPHRASE --`),
    then `make bootstrap` and `make eso-bootstrap`; commit and push the infisical.yml change.
 7. `make site`, `make nas-backup`, `make verify`.
@@ -671,7 +686,7 @@ Talos or Kubernetes; the apps don't notice.
    the cluster keeps its old ESO credentials until step 3.
 3. Kubernetes access comes back only with a **rebuild of the Talos VMs**, i.e. D2 (pause switches,
    Postgres recovery from B2), D10 (`make up`; `tofu-apply` first needs the old Talos, ts-router,
-   Jellyfin and HAOS guests removed in the Proxmox UI, because the new state doesn't know them),
+   and Jellyfin guests removed in the Proxmox UI, because the new state doesn't know them),
    then E and F. Check in the B2 web UI first that last night's uploads exist (`artzima-restic`,
    `artzima-pg` modification times), so nothing newer is lost.
 
@@ -688,15 +703,15 @@ What must exist **outside the lab and outside Infisical**: printed, or on offlin
 | Item | Why |
 |---|---|
 | Mailbox recovery codes + password | every other account resets through it (A1) |
-| **Infisical** login + 2FA **recovery codes** | Infisical holds every other secret (A2) |
-| **Every restic repository password**: the NAS repo (`NAS_RESTIC_PASSWORD`) and the cluster repos (`RESTIC_PASSWORD`) | without them the restic backups are unreadable by anyone, including you (C, E3, P3) |
+| **Infisical** login + 2FA **recovery codes** | Infisical holds every other secret, in **two projects** (main + the cluster's) (A2, P3) |
+| **Every restic repository password**: the NAS repo (`NAS_RESTIC_PASSWORD`) and the cluster repos (`RESTIC_PASSWORD`) | without them the restic backups are unreadable by anyone, including you (C, E2, P3) |
 | A **Backblaze key that can read all buckets** | restore your files (C) before Infisical or the lab is back; create it once by hand, not with OpenTofu: `b2 key create artzima-emergency-read listBuckets,listAllBucketNames,readBuckets,listFiles,readFiles` |
 | Backblaze, **Cloudflare**, **Tailscale** (its identity provider) and **GitHub** logins + 2FA **recovery codes** | A3-A6 |
-| The **Vaultwarden master password** + its 2FA recovery code (sealed) | the restored vault (E5) |
+| The **Vaultwarden master password** + its 2FA recovery code (sealed) | the restored vault (E4) |
 | The **OpenTofu state passphrase** (`TOFU_STATE_PASSPHRASE`) | P3 only |
-| The **router admin login** | DHCP reservations (D6) |
+| The **router admin logins**: the Firewalla app account and the Xfinity gateway | lab LAN, DHCP pool; a replacement Firewalla (D6) |
 | **This runbook, printed** (`make dr-pdf`) + the repo URL | everything |
-| Optional: the PBS encryption key (if enabled); the private key of the Infisical export (if used) | E4; P3 |
+| Optional: the PBS encryption key (if enabled); the private key of the Infisical export (if used) | E3; P3 |
 
 **`make emergency-kit`** prints this as a checklist with where each item is kept and when it was
 last rotated. It never prints a value.
@@ -730,6 +745,8 @@ borrowed or spare laptop, without touching the lab:
 - B1-B3 on that laptop (does `scripts/dr-tools.sh` still work?);
 - regain Infisical access (B5) without using up recovery codes (a new browser profile);
 - C3 against `artzima-nas` and restore one personal folder to a temp directory (C4 b);
-- E3 against one cluster repository; list `artzima-pg` and `artzima-pbs` in the B2 web UI;
+- the restic CLI against one cluster repository, with the kit's read-all key (C2) and the cluster
+  restic password: `restic -r 's3:https://s3.us-east-005.backblazeb2.com/artzima-restic/<namespace>/<pvc>' snapshots`,
+  then restore one snapshot to a temp directory; list `artzima-pg` and `artzima-pbs` in the B2 web UI;
 - walk D2-D10 against a throw-away single Talos VM far enough to reach "Flux Ready" (optional);
 - note what was missing or wrong, fix this runbook, `make dr-pdf`, replace the printout.

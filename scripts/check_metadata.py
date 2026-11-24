@@ -44,8 +44,8 @@ def check_tree(root):
         # Runtime values belong in a private ConfigMap, never in the Flux source.
         if relative == "k8s/clusters/artzima/cluster-vars.yaml":
             failures.append((relative, "private cluster substitution resource"))
-        for match in re.finditer(r"(?m)^\s*infisical_project_slug:\s*([^\s#]+)", text):
-            if match.group(1).strip("'\"") != "example-project":
+        for match in re.finditer(r"(?m)^\s*infisical_(k8s_)?project_slug:\s*([^\s#]+)", text):
+            if match.group(2).strip("'\"") != ("example-k8s-project" if match.group(1) else "example-project"):
                 failures.append((relative, "non-example Infisical project slug"))
     return sorted(set(failures))
 

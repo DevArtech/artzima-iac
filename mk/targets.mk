@@ -41,7 +41,7 @@ endef
 
 # tofu_apply <dir> <planfile>: init, plan to a file, confirm, apply exactly that plan.
 define tofu_apply
-	tofu -chdir=$(1) init -input=false >/dev/null
+	$(TOFU_ENV) tofu -chdir=$(1) init -input=false >/dev/null
 	$(TOFU_ENV) tofu -chdir=$(1) plan -input=false -out=$(2)
 	@$(CONFIRM) "tofu: apply the plan above ($(1))"
 	$(TOFU_ENV) tofu -chdir=$(1) apply -input=false $(2)
@@ -53,7 +53,7 @@ endef
         site common network cluster pbs storage nut nut-check tailscale host-prep \
         proxmox-api lxc-devices ts-routers jellyfin \
         tofu-init tofu-plan tofu-apply tofu-destroy talos-env flux-bootstrap eso-bootstrap \
-        cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders \
+        cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
         lint lint-yaml lint-ansible lint-tofu lint-k8s lint-flux lint-python lint-images
 
 help: ## Show targets
@@ -72,6 +72,9 @@ secrets-check: ## List required Infisical keys that are missing (names only, nev
 	$(PY) scripts/secrets_check.py
 secrets-folders: ## Create the Infisical folder layout of secrets.manifest.yaml (folders only, no values)
 	$(PY) scripts/secrets_check.py --create-folders
+MIGRATE_ARGS ?=
+secrets-migrate-k8s: ## ONE-TIME: copy /k8s/** from the main Infisical project to the cluster's project (dry run; MIGRATE_ARGS=--apply, later --delete-old)
+	$(PY) scripts/secrets_migrate_k8s.py $(MIGRATE_ARGS)
 
 GEN_ARGS ?=
 gen-secrets: ## Create every MISSING generated secret straight in Infisical (names shown, values never). GEN_ARGS=--dry-run
@@ -129,7 +132,7 @@ nut-check: ## Only the NUT killpower checks (read-only)
 
 # ---------------------------------------------------------------- 3. tofu
 tofu-init: ## tofu init (providers pinned in tofu/versions.tf + lock file)
-	tofu -chdir=tofu init
+	$(TOFU_ENV) tofu -chdir=tofu init -input=false
 tofu-plan: ## Plan (secrets from Infisical; plan file is encrypted)
 	$(TOFU_ENV) tofu -chdir=tofu plan -out=artzima.tfplan
 tofu-apply: ## Plan + confirm + apply (VMs, LXCs, Talos bootstrap, kubeconfig)
@@ -142,7 +145,7 @@ talos-env: ## Print exports for talosctl/kubectl
 
 # ---------------------------------------------------------------- 3b. cloudflare tunnel (tofu/cloudflare, reads /apps.yaml)
 cf-init: ## Init tofu/cloudflare (tunnel, ingress rules, DNS, Access)
-	tofu -chdir=tofu/cloudflare init
+	$(TOFU_ENV) tofu -chdir=tofu/cloudflare init -input=false
 cf-plan: ## Plan the Cloudflare side from /apps.yaml (secrets + domain from Infisical)
 	$(TOFU_ENV) tofu -chdir=tofu/cloudflare plan -out=cloudflare.tfplan
 cf-apply: ## Plan + confirm + apply; writes the tunnel token into Infisical /k8s/cloudflared/TUNNEL_TOKEN
@@ -150,7 +153,7 @@ cf-apply: ## Plan + confirm + apply; writes the tunnel token into Infisical /k8s
 
 # ---------------------------------------------------------------- 3c. backblaze B2 (tofu/backblaze, reads backups.yml)
 b2-init: ## Init tofu/backblaze (off-site backup buckets + scoped keys)
-	tofu -chdir=tofu/backblaze init
+	$(TOFU_ENV) tofu -chdir=tofu/backblaze init -input=false
 b2-plan: ## Plan B2 buckets/keys (admin key from Infisical /tofu/B2_ADMIN_*)
 	$(TOFU_ENV) tofu -chdir=tofu/backblaze plan -out=backblaze.tfplan
 b2-apply: ## Plan + confirm + apply; writes each bucket's backup + maintenance key into Infisical
@@ -164,7 +167,7 @@ nas-backup: ## Backrest (restic) on the NAS -> B2 (after make b2-apply); -e nas_
 
 # ---------------------------------------------------------------- 3d. derived identities (tofu/bootstrap)
 ids-init: ## Init tofu/bootstrap (Tailscale auth keys + ESO machine identity)
-	tofu -chdir=tofu/bootstrap init
+	$(TOFU_ENV) tofu -chdir=tofu/bootstrap init -input=false
 ids-plan: ## Plan the derived identities
 	$(TOFU_ENV) tofu -chdir=tofu/bootstrap plan -out=bootstrap.tfplan
 ids-apply: ## Plan + confirm + apply; writes /ansible/TAILSCALE_*AUTHKEY and /tofu/ESO_CLIENT_* into Infisical
@@ -220,6 +223,7 @@ lint-yaml: ## yamllint
 lint-python: ## Byte-compile the Python helpers + render check
 	$(PY) scripts/test_public_guard.py
 	$(PY) scripts/test_private_site.py
+	$(PY) scripts/test_infisical_split.py
 	$(PY) scripts/test_make_dispatch.py
 	$(PY) scripts/test_private_package.py
 	$(PY) -m py_compile install/render_answers.py install/answer_server.py scripts/*.py

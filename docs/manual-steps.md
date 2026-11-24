@@ -1,7 +1,8 @@
 # Manual steps (not automatable)
 
 Addresses below are today's values from `ansible/group_vars/all/network.yml` +
-`ansible/hosts.yml`. If those change, use the new ones (for example, `make render` and
+`ansible/hosts.yml` (in this public copy: fictional examples; `make private-prepare` writes the
+actual ones into `.private/runtime/docs/`). If those change, use the new ones (for example, `make render` and
 then read `k8s/clusters/artzima/cluster-vars.yaml`).
 
 ## 1. BIOS / firmware, on every machine
@@ -16,25 +17,126 @@ then read `k8s/clusters/artzima/cluster-vars.yaml`).
 | Example laptop host | Disable "battery only" / lid-close sleep; plug in permanently | it is a server now |
 | Example eMMC host | Boot from eMMC after install; second NIC unused for now | |
 
-## 2. Xfinity gateway: DHCP reservations
+### 1.1 Power: UPS shutdown, coming back, Wake-on-LAN
 
-The Xfinity gateway has no VLANs and no custom DNS records. In **Connected
-Devices → Reserved IP** (or "Add device with reserved IP"), reserve:
+- **After an outage:** NUT forces a shutdown (FSD) on battery. When mains returns, *Restore on
+  AC power loss = Power On* starts the machines, **but only if the outlets really lost power**.
+  If the UPS doesn't cut its outlets after the FSD (open item: NUT killpower, README TODOs), the
+  halted machines stay off with power present. Then wake them with Wake-on-LAN.
+- **Wake-on-LAN is on and stays on** (the plan relies on it). Checked read-only on 2026-11-23:
+  all three mini PCs report `Wake-on: g` (magic packet only) and no RTC wake alarm. `first-boot.sh`
+  sets `wol g` on `lan0` after the install.
+- **Sending a magic packet:** from a lab Linux machine or the workstation's lab NIC (WSL with
+  mirrored networking), never from the home network. Magic packets are broadcasts and don't cross
+  the Firewalla or Tailscale. For example, from host01:
+  `apt install wakeonlan && wakeonlan -i 192.0.2.255 <MAC from addresses.md>`.
+- **Unexpected wake-ups:** the mini PCs woke unexpectedly twice (2026-11-22 and 2026-11-23). With
+  `Wake-on: g` and no RTC alarm, the likely cause is a magic packet from a device that was then on
+  the same LAN (a phone or NAS app, a router feature). Behind the Firewalla, home-network
+  broadcasts no longer reach the lab. If it happens again after the move, the sender is on the lab
+  side; look for WOL features on the NAS and the Firewalla. Don't disable WOL to stop it: the
+  outage recovery above needs it.
 
-Reserve **every row** of the generated table in [`addresses.md`](addresses.md)
-(bare metal, guests and the NAS). HAOS takes DHCP, so its reservation **is** its
-IP. The k8s API VIP has no MAC. If the UI allows it, shrink the DHCP pool so it
-never hands out the lab range (today .100-.199).
+## 2. Firewalla (lab router) and the Xfinity gateway
 
-Guests use static IPs, but reserving their fixed MACs prevents the gateway from leasing
-the same addresses to someone else.
+**Topology:** Xfinity gateway (home network `198.51.100.0/24`, i.e. `home_subnet`) → Firewalla
+Purple SE **WAN** port → Firewalla **LAN** port → the lab switch (UGREEN 2.5G, unmanaged) → every
+lab machine **and the NAS**. The lab is `192.0.2.0/24` (`lab_subnet`), gateway and DNS
+`192.0.2.1` (the Firewalla), untagged. Why: [decisions](decisions.md#the-lab-network-behind-a-firewalla-no-vlans-2026-11-23).
+Addresses: the generated [`addresses.md`](addresses.md).
+
+Do this on build day, **before the USB installs** ([OPERATOR-SETUP B0](OPERATOR-SETUP.md#b0-network-firewalla-nas-workstation)).
+The installers need the Firewalla's DHCP and the workstation's lab NIC to fetch their answers.
+Exact menu names vary between Firewalla app versions; the values do not.
+
+### 2.1 Firewalla: Router mode
+
+1. Cabling: the Xfinity gateway to the Firewalla port you choose as **WAN**; the other port to
+   the lab switch (**LAN**). Nothing else from the home network is plugged into the lab switch.
+2. Firewalla app → the box → *Settings → Mode* (in some versions *Network Manager*): switch from
+   **Bridge** (today `198.51.100.251` on the home network) to **Router**. Assign the
+   Xfinity-facing port as WAN (connection type **DHCP** from the Xfinity) and the switch-facing
+   port as LAN. The app reconnects through the cloud, so your phone does not need to be on the lab.
+3. *Network Manager → LAN* network:
+   - Address **`192.0.2.1`**, netmask **`255.255.255.0`** (`/24`).
+   - DHCP **on**. Pool **`192.0.2.210` - `192.0.2.249`** (`lab_dhcp_pool`). It stays clear of the
+     static hosts (`.100`-`.160`), the workstation (`.72`) and the reserved `.204`. `make render`
+     refuses a pool that overlaps a static address. The DHCP is needed on build day: the
+     installers take a lease before they fetch their answers.
+   - DNS handed out by DHCP: the Firewalla itself (`192.0.2.1`).
+4. *Network Manager → WAN* DNS (the Firewalla's upstreams): **`9.9.9.9`** and **`1.1.1.1`**.
+   The static hosts already list them as fallbacks after the Firewalla (`lab_dns`).
+5. **DHCP reservations:** none. Every lab machine and guest has a static address.
+6. **Outbound:** allow everything from the lab (the default; no block rules). Make sure **new
+   device quarantine** (*New Device* / *Quarantine*) is **off** for the LAN, or new lab machines
+   are cut off on build day. If something outbound breaks later, check the Firewalla's blocked
+   flows first.
+7. **Inbound:** **no port forwards, no DMZ, no UPnP needed.** Cloudflare Tunnel and Tailscale
+   only make outbound connections and handle the double NAT (Xfinity + Firewalla).
+8. Check from the workstation's lab NIC (2.3): `ping 192.0.2.1`, then
+   `nslookup cloudflare.com 192.0.2.1`.
+
+### 2.2 Xfinity gateway: remove the old lab reservations
+
+Once the lab is behind the Firewalla, the Xfinity reservations made on 2026-11-22 for the lab are
+obsolete: those MACs are no longer on the home network. In the Xfinity admin site
+(<http://198.51.100.1>, or the Xfinity app) → *Connected Devices → Reserved IP*, delete the
+reservations for **`198.51.100.100`-`198.51.100.103`, `198.51.100.127` and `198.51.100.156`**
+(host01, node01-03, pbs, artnas), plus any other lab row you reserved there. Do not delete the
+home devices' reservations. Optional: reserve the Firewalla's **WAN** MAC (for example at
+`198.51.100.251`) so its home-side address stays stable for troubleshooting. Nothing in the repo
+depends on it.
+
+The Xfinity gateway keeps serving the home network (DHCP, DNS) unchanged. It cannot add a static
+route to the lab, so home devices reach the lab only over Tailscale ([§4a](#4a-reaching-the-lab-from-the-home-network)).
+
+### 2.3 Admin workstation (Windows): wired lab NIC
+
+The workstation is **not managed** by this repo. Its Wi-Fi stays on the home network, and a wired
+NIC on the lab switch has a static address:
+
+- *Settings → Network → Ethernet → IP assignment: Manual*, IPv4 **`192.0.2.72`**, subnet
+  prefix **24**. Leave the **gateway empty** (recommended) and DNS empty. The `/24` on-link route
+  covers the whole lab, while internet traffic stays on the Wi-Fi with only one default route.
+- Windows marks a network without a gateway as *Public*. For `make answer-server` (WSL2, mirrored
+  networking), allow inbound TCP 8000 on that profile while the installs run, or set the network to
+  *Private*.
+- **Tailscale on this workstation:** run `tailscale set --accept-routes=false` (or untick
+  *Use Tailscale subnets* in the tray menu). Windows accepts subnet routes by default. Tailscale
+  sets up the routing table to prefer the subnet router, so the lab route from ts-router-1/2 would
+  shadow the wired NIC, and lab traffic would detour over the tailnet (and fail entirely while the
+  lab is being rebuilt). Tailscale has no automatic LAN-first preference on Windows
+  ([Tailscale: overlapping subnet routes](https://tailscale.com/docs/reference/troubleshooting/network-configuration/lan-traffic-overlapping-subnets)).
+  Tailnet devices (MagicDNS names such as `http://paperless`) still work. Turn it back on only
+  when the workstation is away from the lab switch. If Tailscale also runs inside WSL, leave its
+  route acceptance off there too (the Linux default).
+- Check: `route print 192.0.2.*` shows the Ethernet interface, not Tailscale.
+
+**DGX Spark:** its wired port (formerly at `192.0.2.204`) is **not part of the lab**. `.204` stays
+reserved (`lab_unmanaged` in `network.yml`, outside the DHCP pool). Don't plug it into the lab
+switch.
 
 ## 3. UGREEN NAS (UGOS)
+
+**Address (build day, with the Firewalla switch-over, [§2](#2-firewalla-lab-router-and-the-xfinity-gateway)):**
+the NAS moves from the home network to the lab LAN and keeps its offset `.156`.
+*Control Panel → Network → Network connection → (the wired LAN) → Edit → IPv4: Manual*:
+
+- IP **`192.0.2.156`**, subnet mask **`255.255.255.0`**, gateway **`192.0.2.1`**, DNS **`192.0.2.1`**.
+- Easiest order: change it from the home network as the **last step before** switching the
+  Firewalla to Router mode. The UI drops and comes back at `192.0.2.156` from the workstation's lab
+  NIC. If you miss that window, the NAS takes a lease from the Firewalla pool; find it in the
+  Firewalla app's device list, open UGOS there and set the manual address.
+- Home devices that used the NAS (SMB shares, apps) now reach it only through Tailscale
+  ([§4a](#4a-reaching-the-lab-from-the-home-network)).
+- If Backrest already runs on the NAS, run `make nas-backup` after the change. Docker publishes
+  the UI on the NAS address (`artnas_ip`) and cannot start on the old one.
 
 **NFS share:** *Control Panel → File Service → NFS* (enable NFSv4.1), then on the
 shared folder **Artzima** → NFS permissions:
 
-- Allow `192.0.2.0/24` (i.e. `lab_subnet`), read/write, **no_root_squash**
+- Allow `192.0.2.0/24` (i.e. `lab_subnet`), read/write, **no_root_squash**. **Delete** the old
+  rule for the home network (`198.51.100.0/24`), if there is one
   (Proxmox vzdump and the k8s CSI driver create files as root), sync.
 - Create the sub-folder `k8s` (used by the `nfs-artnas` StorageClass:
   `/volume1/Artzima/k8s`).
@@ -71,10 +173,15 @@ shared folder **Artzima** → NFS permissions:
   from any host with `showmount -e 192.0.2.156`. If `/volume1/Artzima` is missing,
   SSH to the NAS (enable SSH in the UGOS control panel) and run
   `sudo exportfs -ra`. If that still does not export it, run `sudo exportfs -o rw,sync,no_root_squash,no_subtree_check 192.0.2.0/24:/volume1/Artzima`.
-  The NAS may need this again after a UGOS update or a reboot.
+  The NAS may need this again after a UGOS update or a reboot. After the move to the lab LAN,
+  `sudo exportfs -v` must list `192.0.2.0/24` and **no** `198.51.100.0/24` entry. Remove a leftover
+  one by hand with `sudo exportfs -u 198.51.100.0/24:/volume1/Artzima`.
+- **Who matches the rule:** the Tailscale subnet routers SNAT, so tailnet clients reach the NAS
+  *as ts-router-1/2's lab addresses*, which this rule allows. Access from the tailnet (including
+  home devices) is therefore limited by the Tailscale policy, not by NFS ([§4a](#4a-reaching-the-lab-from-the-home-network)).
 
 **UPS:** *Control Panel → Hardware → UPS* → enable, mode **Network UPS slave**,
-UPS server IP **192.0.2.100** (host01). UGOS logs in as `monuser`/`secret` to
+UPS server IP **192.0.2.100** (host01; it was the home-network address before the Firewalla). UGOS logs in as `monuser`/`secret` to
 the UPS name `ups0`. Both are fixed by UGOS, which is why host01 serves a
 `dummy-ups` alias called `ups0` that mirrors `goldenmate`. Choose "shut down when the UPS
 reports low battery / FSD".
@@ -99,30 +206,53 @@ reports low battery / FSD".
   are tagged `tag:k8s`. The policy file needs the `tagOwners` from OPERATOR-SETUP A2, and an ACL/grant
   that lets your own devices reach `tag:k8s` (and nothing else reach it).
 
-## 5. Later: VLANs
+## 4a. Reaching the lab from the home network
 
-The current **UGREEN 2.5G switch is unmanaged**. Its "VLAN mode" is only *port
-isolation* (each port talks only to the uplink), not 802.1Q, so it can't carry a
-tagged lab VLAN.
+Home devices (the Xfinity side) can't reach `192.0.2.0/24` directly: the Firewalla NATs the lab,
+and the Xfinity gateway can't hold a static route to it. They go through **Tailscale**, using
+the two subnet routers that advertise `lab_subnet` (ts-router-1/2, HA failover):
 
-Plan:
+1. The route `192.0.2.0/24` is approved on both routers (§4, or the `autoApprovers` snippet).
+2. On each home client, install Tailscale, log in to the tailnet, and **accept routes**:
+   Windows, macOS, iOS and Android do so by default (*Use Tailscale subnets* in the client
+   menu); Linux needs `sudo tailscale set --accept-routes`.
+3. The policy must let those devices reach the route. With a default allow-all policy nothing is
+   needed. With grants, add one per user/group, and keep it narrow, because the NAS sees these
+   clients as a subnet router (above, §3). For example, everyone gets SMB on the NAS and the admin gets everything:
+   ```json
+   {"src": ["autogroup:member"], "dst": ["192.0.2.156/32"], "ip": ["tcp:445"]},
+   {"src": ["autogroup:admin"],  "dst": ["192.0.2.0/24"],   "ip": ["*"]}
+   ```
+4. Use the lab addresses directly (`\\192.0.2.156\<share>`, `http://192.0.2.156:9898`). The public
+   apps (`https://<app>.<domain>`) keep working from anywhere without Tailscale.
 
-1. Add a **TP-Link TL-SG108E** (Easy Smart, 802.1Q) and a **lab router** that can
-   route between VLANs (OPNsense, pfSense, OpenWrt, MikroTik…). The Xfinity gateway can't do
-   VLANs or inter-VLAN routing.
-2. On the TL-SG108E (*VLAN → 802.1Q VLAN*, enable it): create VLAN `lab_vlan_id`
-   (e.g. 20). Hypervisor ports are **tagged** for 20 (and any other guest VLANs).
-   The router uplink is tagged. Leave the native VLAN 1 untagged on a spare port for
-   console/rescue. In *802.1Q PVID Setting*, set PVID 20 for access ports of
-   untagged lab devices (for example the NAS, if it stays untagged).
-3. Lab router: interface for VLAN 20 = `lab_gateway`, DHCP reservations
-   (copy the table above), DNS (add `*.artzima.local` here), NAT to the Xfinity
-   uplink.
-4. Then follow "Moving the lab to a VLAN later" in the README. In short: edit
-   `network.yml`, `make render network common tofu-apply`.
-5. The NAS: UGOS supports VLAN tagging on its NIC (network settings). Otherwise
-   put it on an untagged access port with PVID 20. Update the NFS rule and the UPS
-   server IP if the subnet changes.
+The **admin workstation** is the exception: it is wired into the lab and must **not** accept the
+routes ([§2.3](#23-admin-workstation-windows-wired-lab-nic)).
+
+## 5. Later: VLANs (only with a managed switch)
+
+**Not needed for separation any more.** The Firewalla already gives the lab its own network,
+because the lab has its own physical switch ([decisions](decisions.md#the-lab-network-behind-a-firewalla-no-vlans-2026-11-23)).
+The current **UGREEN 2.5G switch is unmanaged**. Its "VLAN mode" is only *port isolation*, not
+802.1Q, so it can't carry tagged VLANs anyway.
+
+VLANs remain an option **only if a managed switch is added**, for example when other networks
+(IoT, guests) have to share a cable or a switch with the lab:
+
+1. A managed 802.1Q switch (for example a TP-Link TL-SG108E). The **Firewalla** does the VLANs
+   and the routing between them (*Network Manager → Create Network → VLAN*); no extra router.
+2. On the switch: VLAN `lab_vlan_id` (e.g. 20), the Firewalla uplink and hypervisor ports
+   **tagged**, untagged access ports (PVID 20) for untagged lab devices such as the NAS. Keep one
+   untagged rescue port.
+3. Then follow [README: Moving the lab to another subnet or a VLAN](../README.md#moving-the-lab-to-another-subnet-or-a-vlan):
+   edit `network.yml`, then `make render network common tofu-apply`.
+4. The NAS: UGOS supports VLAN tagging on its NIC; otherwise use an untagged access port. If the
+   subnet changes, update the NFS rule and the UPS server IP.
+
+**Pi-hole (on hold, not in this repo):** the Firewalla can hand out a Pi-hole as the lab's DNS
+server (*LAN network → DNS*) and use it as its own upstream. Then add its address first in
+`lab_dns` for the static hosts. The home side keeps using the Xfinity's DNS unless you change
+the Xfinity separately.
 
 ## 6. Cloudflare Tunnel (public apps)
 
@@ -159,8 +289,10 @@ prerequisites below. Do not create the tunnel or hostnames in the dashboard: Ope
    `[{"app":"grafana","emails":["you@…"]},{"app":"wizarr","emails":["you@…"]}]`,
    then `make cf-apply`. Recommended: `grafana`. The one-time PIN login
    works without an IdP: enable it under *Zero Trust → Settings → Authentication*.
-   Don't put `jellyfin` or `homeassistant` behind browser Access if you use their
-   mobile apps, because the apps can't complete the Access login.
+   Don't put `jellyfin` behind browser Access if you use its mobile or TV apps, because
+   they can't complete the Access login. If `/settings/CLOUDFLARE_ACCESS_APPS` still lists an app
+   that is no longer in `/apps.yaml` (for example `homeassistant`, removed 2026-11-23), remove that
+   entry first: `make cf-plan` refuses unknown apps.
    **Never put `vault` (Vaultwarden) behind Access.** The Bitwarden mobile, desktop and
    browser-extension clients talk to the server directly and can't pass an Access login.
    `/apps.yaml` marks it `access: never`, so `make cf-plan` **fails** if it is listed. Its
@@ -174,22 +306,10 @@ prerequisites below. Do not create the tunnel or hostnames in the dashboard: Ope
 
 ### Apps outside Kubernetes behind Traefik
 
-Traefik reaches the Jellyfin LXC and the HAOS VM via `k8s/apps/external/`
-(Service + EndpointSlice, with IPs and ports from the inventory). Their requests come
+Traefik reaches the Jellyfin LXC, the only app outside Kubernetes, via `k8s/apps/external/`
+(Service + EndpointSlice, with its IP and port from the inventory). Its requests come
 from the Talos node IPs (pod traffic is SNATed when it leaves the cluster), so:
 
-- **Home Assistant** rejects proxied requests (400 Bad Request) until you add the
-  following to `configuration.yaml` (File editor / Studio Code Server add-on) and restart:
-  ```yaml
-  http:
-    use_x_forwarded_for: true
-    trusted_proxies:   # the Talos node IPs: copy from docs/addresses.md
-      - 192.0.2.111
-      - 192.0.2.112
-      - 192.0.2.113
-  ```
-  Then set *Settings → System → Network → Home Assistant URL → Internet* to
-  `https://homeassistant.<domain>`.
 - **Jellyfin:** *Dashboard → Networking → Known proxies* = the same Talos node IPs,
   and *Published server URIs* = `all=https://jellyfin.<domain>`.
 
@@ -434,7 +554,7 @@ expected and cannot be fixed with this provider.
 | qBittorrent | `http://qbittorrent:8080` | Log in with `/k8s/media/QBITTORRENT_USERNAME`/`_PASSWORD`. Save path and the categories `tv`/`movies`/`music` are set by the Job. Don't change the WebUI password in the UI: the init container resets it from Infisical on every start |
 | Lidarr | `http://lidarr:8686` | Root folder `/data/media/music`, qBittorrent (category `music`), Jellyfin Connect and the recycle bin are set by the Job, which also turns **off** writing tags into audio files. **Add artists by MusicBrainz id** (search `lidarr:<artist MBID>`, the id from musicbrainz.org): text search on Lidarr's metadata service has been unreliable ([decisions](decisions.md#lidarr-metadata)). No Recyclarr/TRaSH profiles exist for Lidarr; use its built-in profiles |
 | Bazarr | `http://bazarr:6767` | *Settings → General → Security*: set Forms auth. Set *Languages* (a language profile, applied to new series/movies) and *Providers*. Sonarr/Radarr are connected by the Job |
-| Jellyfin | `https://jellyfin.<domain>` | *Dashboard → Libraries → Add*: **Shows** → folder `/data/media/tv`, **Movies** → `/data/media/movies`, **Music** → `/data/media/music` (the LXC's `/data/media` bind mount already includes it). "Real-time monitoring" doesn't see NFS changes; the Sonarr/Radarr Connect notifications refresh the library instead. **Re-pointing** an existing library: *Libraries → ⋯ → Manage library → Folders*, add the `/data/media/…` folder, scan, check the titles, **then** remove the old folder from the library (this only edits Jellyfin's list, no files are deleted). Existing rips: [README](../README.md#bringing-in-your-existing-rips) |
+| Jellyfin | `https://jellyfin.<domain>` | **Fresh start** (no users, watch history or settings are carried over): the first-run wizard creates the **admin user**. Then *Dashboard → Libraries → Add*: **Shows** → `/data/media/tv`, **Movies** → `/data/media/movies`, **Music** → `/data/media/music` (all inside the LXC's read-only `/data/media` bind mount). "Real-time monitoring" doesn't see NFS changes; the Sonarr/Radarr Connect notifications refresh the library instead. Existing rips appear there after `make media-adopt`: [README](../README.md#bringing-in-your-existing-rips) |
 | Seerr | `https://seerr.<domain>` | Setup wizard: choose **Jellyfin**. Hostname `jellyfin.external.svc.cluster.local`, port `80`, no SSL, URL base empty, external URL `https://jellyfin.<domain>`, then sign in with the Jellyfin **admin** account (it becomes Seerr's admin). Pick the libraries. **Skip** the Sonarr/Radarr step: the Job adds both (Recyclarr's profiles, root folders `/data/media/{tv,movies}`) within one Flux interval. Then *Settings → Users → Import Jellyfin users* or allow new Jellyfin sign-ins |
 
 ### 10.4 Jellyfin LXC: uid/gid mapping (unprivileged)
@@ -829,7 +949,7 @@ personal shares are outside the lab: the repo never writes to them, and Backrest
    can't manage UGOS, render with `NAS_ANSIBLE_ARGS= ANSIBLE_ARGS="-e nas_backup_deploy=false"` and
    follow the one-time manual install
    ([backups: Backrest on the NAS](backups.md#backrest-on-the-nas)).
-5. **Open the UI** at `http://192.0.2.156:9898` (LAN or Tailscale) and start the first runs.
+5. **Open the UI** at `http://192.0.2.156:9898` (from the lab LAN, or over Tailscale from anywhere including home, §4a) and start the first runs.
    Set up healthchecks.io ([alerts](backups.md#alerts-failures-and-missed-runs)).
 6. **Verify the backup:** let the first full upload finish, verify it (`restic check` plus test restores), and
    **only then** review retirement of the previous backup provider according to its retention policy. Both are manual steps;

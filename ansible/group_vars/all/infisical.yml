@@ -1,7 +1,14 @@
 ---
 # Fictional CI settings. Actual project metadata is restored from private configuration.
 # The runtime copy supplies these values to ESO locally; they are never committed.
+#
+# TWO projects (Infisical's free plan has no custom roles, docs/decisions.md):
+#   main  operator / Ansible / OpenTofu secrets: /settings /bare-metal /ansible /tofu /operator
+#   k8s   ONLY what the cluster reads (/k8s/**); ESO has the built-in Viewer role there, nothing in main
+# Which folder lives where: `projects:` in secrets.manifest.yaml (scripts/infisical_projects.py).
 infisical_host: https://app.infisical.com
 infisical_project_slug: example-project
 infisical_project_id: REPLACE_VIA_INFISICAL_PROJECT_ENV
+infisical_k8s_project_slug: example-k8s-project
+infisical_k8s_project_id: REPLACE_VIA_INFISICAL_PROJECT_ENV
 infisical_env: prod

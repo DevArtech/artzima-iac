@@ -299,26 +299,3 @@ spec:
       runAsUser: 1000
       runAsGroup: 1000
       fsGroup: 1000
----
-apiVersion: volsync.backube/v1alpha1
-kind: ReplicationSource
-metadata:
-  name: homeassistant-backups-b2
-  namespace: backup
-spec:
-  paused: false
-  sourcePVC: homeassistant-backups
-  trigger:
-    schedule: 0 5 * * *
-  restic:
-    repository: homeassistant-backups-restic
-    copyMethod: Direct
-    pruneIntervalDays: 3650
-    cacheCapacity: 2Gi
-    cacheStorageClassName: nfs-artnas
-    cacheAccessModes:
-      - ReadWriteOnce
-    moverSecurityContext:
-      runAsUser: 0
-      runAsGroup: 0
-      fsGroup: 0

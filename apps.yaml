@@ -67,7 +67,3 @@ apps:
     namespace: external
     service: jellyfin
     port: 80
-  - name: homeassistant
-    namespace: external
-    service: homeassistant
-    port: 80

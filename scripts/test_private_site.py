@@ -85,6 +85,39 @@ class PrivateSiteTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.prepare(["link"])
 
+    def test_operator_docs_get_lab_and_home_prefixes(self):
+        public = self.net + "home_subnet: 198.51.100.0/24\n"
+        site = ("lab_subnet: 203.0.113.0/24\nlab_gateway: 203.0.113.1\n"
+                "k8s_pod_subnet: 198.18.0.0/16\nk8s_service_subnet: 198.19.0.0/16\n"
+                "home_subnet: 100.64.0.0/24\n")  # fictional stand-ins for the private values
+        (self.root / self.files[1]).write_text(public)
+        self.create_site()
+        (self.site / self.files[1]).write_text(site)
+        doc = self.root / "docs/runbook.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("NAS 192.0.2.156 on 192.0.2.0/24; Firewalla WAN 198.51.100.251\n")
+        self.prepare(self.files + ["docs/runbook.md"] +
+                     [str(p.relative_to(self.root)) for p in (self.root / "k8s").rglob("*.yaml")])
+        self.assertEqual((self.runtime / "docs/runbook.md").read_text(),
+                         "NAS 203.0.113.156 on 203.0.113.0/24; Firewalla WAN 100.64.0.251\n")
+        self.assertIn("192.0.2.156", doc.read_text())  # public source untouched
+
+    def test_operator_docs_without_home_subnet_still_prepare(self):
+        self.create_site()
+        doc = self.root / "docs/runbook.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("198.51.100.7 stays\n")
+        self.prepare(self.files + ["docs/runbook.md"] +
+                     [str(p.relative_to(self.root)) for p in (self.root / "k8s").rglob("*.yaml")])
+        self.assertEqual((self.runtime / "docs/runbook.md").read_text(), "198.51.100.7 stays\n")
+
+    def test_dangling_symlink_still_refuses(self):
+        self.create_site()
+        link = self.root / "dangling"
+        link.symlink_to(self.root / "does-not-exist")
+        with self.assertRaises(SystemExit):
+            self.prepare(["dangling"])
+
     def test_restore_cannot_overwrite_existing_site(self):
         self.create_site()
         with self.assertRaises(SystemExit):

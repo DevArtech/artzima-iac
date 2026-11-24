@@ -43,9 +43,6 @@ locals {
   jellyfin = merge(local.inv.appliances.hosts.jellyfin, {
     ip = local.ip["jellyfin"], vmid = local.inv.appliances.hosts.jellyfin.host_index
   })
-  haos = merge(local.inv.appliances.hosts.haos, {
-    vmid = local.inv.appliances.hosts.haos.host_index
-  })
 
   # Nodes that need the Debian LXC template.
   lxc_nodes = toset(concat([local.jellyfin.proxmox_node], [for r in local.ts_routers : r.proxmox_node]))

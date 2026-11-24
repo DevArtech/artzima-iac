@@ -19,7 +19,7 @@ data:
   pbs_ip: 192.0.2.127
   cluster_name: artzima
   infisical_host: https://app.infisical.com
-  infisical_project_slug: example-project
+  infisical_k8s_project_slug: example-k8s-project
   infisical_env: prod
   timezone: America/New_York
   k8s_pod_subnet: 198.18.0.0/16
@@ -38,8 +38,5 @@ data:
   b2_bucket_pg: artzima-pg
   b2_bucket_restic: artzima-restic
   backup_pg_retention: 30d
-  artnas_homeassistant_backups_path: /volume1/Artzima/homeassistant/backups
   jellyfin_ip: 192.0.2.130
   jellyfin_port: '8096'
-  haos_ip: 192.0.2.131
-  haos_port: '8123'

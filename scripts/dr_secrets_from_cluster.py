@@ -74,24 +74,33 @@ def main() -> None:
     load_local_env()
     _, manifest = load_manifest()
     c, cfg = client()
-    project, env = cfg["infisical_project_id"], cfg["infisical_env"]
+    env = cfg["infisical_env"]
+    from infisical_projects import project_id, project_of
     values, problems = recover()
+    # A mirror the cluster holds (e.g. /k8s/settings/PUBLIC_DOMAIN) also restores its source
+    # in the main project (/settings/PUBLIC_DOMAIN), unless that is listed separately.
+    for f, keys in manifest.items():
+        for k, meta in keys.items():
+            src = meta.get("mirror_of")
+            if src and f"{f}/{k}" in values:
+                values.setdefault(str(src), values[f"{f}/{k}"])
 
     existing: dict[str, set[str]] = {}
     for folder in manifest:
         try:
-            res = c.secrets.list_secrets(project_id=project, environment_slug=env, secret_path=folder,
+            res = c.secrets.list_secrets(project_id=project_id(cfg, folder), environment_slug=env, secret_path=folder,
                                          view_secret_value=False, expand_secret_references=False,
                                          include_imports=False)
             existing[folder] = {s.secretKey for s in res.secrets}
         except Exception:  # noqa: BLE001
-            sys.exit(f"folder {folder} missing in the new Infisical project: run `make secrets-folders` first")
+            sys.exit(f"folder {folder} missing in the new {project_of(folder)} project: run `make secrets-folders` first")
 
     todo = sorted(k for k in values if k.rpartition("/")[2] not in existing.get(k.rpartition("/")[0], set()))
-    print(f"Infisical {cfg['infisical_host']} project {cfg.get('infisical_project_slug')} env {env}")
+    print(f"Infisical {cfg['infisical_host']} env {env}: main {cfg.get('infisical_project_slug')}, "
+          f"k8s {cfg.get('infisical_k8s_project_slug')}")
     print(f"recoverable from the cluster: {len(values)}; missing in Infisical: {len(todo)}")
     for k in todo:
-        print(f"  + {k}")
+        print(f"  + {k}  ({project_of(k)} project)")
     not_in_cluster = sorted(f"{f}/{k}" for f, keys in manifest.items() for k in keys
                             if f"{f}/{k}" not in values and k not in existing.get(f, set()))
     if not_in_cluster:
@@ -108,7 +117,7 @@ def main() -> None:
             sys.exit("cancelled")
     for k in todo:
         folder, _, key = k.rpartition("/")
-        c.secrets.create_secret_by_name(secret_name=key, project_id=project, environment_slug=env,
+        c.secrets.create_secret_by_name(secret_name=key, project_id=project_id(cfg, folder), environment_slug=env,
                                         secret_path=folder, secret_value=values[k],
                                         secret_comment="recovered from the cluster (dr_secrets_from_cluster.py)")
         print(f"  created {k}")

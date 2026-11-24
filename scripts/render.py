@@ -3,7 +3,8 @@
 
   examples/cluster-vars.yaml              fictional validation substitutions
   (private runtime: cluster-vars ConfigMap outside the public tree)
-  docs/addresses.md                       address / MAC table (DHCP reservations)
+  docs/addresses.md                       address / MAC table, Firewalla DHCP pool, unmanaged addresses
+  docs/nas-plan.md                        NAS sources, personal shares, previous backup, legacy folders
   k8s/apps/routes/routes.yaml             one Traefik IngressRoute per /apps.yaml entry
 
 Run `make render` after changing ansible/hosts.yml or group_vars/all/*.yml.
@@ -46,6 +47,7 @@ RESTIC_SECRETS = labdata.REPO / "k8s/secrets/backups/restic.yaml"
 MAINT = labdata.REPO / "k8s/apps/backups/maintenance.yaml"
 NUT = yaml.safe_load((labdata.REPO / "ansible/roles/nut/defaults/main.yml").read_text())
 DOC = labdata.REPO / "docs/addresses.md"
+NAS_DOC = labdata.REPO / "docs/nas-plan.md"
 ROUTES = labdata.REPO / "k8s/apps/routes/routes.yaml"
 
 
@@ -69,7 +71,8 @@ def render() -> str:
         # flux-system/cluster-secret-vars (k8s/secrets/flux-system).
         # Infisical (ESO ClusterSecretStore, k8s/secrets/cluster-secret-store.yaml)
         "infisical_host": d["infisical"]["infisical_host"],
-        "infisical_project_slug": d["infisical"]["infisical_project_slug"],
+        # ESO reads ONLY the cluster's project (k8s/secrets/cluster-secret-store.yaml).
+        "infisical_k8s_project_slug": d["infisical"]["infisical_k8s_project_slug"],
         "infisical_env": d["infisical"]["infisical_env"],
         "timezone": d["lab"]["timezone"],
         # Kubernetes networks (Talos, tofu/talos.tf): Traefik trustedIPs, gluetun kill-switch
@@ -92,13 +95,9 @@ def render() -> str:
         "b2_bucket_pg": d["backups"]["b2_buckets"]["pg"],
         "b2_bucket_restic": d["backups"]["b2_buckets"]["restic"],
         "backup_pg_retention": d["backups"]["backup_pg_retention"],
-        "artnas_homeassistant_backups_path": labdata.nas_path(
-            d, d["backups"]["artnas_homeassistant_backups_subdir"]),
         # Apps outside k8s, proxied by Traefik (k8s/apps/external)
         "jellyfin_ip": h["jellyfin"]["ip"],
         "jellyfin_port": h["jellyfin"]["http_port"],
-        "haos_ip": h["haos"]["ip"],
-        "haos_port": h["haos"]["http_port"],
     }
     doc = {
         "apiVersion": "v1",
@@ -136,6 +135,24 @@ def render_doc() -> str:
         lines.append(f"| {h['name']} | {h['ip']} | {h['mac']} | {kind} | "
                      f"{h.get('proxmox_node', '')} | {', '.join(h.get('lab_roles', []))} |")
     lines.append(f"| *(k8s API VIP)* | {d['k8s_api_vip']} | n/a | Talos L2 VIP | | |")
+    lines += [
+        "",
+        "## Firewalla LAN (lab side) and unmanaged addresses",
+        "",
+        f"The Firewalla (Router mode) is the lab gateway and DNS at `{d['net']['lab_gateway']}`. "
+        "Every host above is static; no DHCP reservations are needed.",
+        "",
+    ]
+    if d["dhcp_pool"]:
+        lines.append(f"- Firewalla DHCP pool: `{d['dhcp_pool'][0]}` - `{d['dhcp_pool'][1]}` "
+                     "(outside every static address; checked by `make render`).")
+    if d["net"].get("home_subnet"):
+        lines.append(f"- Home network (Firewalla WAN side, Xfinity): `{d['net']['home_subnet']}`. "
+                     "Home devices reach the lab only over Tailscale (manual steps §4a).")
+    if d["unmanaged"]:
+        lines += ["", "| Name | IP | Note |", "|---|---|---|"]
+        lines += [f"| {u['name']} | {u['ip']} | {u['note']} |"
+                  for u in sorted(d["unmanaged"], key=lambda u: int(u["host_index"]))]
     talos_ips = [h["ip"] for h in rows if "talos" in h["groups"]]
     t = d["apps"]["traefik"]
     origin = f"http://{t['service']}.{t['namespace']}.svc.cluster.local:{t['port']}"
@@ -157,18 +174,68 @@ def render_doc() -> str:
         "## Reverse-proxy source addresses (for apps outside k8s)",
         "",
         "Traefik pods reach the LAN through the Talos nodes (SNAT to the node IP), so",
-        "apps outside the cluster see these addresses as their proxy:",
-        "",
-        "```yaml",
-        "# Home Assistant: configuration.yaml",
-        "http:",
-        "  use_x_forwarded_for: true",
-        "  trusted_proxies:",
-    ] + [f"    - {ip}" for ip in talos_ips] + [
-        "```",
+        "Jellyfin (the only app outside the cluster) sees these addresses as its proxy:",
         "",
         f"Jellyfin: Dashboard > Networking > Known proxies: `{', '.join(talos_ips)}`.",
     ]
+    return "\n".join(lines) + "\n"
+
+
+def render_nas_doc() -> str:
+    """The NAS plan from private configuration (public checkout: a stub)."""
+    if os.environ.get("ARTZIMA_PRIVATE_RUNTIME") != "1":
+        return ("# Private NAS plan\n\nActual NAS paths, share names and the previous backup are not published.\n"
+                "Run `make private-prepare` and open `.private/runtime/docs/nas-plan.md` locally.\n")
+    d = labdata.load()
+    lab, media, b = d["lab"], d["media"], d["backups"]
+    root = str(lab["artnas_export"]).rstrip("/")
+    ex = b.get("nas_backup_excludes", [])
+    old = b.get("nas_existing_backup") or {}
+    lines = [
+        "# NAS plan",
+        "",
+        "GENERATED by `scripts/render.py` from `group_vars/all/{lab,media,backups}.yml`. "
+        "Do not edit; run `make render`.",
+        "",
+        "## Existing rips (`make media-adopt`: hardlinks, originals untouched)",
+        "",
+        "| Source | Kind | Linked into |",
+        "|---|---|---|",
+    ]
+    data = labdata.nas_path(d, media["media_data_subdir"])
+    lines += [f"| `{e['path']}` | {e['kind']} | `{data}/media/{e['kind']}` |"
+              for e in media.get("media_existing_paths") or []] or ["| *(none yet)* | | |"]
+    lines += [
+        "",
+        "## Off-site backup sources (Backrest on the NAS, read-only)",
+        "",
+        "| Plan | Source | Mounted as |",
+        "|---|---|---|",
+        f"| media | `{data}/media` | `/userdata/media` |",
+    ]
+    lines += [f"| personal | `{s['path']}` | `/userdata/{s['name']}` |" for s in b.get("nas_personal_shares") or []]
+    lines += ["", "Excluded everywhere: " + (", ".join(f"`{x}`" for x in ex) if ex else "nothing") + "."]
+    lines += [
+        "",
+        "## Previous backup (retire only after the verified migration)",
+        "",
+        "Stop it, remove it and delete its B2 data **only after** Backrest's first full backup and a "
+        "test restore are verified (docs/backups.md, backup-provider transition). All manual.",
+        "",
+    ]
+    lines += [f"- {k}: {v}" for k, v in old.items() if v not in (None, "")]
+    lines += [
+        "",
+        f"## Old lab folders in `{root}` (post-build cleanup review, never automated)",
+        "",
+        "Delete by hand, after the build is verified and only what you no longer need. "
+        "Folders the new deployment also uses are marked; there, remove old files only.",
+        "",
+        "| Folder | Size | Note |",
+        "|---|---|---|",
+    ]
+    lines += [f"| `{root}/{x['name']}` | {x.get('size', '?')} | {x.get('note', '')} |"
+              for x in lab.get("artnas_legacy_dirs") or []] or ["| *(none recorded)* | | |"]
     return "\n".join(lines) + "\n"
 
 
@@ -522,7 +589,7 @@ def render_maintenance() -> str:
 
 
 def main() -> None:
-    outputs = {OUT: render(), DOC: render_doc(), ROUTES: render_routes(),
+    outputs = {OUT: render(), DOC: render_doc(), NAS_DOC: render_nas_doc(), ROUTES: render_routes(),
                VOLSYNC: render_volsync(), RESTIC_SECRETS: render_restic_secrets(),
                MAINT: render_maintenance()}
     if "--check" in sys.argv:

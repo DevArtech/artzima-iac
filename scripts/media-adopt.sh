@@ -22,6 +22,10 @@
 #   - Existing destination files are never overwritten: a file that already has
 #     the same inode counts as done (re-runs are safe), a DIFFERENT file at the
 #     same destination path is a conflict (reported, skipped, exit 1).
+#   - Movies stored as LOOSE files in a source root (no title folder) get one: a
+#     video "<name>.mkv" is linked as movies/<name>/<name>.mkv, and its sidecars
+#     ("<name>.en.srt", "<name>.nfo") join it. Radarr imports one folder per movie.
+#     The same mapping is used for linking and verifying, so re-runs stay idempotent.
 #   - New destination directories get media_puid:media_pgid and mode 2775. File
 #     ownership/modes are NOT changed (that would change the originals too: same
 #     inode); files that are not world-readable are reported (Jellyfin reads as "other").
@@ -95,7 +99,17 @@ adopt_remote() {
   set -uo pipefail
   local apply="$1" root="$2" data="$3" uid="$4" gid="$5"
   shift 5
-  local rc=0 kind src dst dev_src dev_dst rel f d s_id d_id
+  local rc=0 kind src dst dev_src dev_dst rel f d s_id d_id stem
+  local -a stems=()
+  # Source-relative path -> destination-relative path (see "LOOSE files" above).
+  map_rel() {
+    local r="$1" s best=""
+    if [ "$kind" != movies ] || [ "${r#*/}" != "$r" ]; then printf '%s' "$r"; return; fi
+    for s in ${stems[@]+"${stems[@]}"}; do
+      case "$r" in "$s".*) [ "${#s}" -gt "${#best}" ] && best="$s" ;; esac
+    done
+    if [ -n "$best" ]; then printf '%s/%s' "$best" "$r"; else printf '%s' "$r"; fi
+  }
   local n_files n_dirs n_linked n_done n_conflict n_verified n_missing n_other n_unreadable n_loose
   local bytes_src bytes_dst
   human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1 bytes"; }
@@ -146,6 +160,17 @@ adopt_remote() {
     bytes_src="$(find "$src" -type f -printf '%s\n' | awk '{s+=$1} END {printf "%.0f", s}')"
     echo "originals: $n_files files in $n_dirs folders, $(human "$bytes_src")"
     [ "$n_other" -gt 0 ] && echo "WARN: $n_other symlinks/special files: NOT linked (not media files)"
+    stems=()
+    if [ "$kind" = movies ]; then
+      while IFS= read -r -d '' f; do
+        case "${f,,}" in *.mkv | *.mp4 | *.m4v | *.avi | *.ts | *.m2ts | *.iso) stems+=("${f%.*}") ;; esac
+      done < <(cd "$src" && find . -mindepth 1 -maxdepth 1 -type f -printf '%P\0')
+      [ "${#stems[@]}" -gt 0 ] && echo "loose movie files: ${#stems[@]}, each gets its own folder: $(printf '%s/; ' "${stems[@]}")"
+      n_loose=0
+      while IFS= read -r -d '' f; do
+        [ "$(map_rel "$f")" = "$f" ] && n_loose=$((n_loose + 1)) && echo "WARN: loose file without a matching video, linked flat: $f"
+      done < <(cd "$src" && find . -mindepth 1 -maxdepth 1 -type f -printf '%P\0')
+    fi
     [ "$n_loose" -gt 0 ] && echo "WARN: $n_loose files directly in $src: linked, but the arrs need one folder per title (see README)"
     [ "$n_unreadable" -gt 0 ] && echo "WARN: $n_unreadable files are not world-readable: Jellyfin (reads as 'other') can't see them (README)"
 
@@ -158,12 +183,18 @@ adopt_remote() {
           mkdir "$d" && chown "$uid:$gid" "$d" && chmod 2775 "$d" || { echo "ERROR: mkdir $d"; rc=1; }
         fi
       done < <(cd "$src" && find . -mindepth 1 -type d -printf '%P\0')
+      for stem in ${stems[@]+"${stems[@]}"}; do
+        d="$dst/$stem"
+        if [ ! -d "$d" ]; then
+          mkdir "$d" && chown "$uid:$gid" "$d" && chmod 2775 "$d" || { echo "ERROR: mkdir $d"; rc=1; }
+        fi
+      done
     fi
 
     # 2. files: link, or count as done (same inode) / conflict (different file)
     n_linked=0 n_done=0 n_conflict=0
     while IFS= read -r -d '' rel; do
-      f="$src/$rel" d="$dst/$rel"
+      f="$src/$rel" d="$dst/$(map_rel "$rel")"
       if [ -e "$d" ]; then
         if [ "$(stat -c %d:%i "$f")" = "$(stat -c %d:%i "$d")" ]; then
           n_done=$((n_done + 1))
@@ -188,10 +219,11 @@ adopt_remote() {
       n_verified=0 n_missing=0 bytes_dst=0
       while IFS= read -r -d '' rel; do
         s_id="$(stat -c %d:%i "$src/$rel")"
-        d_id="$(stat -c %d:%i "$dst/$rel" 2>/dev/null || true)"
+        d="$dst/$(map_rel "$rel")"
+        d_id="$(stat -c %d:%i "$d" 2>/dev/null || true)"
         if [ "$s_id" = "$d_id" ]; then
           n_verified=$((n_verified + 1))
-          bytes_dst=$((bytes_dst + $(stat -c %s "$dst/$rel")))
+          bytes_dst=$((bytes_dst + $(stat -c %s "$d")))
         else
           n_missing=$((n_missing + 1)); echo "NOT LINKED: $src/$rel"
         fi

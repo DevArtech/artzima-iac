@@ -51,8 +51,11 @@ reverse.
    apt update && apt install -y proxmox-auto-install-assistant
    ```
 3. **Download the ISOs** (PVE 9.1 or newer, PBS 4.1 or newer) from <https://www.proxmox.com/downloads>.
-4. **Render the answers and prepare the ISOs.** `<ws-ip>` is the workstation's LAN IP. On WSL2, use
-   mirrored networking or a port proxy so the LAN can reach port 8000.
+4. **Render the answers and prepare the ISOs.** `<ws-ip>` is the workstation's **wired lab-NIC** IP
+   (`workstation` in `docs/addresses.md`; not its home Wi-Fi address, which the lab can't reach
+   through the Firewalla). The installers get a DHCP lease from the Firewalla pool first. On WSL2, use
+   mirrored networking or a port proxy so the lab can reach port 8000, and allow it in the Windows
+   firewall for that network.
    ```bash
    make answers POSTINST_WEBHOOK_URL=http://<ws-ip>:8000/installed   # validates, writes nothing
    install/prepare-iso.sh http://<ws-ip>:8000/answer proxmox-ve_*.iso proxmox-backup-server_*.iso
@@ -75,6 +78,6 @@ reverse.
 shell. Then run `proxmox-auto-install-assistant device-info -t disk` (or `-t network`)
 to check disk and NIC names, and `proxmox-fetch-answer` to test the fetch.
 
-**VLAN later:** the installer only does untagged networking. Install on an
+**VLAN (only with a managed switch):** the installer only does untagged networking. Install on an
 untagged or native port, and Ansible's `network` role then moves management to
 the tagged `vmbr0.<lab_vlan_id>`.

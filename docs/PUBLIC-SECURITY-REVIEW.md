@@ -18,6 +18,11 @@ and package visibility must also be verified there; local checks cannot enforce 
   The custom role reads only runtime secrets under `/k8s/**` and
   `/settings/PUBLIC_DOMAIN` in the configured environment. It grants no writes.
   Added an offline plan assertion for this boundary. It is not applied to the account yet.
+  **Superseded 2026-11-23:** Infisical's free plan refuses custom roles. The cluster's secrets
+  (`/k8s/**`) now live in their own project, and the ESO identity has the built-in Viewer role
+  on that project only, with no access to the main project. The project boundary keeps the
+  administrator secrets out of reach; offline plan tests assert the Viewer role, the k8s project
+  and the refusal of the main project ([secrets](secrets.md#runtime-identity-boundary)).
 - Made publication scanning fail closed when a selected file cannot be copied.
   Symlinks, submodules and missing selected files are rejected rather than skipped.
 - Expanded forbidden publication paths to include private-key files, environment files,
@@ -70,10 +75,9 @@ RFC1918 addresses, non-example MAC addresses and non-example project slugs.
 
 ## Required before deployment
 
-1. Verify custom-role creation is supported. Test a permitted runtime secret read and
-   denied reads of `/tofu/B2_ADMIN_APPLICATION_KEY` and
-   `/ansible/NAS_RESTIC_PASSWORD` with the ESO identity. Stop on failure; never use
-   project Viewer as a fallback.
+1. With the ESO identity, test a permitted read of a `/k8s` secret in the cluster's project and
+   denied reads of `/tofu/B2_ADMIN_APPLICATION_KEY` and `/ansible/NAS_RESTIC_PASSWORD` in the main
+   project. Stop on failure; never add the ESO identity to the main project.
 2. Proxmox currently defaults to `proxmox_insecure = true`. Configure and verify trusted
    API certificates and disable that bypass before using privileged API credentials.
    This requires the actual hosts; it is not fixed by secret scanning.
@@ -91,8 +95,8 @@ RFC1918 addresses, non-example MAC addresses and non-example project slugs.
 7. Verify disk serials, storage boundaries and independent NAS backup coverage. Repository lint is not evidence that a destructive target is correct.
 
 Runtime secrets still include powerful Tailscale operator and backup maintenance keys.
-The ESO role is an improvement over project Viewer, not per-app or per-folder runtime
-isolation. Keep cluster RBAC and access to its bootstrap credential tightly restricted.
+The separate cluster project keeps administrator secrets away from the cluster; it is not
+per-app or per-folder runtime isolation (Viewer reads the whole cluster project). Keep cluster RBAC and access to its bootstrap credential tightly restricted.
 
 ## Registry follow-up
 

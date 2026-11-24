@@ -27,6 +27,34 @@
     group: backup
     mode: "0750"
 
+# The ZimaBoard's OS disk is a ~29 GiB eMMC: a cache there would fill it. Stop instead.
+- name: Free space and location of the cache filesystem
+  ansible.builtin.command: df -B1 --output=avail,target {{ pbs_b2_cache_path }}
+  register: pbs_offsite_cache_df
+  changed_when: false
+
+- name: Read the local datastore's path
+  ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
+  register: pbs_offsite_local_ds
+  changed_when: false
+
+- name: The cache has room and is not inside the local datastore
+  vars:
+    pbs_offsite_avail: "{{ (pbs_offsite_cache_df.stdout_lines[-1].split())[0] | int }}"
+    pbs_offsite_local_paths: >-
+      {{ pbs_offsite_local_ds.stdout | from_json | selectattr('name', 'equalto', pbs_datastore_name)
+         | map(attribute='path') | list }}
+  ansible.builtin.assert:
+    that:
+      - pbs_offsite_avail | int >= pbs_offsite_cache_min_free_gib * 1024 * 1024 * 1024
+      - pbs_offsite_local_paths | select('in', [pbs_b2_cache_path]) | list | length == 0
+      - pbs_offsite_local_paths | map('regex_replace', '/*$', '/') | select('in', pbs_b2_cache_path) | list | length == 0
+    fail_msg: >-
+      pbs_b2_cache_path {{ pbs_b2_cache_path }} is on {{ (pbs_offsite_cache_df.stdout_lines[-1].split())[1] }}
+      with {{ (pbs_offsite_avail | int / 1073741824) | round(1) }} GiB free (needs {{ pbs_offsite_cache_min_free_gib }} GiB),
+      or inside the local datastore {{ pbs_offsite_local_paths }}. Put the cache on the datastore disk OUTSIDE the
+      datastore folder, or on another disk (backups.yml, docs/backups.md "PBS").
+
 # ------------------------------------------------------------------ S3 endpoint
 - name: Read S3 endpoints
   ansible.builtin.command: proxmox-backup-manager s3 endpoint list --output-format json

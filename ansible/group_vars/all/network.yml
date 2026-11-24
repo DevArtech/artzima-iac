@@ -11,17 +11,22 @@
 # RULES: plain YAML only. No Jinja here, because OpenTofu and Python read this
 # file too. Every host IP is computed as cidrhost(lab_subnet, host_index), with
 # host_index set per host in ansible/hosts.yml. To move the lab to another
-# subnet or VLAN, change only the values below (see README "Moving to a VLAN").
+# subnet or VLAN, change only the values below (README "Moving the lab to another subnet or a VLAN").
 # ---------------------------------------------------------------------------
 
-# Today: Xfinity home LAN, untagged, no VLANs.
+# The lab LAN behind the Firewalla (Router mode): its own physical switch, its
+# own subnet, untagged. The Firewalla is the gateway and the first DNS server.
 lab_subnet: 192.0.2.0/24
 lab_gateway: 192.0.2.1
-# null = untagged (today). Set e.g. 20 once a managed switch and a lab router exist.
+# null = untagged. The Firewalla separates the lab without VLANs (docs/decisions.md);
+# a tag is only needed if a managed switch ever carries other networks too.
 lab_vlan_id: null
+# In order: the Firewalla, then public fallbacks if it does not answer.
+# The Proxmox installer answer files use only the first entry.
 lab_dns:
+  - 192.0.2.1
+  - 9.9.9.9
   - 1.1.1.1
-  - 8.8.8.8
 
 lab_domain: artzima.local
 
@@ -35,3 +40,20 @@ k8s_api_vip_index: 110
 # (k8s/apps/media/qbittorrent.yaml). Changing them on a live cluster means a rebuild.
 k8s_pod_subnet: 198.18.0.0/16
 k8s_service_subnet: 198.19.0.0/16
+
+# --- Documentation-only values (scripts/render.py -> docs/addresses.md) ------
+# Nothing is configured from these; they keep the address plan in one place.
+# Home network on the Firewalla WAN side (Xfinity gateway). Home devices reach
+# the lab only over Tailscale (docs/manual-steps.md §4a).
+home_subnet: 198.51.100.0/24
+# Firewalla LAN DHCP pool as host offsets [first, last]. Must not overlap any
+# static host, the VIP or lab_unmanaged (render.py refuses).
+lab_dhcp_pool: [210, 249]
+# Lab-side addresses that this repo does not manage (static, set by hand).
+lab_unmanaged:
+  - name: workstation
+    host_index: 72
+    note: admin workstation (Windows), static on its wired lab NIC; Wi-Fi on the home network. Not managed
+  - name: dgx-spark
+    host_index: 204
+    note: reserved, not in use. The DGX Spark's wired port is not part of the lab

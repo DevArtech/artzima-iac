@@ -8,15 +8,19 @@
      $ARTZIMA_INFISICAL_ENV      default ~/.config/artzima/infisical.env
                                  admin identity: INFISICAL_UNIVERSAL_AUTH_CLIENT_ID / _SECRET
      $ARTZIMA_INFISICAL_PROJECT  default ~/.config/artzima/infisical-project.env
-                                 INFISICAL_HOST / _PROJECT_ID / _PROJECT_SLUG / _ENV
+                                 INFISICAL_HOST / _PROJECT_ID / _PROJECT_SLUG / _ENV and
+                                 INFISICAL_K8S_PROJECT_ID / _K8S_PROJECT_SLUG (the cluster's project)
      $ARTZIMA_LOCAL_ENV          default ./local.env (gitignored; e.g. ESO_* for eso-bootstrap)
    None of them is in the repo. Values are never printed.
 2. Logs in to Infisical with the admin machine identity (universal auth:
    INFISICAL_UNIVERSAL_AUTH_CLIENT_ID / _SECRET), only if something is to be fetched.
-3. Fetches every --set (required) / --optional secret into VAR.
+3. Fetches every --set (required) / --optional secret into VAR, from the project that
+   holds its folder (/k8s/** -> the k8s project, everything else -> main;
+   scripts/infisical_projects.py).
 4. Execs cmd. The child keeps INFISICAL_UNIVERSAL_AUTH_* (the OpenTofu provider and
-   the Ansible lookups authenticate with them) and INFISICAL_HOST/_PROJECT_ID/_ENV,
-   also as TF_VAR_infisical_* for OpenTofu; ESO_* bootstrap values are removed.
+   the Ansible lookups authenticate with them) and INFISICAL_HOST/_PROJECT_ID/_ENV
+   (+ _K8S_PROJECT_ID), also as TF_VAR_infisical_* for OpenTofu; ESO_* bootstrap values
+   are removed.
 
 Host/project/environment: ansible/group_vars/all/infisical.yml, overridable with
 INFISICAL_HOST / INFISICAL_PROJECT_ID / INFISICAL_ENV. Uses the official
@@ -31,6 +35,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import labdata  # noqa: E402
+from infisical_projects import project_id  # noqa: E402
 
 CONFIG_DIR = pathlib.Path.home() / ".config/artzima"
 ENV_FILES = [
@@ -114,7 +119,7 @@ def main(argv: list[str]) -> None:
         for var, folder, key, required in wanted:
             try:
                 s = c.secrets.get_secret_by_name(
-                    secret_name=key, project_id=cfg["infisical_project_id"],
+                    secret_name=key, project_id=project_id(cfg, folder),
                     environment_slug=cfg["infisical_env"], secret_path=folder,
                     expand_secret_references=False)
                 os.environ[var] = s.secretValue
@@ -125,8 +130,10 @@ def main(argv: list[str]) -> None:
     cfg = labdata.load_infisical()
     os.environ.setdefault("TF_VAR_infisical_host", cfg["infisical_host"])
     os.environ.setdefault("TF_VAR_infisical_env", cfg["infisical_env"])
-    if "REPLACE" not in str(cfg["infisical_project_id"]):
-        os.environ.setdefault("TF_VAR_infisical_project_id", cfg["infisical_project_id"])
+    for key in ("infisical_project_id", "infisical_k8s_project_id"):
+        if "REPLACE" not in str(cfg[key]):
+            os.environ.setdefault(f"TF_VAR_{key}", str(cfg[key]))
+    os.environ.setdefault("TF_VAR_infisical_k8s_project_slug", str(cfg["infisical_k8s_project_slug"]))
     # ESO credentials only reach a command that asked for them explicitly (make eso-bootstrap).
     requested = {var for var, _, _, _ in wanted}
     for k in [k for k in os.environ if k.startswith("ESO_") and k not in requested]:

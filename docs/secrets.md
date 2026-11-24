@@ -39,7 +39,7 @@ Proxmox tokens, the PBS fingerprint, the ESO identity) are written by the `make`
 | File (path override) | Holds |
 |---|---|
 | `~/.config/artzima/infisical.env` (`ARTZIMA_INFISICAL_ENV`) | admin identity: `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`, `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` (mode 600) |
-| `~/.config/artzima/infisical-project.env` (`ARTZIMA_INFISICAL_PROJECT`) | `INFISICAL_HOST`, `INFISICAL_PROJECT_ID`, `INFISICAL_PROJECT_SLUG`, `INFISICAL_ENV` |
+| `~/.config/artzima/infisical-project.env` (`ARTZIMA_INFISICAL_PROJECT`) | `INFISICAL_HOST`, `INFISICAL_PROJECT_ID`, `INFISICAL_PROJECT_SLUG`, `INFISICAL_ENV`, and the cluster's project: `INFISICAL_K8S_PROJECT_ID`, `INFISICAL_K8S_PROJECT_SLUG` |
 | `./local.env` (`ARTZIMA_LOCAL_ENV`, gitignored, optional) | private overrides; not needed for the normal flow |
 
 The values are passed to Ansible, OpenTofu and the answer server without printing
@@ -53,7 +53,7 @@ ConfigMap. The tracked YAML contains fictional CI settings only. See
 `make dr-pdf`) lists the few items that must also exist printed/offline: Infisical's own recovery
 codes, the restic passwords, the state passphrase, a Backblaze read-all key, and other accounts'
 recovery codes. If Infisical itself is lost while the cluster runs, `make dr-secrets-from-cluster`
-copies the cluster's values into a new project
+copies the cluster's values into new projects
 ([disaster recovery](disaster-recovery.md#emergency-kit)).
 
 ## Checking what's missing
@@ -62,6 +62,7 @@ copies the cluster's values into a new project
 make secrets-check     # which keys are missing in Infisical (names only, never values)
 make secrets-folders   # create the folder layout (folders only)
 make gen-secrets       # create every missing GENERATED key (GEN_ARGS=--dry-run lists them)
+make secrets-migrate-k8s   # ONE-TIME: /k8s/** from the main project into the cluster's project (below)
 make preflight PREFLIGHT_ARGS=--accounts-only   # PASS/FAIL: are all of YOUR keys there?
 ```
 
@@ -69,15 +70,29 @@ Both work from [`secrets.manifest.yaml`](../secrets.manifest.yaml), the machine-
 every folder and key. `make lint` checks offline that the manifest matches exactly what the code references.
 `secrets-check` lists names with values hidden (`view_secret_value=False`), in sections:
 "MISSING: you provide these", "not generated yet: run `make gen-secrets`", "pending (automation
-writes these)". It exits 1 while one of yours is missing or a generated one doesn't exist yet.
+writes these)". Every folder is checked in the project that holds it. It exits 1 while one of yours
+is missing, a generated one doesn't exist yet, or a mirror (the cluster's copy of `PUBLIC_DOMAIN`)
+differs from its source; old `/k8s` copies left in the main project are listed as a reminder.
 Each key's `by:` (operator / generated / automation) and `generate:` recipe is in the manifest.
 
-## Project layout
+## Project layout: two projects
 
 - **Organization:** yours (free Infisical Cloud plan).
-- **Project:** slug `example-project` (Secrets Management). The ID is in your local project file.
-- **Environment:** `prod` (one environment; the default `dev`/`staging` stay empty).
-- **One folder per area** (already created in `prod` by `make secrets-folders`):
+- **Two projects** (Secrets Management), because the free plan refuses custom roles
+  ("Failed to create custom role due to plan RBAC restriction"): the only read-only role is the
+  built-in **Viewer**, which reads a whole project. So the cluster gets its own project:
+
+  | Project | Slug (example) | Holds | Who reads it |
+  |---|---|---|---|
+  | **main** | `example-project` | `/settings`, `/bare-metal`, `/ansible`, `/tofu`, `/operator`: root credentials, OpenTofu/Ansible inputs, people's logins | `artzima-admin` only |
+  | **k8s** | `example-k8s-project` | **only** `/k8s/**`: what the cluster reads, incl. `/k8s/settings/PUBLIC_DOMAIN` (a copy of `/settings/PUBLIC_DOMAIN`) | `artzima-eso` (Viewer) and `artzima-admin` (Admin) |
+
+  The rule is in [`secrets.manifest.yaml`](../secrets.manifest.yaml) (`projects:`): a path under
+  `/k8s` is in the k8s project, everything else in main. Every tool follows it
+  (`scripts/infisical_projects.py`); `make lint` checks that OpenTofu and Ansible use the k8s
+  project for `/k8s` paths. The IDs are in your local project file.
+- **Environment:** `prod` in both (one environment; the default `dev`/`staging` stay empty).
+- **One folder per area** (created in the right project by `make secrets-folders`):
 
 ```
 /settings            private but NOT secret (may appear in OpenTofu state, cluster vars)
@@ -96,8 +111,30 @@ Each key's `by:` (operator / generated / automation) and `generate:` recipe is i
 /k8s/vpn              |  Surfshark WireGuard (gluetun)
 /k8s/vaultwarden      |  Vaultwarden admin token hash, backup passphrase, optional SMTP
 /k8s/paperless        |  Paperless-ngx secret key + initial admin
-/k8s/backup          /   off-site backups: B2 backup + maintenance keys (tofu/backblaze), restic password
+/k8s/backup          |   off-site backups: B2 backup + maintenance keys (tofu/backblaze), restic password
+/k8s/settings        /   the cluster's copy of PUBLIC_DOMAIN (make secrets-migrate-k8s keeps it equal)
 ```
+
+Everything above the `/k8s` lines lives in the **main** project, the `/k8s` folders in the **k8s**
+project.
+
+### One-time migration to two projects (2026-11-23)
+
+`make gen-secrets` and `make b2-apply` ran before the split, so the cluster's secrets were first
+written into the main project. `make secrets-migrate-k8s` moves them, once:
+
+- **dry run** (default): every `/k8s/**` secret of the main project with its action: *copy*,
+  *equal* (already there), *OpenTofu moves it*, or *CONFLICT* (present in the k8s project with a
+  different value: never overwritten). Names only.
+- `MIGRATE_ARGS=--apply`: creates the k8s project's folders, copies the missing secrets and the
+  `PUBLIC_DOMAIN` mirror, then re-reads both projects and compares SHA-256 digests in memory
+  (prints only equal/different). Re-running is safe.
+- `MIGRATE_ARGS=--delete-old`, a **separate** later run: re-verifies everything and only then
+  deletes the old copies from the main project. It refuses while anything is unverified.
+- The keys that OpenTofu writes under `/k8s` (the cluster's B2 keys, the tunnel token) are not
+  copied: the next `make b2-apply` / `make cf-apply` creates them in the k8s project and removes
+  the main copies itself.
+
 
 ## Every secret
 
@@ -168,18 +205,17 @@ The free plan allows a handful of machine identities (5 at the time of writing).
 
 | Identity | Created by | Project role | Used from | Credentials |
 |---|---|---|---|---|
-| `artzima-admin` (exists) | you, once | **Admin** (writes secrets; adds `artzima-eso` to the project). Organization role **Admin** or a custom role that may create identities | your admin workstation | `~/.config/artzima/infisical.env` |
-| `artzima-eso` | `tofu/bootstrap` (`make bootstrap`) | **Scoped read-only**: `/k8s/**` and `/settings/PUBLIC_DOMAIN` | the cluster (ESO) | Infisical `/tofu/ESO_CLIENT_*` → `make eso-bootstrap` |
+| `artzima-admin` (exists) | you, once | **Admin on both projects** (writes secrets; adds `artzima-eso` to the k8s project). Organization role that may create identities | your admin workstation | `~/.config/artzima/infisical.env` |
+| `artzima-eso` | `tofu/bootstrap` (`make bootstrap`) | built-in **Viewer** on the **k8s project only**; nothing in main, no org role | the cluster (ESO) | main project `/tofu/ESO_CLIENT_*` → `make eso-bootstrap` |
 
 Hardening (optional, recommended):
 
 - Universal Auth settings: a short **Access Token TTL** (e.g. 1 h for admin), and **Trusted IPs**.
   Set the admin identity to your home/Tailscale exit IP, and ESO to the lab's public egress IP
   (`artzima-eso`'s settings are in `tofu/bootstrap/main.tf`).
-- The free plan's project roles are project-wide, so `artzima-eso` can read every folder,
-  including `/ansible` and `/tofu`. If your plan offers custom roles or additional privileges,
-  limit it to `/k8s/**` plus `/settings/PUBLIC_DOMAIN`. Otherwise, move the `/k8s` folders into a
-  second project and point the `ClusterSecretStore` at it.
+- Viewer is project-wide, which is why the k8s project must hold nothing but `/k8s/**`. Never
+  put an operator secret there, and never add `artzima-eso` to the main project
+  (`tofu/bootstrap` refuses both: a precondition and a role validation).
 
 `local.env` (optional; copy [`local.env.example`](../local.env.example), then `chmod 600 local.env`) is
 gitignored, scanned for by `make check-public`, and refused by the pre-commit hook. The two
@@ -190,9 +226,10 @@ gitignored, scanned for by `make check-public`, and refused by the pre-commit ho
 The checklist with every click is [OPERATOR-SETUP](OPERATOR-SETUP.md); in short:
 
 1. `make deps`, `make hooks`; the bootstrap identity in `~/.config/artzima/`.
-2. `make secrets-folders`; put the five root credentials, `/settings` and `/k8s/vpn` in.
+2. The cluster's project exists ([OPERATOR-SETUP A2b](OPERATOR-SETUP.md#a2b-the-clusters-infisical-project)),
+   `make secrets-folders` (both projects); put the five root credentials, `/settings` and `/k8s/vpn` in.
    `make preflight PREFLIGHT_ARGS=--accounts-only` must PASS.
-3. `make bootstrap`: `gen-secrets` (every generated key), `ids-apply` (Tailscale keys, `artzima-eso`),
+3. `make bootstrap`: `gen-secrets` (every generated key, each in its project), `ids-apply` (Tailscale keys, `artzima-eso`),
    `b2-apply` (B2 keys), `cf-apply` (tunnel token). Afterwards `make secrets-check` lists only
    "pending" keys (`PBS_FINGERPRINT`, the Proxmox tokens).
 4. USB installs, `make preflight`, `make up`: Ansible writes `PBS_FINGERPRINT` and the Proxmox
@@ -228,7 +265,7 @@ The checklist with every click is [OPERATOR-SETUP](OPERATOR-SETUP.md); in short:
 
 | Place | What | Protection |
 |---|---|---|
-| Infisical | everything | Infisical's encryption, identity scoping, audit log |
+| Infisical (two projects) | everything; the cluster's identity sees only the k8s project | Infisical's encryption, identity scoping, audit log |
 | `tofu/terraform.tfstate`, `tofu/cloudflare/terraform.tfstate` (gitignored) | Talos machine secrets + client config, tunnel secret + token, `/settings` values | OpenTofu state **encryption** (AES-GCM, passphrase from Infisical). The Proxmox and Cloudflare API tokens are **not** in state (ephemeral) |
 | `tofu/out/kubeconfig`, `talosconfig` (gitignored) | cluster admin credentials | file mode 0600; keep the workstation disk encrypted |
 | `~/.config/artzima/infisical.env` | the admin identity | 0600; the key to everything, so treat it like a password-manager entry |
@@ -246,15 +283,16 @@ plus SOPS-leftover and gitignore checks), the pre-commit hook, and CI
 
 ### Runtime identity boundary
 
-Project-wide Viewer would let a compromised cluster read administrator credentials.
-The custom role permits only secret reads in the configured environment under
-`/k8s/**`, plus `/settings/PUBLIC_DOMAIN`. It has no write permissions and no
-access to `/tofu`, `/ansible`, `/operator` or other settings. See the
-[Infisical permission reference](https://infisical.com/docs/internals/permissions/project-permissions).
+The boundary is the **project**, not a role. `artzima-eso` has the built-in read-only Viewer
+role on the k8s project and no membership in the main project, so a compromised cluster can read
+only what the cluster already holds: `/k8s/**`. It cannot read `/tofu`, `/ansible`, `/operator`,
+`/bare-metal` or `/settings` (the root credentials, the restic passwords of the NAS, the state
+passphrase). It has no write permission anywhere. A custom role scoped to `/k8s/**` inside one
+project was the first design; Infisical's free plan refuses custom roles, so the cluster's secrets
+moved to their own project instead ([decisions](decisions.md#infisical-two-projects-2026-11-23)).
 
-During bootstrap, verify custom-role support and effective access. If unsupported,
-stop; never fall back to Viewer. Before installing the identity in Kubernetes, test
-one permitted runtime read and denied reads of `/tofu/B2_ADMIN_APPLICATION_KEY` and
-`/ansible/NAS_RESTIC_PASSWORD`. Offline plans cannot verify account permissions.
-The identity still reads runtime Tailscale OAuth and backup maintenance credentials;
-it does not isolate individual apps from each other.
+Limits, honestly: inside the k8s project, Viewer reads everything, so the identity still reads the
+Tailscale OAuth client and the backup maintenance keys, and apps are not isolated from each
+other. Before installing the identity in Kubernetes, check its effective access once: a read of
+a `/k8s` key in the k8s project succeeds, and a read of `/tofu/B2_ADMIN_APPLICATION_KEY` in the
+main project is denied. Offline plans cannot verify account permissions.
