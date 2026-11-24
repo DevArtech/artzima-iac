@@ -15,7 +15,7 @@ from USB installs through to running apps:
 | Host config, cluster, QDevice, storage, backups, UPS, Tailscale, API token | Ansible | `ansible/` |
 | VMs/LXCs: Talos ×3, Jellyfin, Tailscale routers ×2; Talos bootstrap | OpenTofu (bpg/proxmox, siderolabs/talos) | `tofu/` |
 | Kubernetes platform and apps | Flux + Helm | `k8s/` |
-| Media stack: Prowlarr, Sonarr, Radarr, Lidarr, Bazarr, qBittorrent (only via Surfshark, gluetun sidecar), Seerr, Recyclarr; wired to the Jellyfin LXC | Flux + app-template, one idempotent wiring Job | `k8s/apps/media/` ([below](#media-stack)) |
+| Media stack: Prowlarr, Sonarr, Radarr, Lidarr, Bazarr, qBittorrent (only via Surfshark, gluetun sidecar), SABnzbd (Usenet: UsenetServer + NZBGeek), Seerr, Recyclarr; wired to the Jellyfin LXC | Flux + app-template, one idempotent wiring Job | `k8s/apps/media/` ([below](#media-stack)) |
 | Paperless-ngx (**tailnet only**: `http://paperless`) with Valkey, Tika, Gotenberg, CNPG Postgres; nightly `document_exporter` | Flux + app-template, CNPG, CronJob | `k8s/apps/paperless/` ([manual steps §13](docs/manual-steps.md#13-paperless-ngx)) |
 | Off-site backups to Backblaze B2: buckets + scoped keys (OpenTofu), Postgres WAL/base (CNPG Barman Cloud plugin), volumes (VolSync restic), PBS (S3 datastore), NAS media + personal shares (Backrest/restic **on the NAS**) | OpenTofu, Flux, Ansible | `tofu/backblaze/`, `k8s/apps/backups/`, [`docs/backups.md`](docs/backups.md) |
 | Vaultwarden (`vault.<domain>`, never behind Access; `/admin` tailnet-only) on its own CNPG Postgres, nightly snapshot + encrypted NAS backup | Flux + app-template, CNPG, CronJob | `k8s/apps/vaultwarden/` ([manual steps §12](docs/manual-steps.md#12-vaultwarden)) |
@@ -258,7 +258,7 @@ Every step: [manual steps §10](docs/manual-steps.md#10-media-stack-arr--qbittor
 ```mermaid
 flowchart LR
   users(("Internet users")) -- "https://seerr.&lt;domain&gt;<br/>(Cloudflare → Traefik)" --> seerr
-  admin(("You, on the tailnet")) -- "Tailscale operator<br/>http://sonarr, radarr, lidarr,<br/>prowlarr, bazarr, qbittorrent" --> arr
+  admin(("You, on the tailnet")) -- "Tailscale operator<br/>http://sonarr, radarr, lidarr,<br/>prowlarr, bazarr, qbittorrent, sabnzbd" --> arr
   subgraph media["namespace media (Flux)"]
     seerr["Seerr<br/>(requests, Jellyfin sign-in)"]
     subgraph arr["tailnet only"]
@@ -267,19 +267,22 @@ flowchart LR
       subgraph pod["qbittorrent pod (one netns)"]
         qbt["qBittorrent<br/>bound to tun0"] --- gluetun["gluetun sidecar<br/>kill-switch: DROP except tunnel<br/>+ pod/service CIDRs"]
       end
+      sab["SABnzbd<br/>(Usenet, no VPN)"]
     end
     recyclarr["Recyclarr CronJob<br/>(TRaSH profiles, config in git)"]
     wiring["media-wiring Job<br/>(every Flux sync, idempotent)"]
   end
   seerr --> sonarr & radarr
-  sonarr & radarr & lidarr -- "category tv / movies / music" --> qbt
+  sonarr & radarr & lidarr -- "category tv / movies / music" --> qbt & sab
+  sab == "NNTP over TLS :563" ==> usenet(("UsenetServer"))
+  prowlarr -- "Newznab" --> nzbgeek(("NZBGeek"))
   gluetun == "WireGuard" ==> surfshark(("Surfshark"))
   recyclarr --> sonarr & radarr
-  wiring -. "APIs" .-> prowlarr & sonarr & radarr & lidarr & bazarr & qbt & seerr
+  wiring -. "APIs" .-> prowlarr & sonarr & radarr & lidarr & bazarr & qbt & sab & seerr
   sonarr & radarr & lidarr -- "Connect: refresh library" --> jellyfin["Jellyfin LXC (host01, GPU)"]
   seerr -- "auth + library" --> jellyfin
-  data[("NAS /volume1/Artzima/data<br/>torrents/{tv,movies,music} · media/{tv,movies,music}")]
-  qbt & sonarr & radarr & bazarr -- "/data (one RWX volume:<br/>hardlinks, atomic moves)" --> data
+  data[("NAS /volume1/Artzima/data<br/>torrents/{tv,movies,music} · usenet/… · media/{tv,movies,music}")]
+  qbt & sab & sonarr & radarr & bazarr -- "/data (one RWX volume:<br/>hardlinks, atomic moves)" --> data
   jellyfin -- "/data/media (read-only bind mount)" --> data
   infisical[("Infisical /k8s/media, /k8s/vpn")] -. "ESO" .-> media
 ```
@@ -447,7 +450,7 @@ itself always runs untagged; install on a native/untagged port.
 | Paperless (looked up 2026-11-23) | `ghcr.io/paperless-ngx/paperless-ngx:3.5.1`, `apache/tika:3.3.1.0`, `gotenberg/gotenberg:8.38.1` (both as upstream's compose), Valkey 9.2.0 (image `docker.io/valkey/valkey`, tag `9.2.0-alpine3.24`), exporter `registry.k8s.io/kubectl:v1.36.6` |
 | Off-site backups (looked up 2026-11-23) | Backrest `ghcr.io/garethgeorge/backrest:v1.14.1` (on the NAS), Backblaze/b2 provider = 0.14.1, CNPG plugin-barman-cloud chart 0.9.0 (plugin v0.16.0), VolSync chart 0.17.0, PBS ≥ 4.2 for S3 datastores |
 | Vaultwarden (looked up 2026-11-23) | `vaultwarden/server:1.37.5`, CNPG Postgres `ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie`, backup job `postgres:18.7-trixie` (pg_dump 18 + gpg) |
-| Media stack (looked up 2026-11-23) | Prowlarr `ghcr.io/home-operations/prowlarr:3.0.2.5780`, Lidarr `…/lidarr:3.1.6.5078` (upstream stable 3.1.6.5079; 3.2 is pre-release), Sonarr `…/sonarr:4.0.20.3012` (last v4 build of that image), Radarr `…/radarr:7.0.3.10918`, Bazarr `…/bazarr:1.6.2`, qBittorrent `…/qbittorrent:5.3.0`, gluetun `qmcgaw/gluetun:v3.41.3`, Seerr `ghcr.io/seerr-team/seerr:v3.5.2`, Recyclarr `ghcr.io/recyclarr/recyclarr:8.8.1`, FlareSolverr `ghcr.io/flaresolverr/flaresolverr:v3.5.2` (suspended), wiring/seed `python:3.14.10-alpine3.24` |
+| Media stack (looked up 2026-11-23) | Prowlarr `ghcr.io/home-operations/prowlarr:3.0.2.5780`, Lidarr `…/lidarr:3.1.6.5078` (upstream stable 3.1.6.5079; 3.2 is pre-release), Sonarr `…/sonarr:4.0.20.3012` (last v4 build of that image), Radarr `…/radarr:7.0.3.10918`, Bazarr `…/bazarr:1.6.2`, qBittorrent `…/qbittorrent:5.3.0`, SABnzbd `…/sabnzbd:5.1.3` (2026-11-24; 5.2.0 is RC), gluetun `qmcgaw/gluetun:v3.41.3`, Seerr `ghcr.io/seerr-team/seerr:v3.5.2`, Recyclarr `ghcr.io/recyclarr/recyclarr:8.8.1`, FlareSolverr `ghcr.io/flaresolverr/flaresolverr:v3.5.2` (suspended), wiring/seed `python:3.14.10-alpine3.24` |
 
 ## CI / lint
 

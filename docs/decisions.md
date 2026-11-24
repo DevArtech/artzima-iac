@@ -344,6 +344,12 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   They are rootless and run as any uid with a read-only root filesystem, without s6 or
   `PUID`/`PGID` root init. LSIO images need root at start. Sonarr is pinned to that image's
   **last v4 build** because the image now follows v5 pre-releases.
+- **Usenet (SABnzbd) without the VPN.** Only BitTorrent needs gluetun: a swarm sees every peer's IP
+  and every client uploads. Usenet is a plain client → provider download over TLS (port 563, strict
+  certificate check): no peers, no uploads, and the provider's TLS hides the content from the ISP.
+  SABnzbd downloads into `/data/usenet/{incomplete,complete/<category>}` on the same `/data` volume, so
+  the arrs' imports are atomic moves. It is wired over its API by the same Job (server, categories,
+  login); NZBGeek is a Prowlarr Newznab indexer synced to the apps like the others.
 - **qBittorrent only through Surfshark: gluetun as a sidecar.** One pod, one network
   namespace. gluetun owns the namespace's routes and iptables, and qBittorrent has no other way out.
   - **Kill-switch:** gluetun's firewall (default DROP) allows only the tunnel, the Talos pod and

@@ -374,6 +374,16 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **Media stack:** VPN check, Recyclarr, first logins
   ([manual steps §10.2-10.3](manual-steps.md#102-after-the-sync)). Existing rips: `make media-adopt`
   (dry-run), then `make media-adopt MEDIA_ADOPT_ARGS=--apply`.
+- [ ] **Usenet via SABnzbd (automated):** nothing to click. Keys in Infisical `/k8s/media`: yours
+  `NZBGEEK_API_KEY` and `USENET_HOST`/`_PORT`/`_USER`/`_PASSWORD` (UsenetServer), generated
+  `SABNZBD_API_KEY`. The wiring Job sets SABnzbd up (folders `/data/usenet/...`, categories
+  `tv`/`movies`/`music`, the news server with SSL and 20 connections, web login = the Jellyfin admin
+  login), adds SABnzbd as the Usenet download client of Sonarr/Radarr/Lidarr and NZBGeek to Prowlarr.
+  No VPN (TLS to the provider). Check: `kubectl -n media logs job/media-wiring | grep -i -e sabnzbd -e nzbgeek`
+  (*server test passed*), and <http://sabnzbd:8080> over Tailscale. **Renewal:** the UsenetServer and
+  NZBGeek subscriptions renew outside the lab; a lapsed one shows as a failed server test / failing
+  searches, and a changed password or key goes into Infisical, then re-run the wiring
+  ([manual steps §10.7](manual-steps.md#107-day-2)).
 - [ ] **Vaultwarden:** <http://vault-admin/admin> over Tailscale with `/operator/VAULTWARDEN_ADMIN_PASSWORD`,
   invite yourself, create the account (+2FA) at `https://vault.<domain>`
   ([manual steps §12.2](manual-steps.md#122-first-run)).
