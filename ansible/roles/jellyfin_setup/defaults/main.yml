@@ -55,6 +55,7 @@ jellyfin_setup_k8s_secrets:
   - { name: JELLYFIN_ADMIN_USER, var: jellyfin_admin_user, comment: "mirror of /operator/JELLYFIN_ADMIN_USER (ansible jellyfin_setup role)" }
   - { name: JELLYFIN_ADMIN_PASSWORD, var: jellyfin_admin_password, comment: "mirror of /operator/JELLYFIN_ADMIN_PASSWORD (ansible jellyfin_setup role)" }
 
-# Web theme (Dashboard > General > Custom CSS). The operator chose Finimalism on 2026-11-24
-# (github.com/tedhinklater/finimalism; Finimalism12.css is the Jellyfin 12.x build). Empty = no theme.
-jellyfin_setup_custom_css: '@import url("https://cdn.jsdelivr.net/gh/tedhinklater/finimalism@main/Finimalism12.css");'
+# Web theme (Dashboard > Branding > Custom CSS). The operator chose Zombie on 2026-11-24
+# (github.com/MakD/zombie-release, built for Jellyfin 12; Finimalism didn't look right). Optional colour
+# schemes go on extra @import lines (see its README). Empty = no theme.
+jellyfin_setup_custom_css: '@import url(https://cdn.jsdelivr.net/gh/MakD/zombie-release@latest/zombie_revived.css);'
