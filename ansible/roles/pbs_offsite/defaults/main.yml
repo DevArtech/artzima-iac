@@ -1,6 +1,6 @@
 ---
 # Settings live in ansible/group_vars/all/backups.yml (pbs_b2_*, b2_*).
-pbs_offsite_endpoint_id: b2
+pbs_offsite_endpoint_id: backblaze # PBS ids need >= 3 characters
 pbs_offsite_sync_job_id: "{{ pbs_b2_datastore }}-sync"
 pbs_offsite_prune_job_id: "{{ pbs_b2_datastore }}-prune"
 # Re-creating PBS after losing the box: true attaches the EXISTING datastore in the

@@ -10,9 +10,15 @@
 #   pbs_datastore_format_disk: true               (build day only; back to false afterwards)
 #   pbs_datastore_format_confirm_serial: <serial>  (pinned to exactly this disk)
 # Both in hosts.yml. The role refuses if the confirmation, pbs_datastore_disk_serial and the
-# serial the attached disk reports are not identical. After formatting, the filesystem gets the
-# label pbs_datastore_fs_label; a disk with that label, or an already registered datastore, is
-# never formatted again, even if the flag was left true (it warns instead).
+# serial the attached disk reports are not identical. Formatting makes a GPT with two ext4
+# partitions: p1 the datastore (the rest of the disk, label pbs_datastore_fs_label, mounted at
+# pbs_datastore_mount, the datastore at its root) and p2 the S3/B2 cache
+# (pbs_datastore_cache_gib, label pbs_datastore_cache_fs_label, mounted at
+# pbs_datastore_cache_mount); both by UUID in fstab with nofail. A disk with both labels is
+# never formatted again, even if the flag was left true (it warns instead). A disk in the OLD
+# layout (the datastore label only, no cache partition) is re-partitioned only with the
+# confirmed opt-in: the registered datastore is put offline and removed from PBS first, then
+# the disk is wiped and the datastore re-created empty. Without the opt-in the role refuses.
 # The disk holding / is never a candidate, except in the shared-disk mode:
 #   pbs_os_on_datastore_disk: true   (the OS and the datastore are on the SAME disk)
 # Then the disk MUST hold / and is never wiped or partitioned as a whole: datastore_lv.yml
@@ -87,34 +93,100 @@
   ansible.builtin.include_tasks: datastore_lv.yml
   when: pbs_dsk_shared
 
+# Labels come from udev's database; a label written while the filesystem was in use can be
+# missing there (lsblk then shows none). A change event makes udev read the disk again.
+- name: Refresh udev's view of the disk and its partitions
+  ansible.builtin.command: udevadm trigger --action=change --settle --parent-match={{ pbs_dsk_dev }}
+  when: not pbs_dsk_shared
+  changed_when: false
+
 - name: List the filesystems on the disk
-  ansible.builtin.command: lsblk -J -l -o NAME,FSTYPE,UUID,LABEL,MOUNTPOINT,TYPE {{ pbs_dsk_dev }}
+  ansible.builtin.command: lsblk -J -l -o NAME,PATH,FSTYPE,UUID,LABEL,PARTLABEL,MOUNTPOINT,TYPE {{ pbs_dsk_dev }}
   register: pbs_dsk_fs_raw
   changed_when: false
 
-- name: Decide whether to format (opted in, confirmed, and not formatted by this repo before)
+- name: Which of this repo's filesystems are on the disk
   ansible.builtin.set_fact:
+    pbs_dsk_bd: "{{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices }}"
     pbs_dsk_ours: >-
       {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices | selectattr('label', 'equalto', pbs_datastore_fs_label)
          | list | length > 0 }}
+    pbs_dsk_has_cache: >-
+      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices | selectattr('label', 'equalto', pbs_datastore_cache_fs_label)
+         | list | length > 0 }}
+    pbs_dsk_cache_wanted: "{{ (pbs_datastore_cache_gib | int) > 0 and not pbs_dsk_shared }}"
+
+# Layouts (whole-disk mode):
+#   NEW    datastore filesystem (label pbs_datastore_fs_label) + cache filesystem
+#          (label pbs_datastore_cache_fs_label): reused as they are, never formatted again.
+#   OLD    the labelled datastore filesystem but no cache partition (built before the cache
+#          existed): re-partitioned ONLY with the confirmed one-time opt-in (it erases the
+#          datastore); otherwise the role refuses.
+#   FRESH  no labelled filesystem: formatted with the confirmed opt-in (both partitions).
+- name: Decide whether to wipe the disk (fresh format, or re-partition the old layout)
+  ansible.builtin.set_fact:
+    pbs_dsk_old_layout: "{{ pbs_dsk_cache_wanted and pbs_dsk_ours and not pbs_dsk_has_cache }}"
     pbs_dsk_format: >-
       {{ pbs_dsk_optin and pbs_dsk_confirmed and not (pbs_has_datastore | default(false) | bool)
-         and not ((pbs_dsk_fs_raw.stdout | from_json).blockdevices
-                  | selectattr('label', 'equalto', pbs_datastore_fs_label) | list | length > 0) }}
+         and not pbs_dsk_ours and not pbs_dsk_has_cache }}
+    pbs_dsk_repartition: >-
+      {{ pbs_dsk_optin and pbs_dsk_confirmed and pbs_dsk_cache_wanted and pbs_dsk_ours and not pbs_dsk_has_cache }}
 
-- name: One-time only - the flag is still true, but this disk was already formatted for the lab
+- name: Wipe = format or re-partition
+  ansible.builtin.set_fact:
+    pbs_dsk_wipe: "{{ pbs_dsk_format or pbs_dsk_repartition }}"
+
+- name: A cache filesystem needs the datastore filesystem next to it
+  ansible.builtin.assert:
+    that:
+      - not pbs_dsk_has_cache or pbs_dsk_ours
+    fail_msg: >-
+      {{ pbs_dsk_dev }} has the cache filesystem {{ pbs_datastore_cache_fs_label }} but no filesystem labelled
+      {{ pbs_datastore_fs_label }}. Check the disk by hand; nothing was changed.
+
+- name: The cache partition must exist (or be created now with the confirmed opt-in)
+  ansible.builtin.assert:
+    that:
+      - not pbs_dsk_cache_wanted or pbs_dsk_has_cache or pbs_dsk_wipe
+    fail_msg: >-
+      {{ pbs_dsk_dev }} (serial {{ pbs_datastore_disk_serial }}) has no cache partition
+      ({{ pbs_datastore_cache_fs_label }}, {{ pbs_datastore_cache_gib }} GiB for pbs_b2_cache_path).
+      {{ ('It holds the OLD single-partition layout (' ~ pbs_datastore_fs_label ~ ' only).') if pbs_dsk_ours
+         else 'It was not formatted by this repo.' }}
+      Re-partitioning ERASES the datastore on it. To do it, once: in hosts.yml set pbs_datastore_format_disk: true
+      and pbs_datastore_format_confirm_serial: {{ pbs_datastore_disk_serial }}, run make pbs, then set the flag
+      back to false (docs/OPERATOR-SETUP.md). Or keep the disk as it is with pbs_datastore_cache_gib: 0 and put
+      pbs_b2_cache_path on another disk. Nothing was changed.
+
+- name: Re-partition only a disk that holds nothing but the old datastore filesystem
+  ansible.builtin.assert:
+    that:
+      - pbs_dsk_bd | selectattr('type', 'equalto', 'part') | list | length <= 1
+      - pbs_dsk_bd | selectattr('fstype') | map(attribute='label') | list == [pbs_datastore_fs_label]
+    fail_msg: >-
+      {{ pbs_dsk_dev }} holds more than the old datastore filesystem:
+      {{ pbs_dsk_bd | map(attribute='name') | zip(pbs_dsk_bd | map(attribute='fstype'), pbs_dsk_bd | map(attribute='label')) | list }}.
+      Check by hand; nothing was changed.
+  when: pbs_dsk_repartition
+
+- name: One-time only - the flag is still true, but this disk already has the lab's layout
   ansible.builtin.debug:
     msg: >-
-      NOT formatting {{ pbs_dsk_dev }} again: {{ 'its filesystem has the label ' ~ pbs_datastore_fs_label
-      if pbs_dsk_ours else 'datastore ' ~ pbs_datastore_name ~ ' is already registered' }}. It is reused.
+      NOT formatting {{ pbs_dsk_dev }} again: {{ 'its filesystems are labelled ' ~ pbs_datastore_fs_label
+      ~ (' and ' ~ pbs_datastore_cache_fs_label if pbs_dsk_has_cache else '') if pbs_dsk_ours
+      else 'datastore ' ~ pbs_datastore_name ~ ' is already registered' }}. They are reused.
       Set pbs_datastore_format_disk back to false in hosts.yml (docs/OPERATOR-SETUP.md).
-  when: pbs_dsk_optin and not pbs_dsk_format
+  when: pbs_dsk_optin and not pbs_dsk_wipe
 
-- name: Usable filesystems on it
+- name: Usable filesystems on it (the labelled datastore one if present; never the cache)
+  vars:
+    pbs_dsk_usable: >-
+      {{ pbs_dsk_bd | selectattr('fstype', 'in', pbs_datastore_fs_types)
+         | rejectattr('label', 'equalto', pbs_datastore_cache_fs_label) | list }}
   ansible.builtin.set_fact:
     pbs_dsk_fs_all: >-
-      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices
-         | selectattr('fstype', 'in', pbs_datastore_fs_types) | list }}
+      {{ pbs_dsk_usable | selectattr('label', 'equalto', pbs_datastore_fs_label) | list
+         if pbs_dsk_ours else pbs_dsk_usable }}
 
 - name: Narrow to pbs_datastore_fs_uuid, if set
   ansible.builtin.set_fact:
@@ -180,13 +252,15 @@
 - name: What formatting will ERASE on this disk
   ansible.builtin.debug:
     msg: >-
-      FORMATTING {{ pbs_dsk_dev }} (serial {{ pbs_dsk_matches[0].serial }}, confirmed): erasing filesystems
-      {{ (pbs_dsk_fs_raw.stdout | from_json).blockdevices | rejectattr('fstype', 'none') | map(attribute='fstype') | list }}
-      and the datastores on it {{ pbs_dsk_stores }}.
-  when: pbs_dsk_format
+      {{ 'RE-PARTITIONING' if pbs_dsk_repartition else 'FORMATTING' }} {{ pbs_dsk_dev }}
+      (serial {{ pbs_dsk_matches[0].serial }}, confirmed): erasing filesystems
+      {{ pbs_dsk_bd | rejectattr('fstype', 'none') | map(attribute='fstype') | list }}
+      and the datastores on it {{ pbs_dsk_stores }}{{ (' (registered as ' ~ pbs_datastore_name ~ ': removed first)')
+      if pbs_has_datastore | default(false) | bool else '' }}.
+  when: pbs_dsk_wipe
 
 - name: One datastore, or the chosen sub-folder
-  when: not pbs_dsk_format
+  when: not pbs_dsk_wipe
   ansible.builtin.assert:
     that:
       - pbs_dsk_stores | length <= 1 or pbs_datastore_subdir is not none
@@ -198,58 +272,171 @@
 - name: Without a usable filesystem, formatting must be requested explicitly
   ansible.builtin.assert:
     that:
-      - pbs_dsk_fs | length == 1 or pbs_dsk_format
+      - pbs_dsk_fs | length == 1 or pbs_dsk_wipe
     fail_msg: >-
       {{ pbs_dsk_dev }} (serial {{ pbs_datastore_disk_serial }}) has no {{ pbs_datastore_fs_types }} filesystem.
       To FORMAT it (all data on it is lost), once: in hosts.yml set pbs_datastore_format_disk: true and
       pbs_datastore_format_confirm_serial: {{ pbs_datastore_disk_serial }} (docs/OPERATOR-SETUP.md).
 
-# ------------------------------------------------------------------ format (one-time opt-in only)
-- name: Format the disk as a new datastore (opted in and confirmed for this serial)
-  when: pbs_dsk_format
+# ------------------------------------------------------------------ wipe + partition (one-time opt-in only)
+# Tasks here register under their own names: a skipped task would overwrite a shared register.
+- name: Format the disk as datastore + cache (opted in and confirmed for this serial; ERASES it)
+  when: pbs_dsk_wipe
   block:
-    - name: Wipe partition and filesystem signatures (partitions first, then the disk)
+    - name: Running PBS tasks
+      ansible.builtin.command: proxmox-backup-manager task list --output-format json
+      register: pbs_dsk_tasks
+      changed_when: false
+
+    - name: No running task may use the datastore (backup, GC, prune, verify, sync)
+      ansible.builtin.assert:
+        that:
+          - pbs_dsk_busy | length == 0
+        fail_msg: "Tasks still running on {{ pbs_datastore_name }}: {{ pbs_dsk_busy }}. Retry when they are done; nothing was changed."
+      vars:
+        pbs_dsk_busy: >-
+          {{ pbs_dsk_tasks.stdout | from_json | map(attribute='worker_id') | map('default', '', true)
+             | select('match', '^' ~ pbs_datastore_name ~ '(:|$)') | list }}
+
+    - name: Put the datastore offline (no new backups or jobs start on it)
+      ansible.builtin.command: >-
+        proxmox-backup-manager datastore update {{ pbs_datastore_name }} --maintenance-mode type=offline
+      when: pbs_has_datastore | default(false) | bool
+      changed_when: true
+
+    # Also removes its prune/verify jobs; the role re-creates all of it on the fresh filesystem.
+    - name: Remove the datastore from PBS (configuration only; the wipe below erases the data)
+      ansible.builtin.command: proxmox-backup-manager datastore remove {{ pbs_datastore_name }}
+      when: pbs_has_datastore | default(false) | bool
+      changed_when: true
+
+    - name: Name of the mount unit PBS creates for its datastores (disk fs create)
+      ansible.builtin.command: systemd-escape --path --suffix=mount {{ pbs_datastore_mount }}
+      register: pbs_dsk_unit_name
+      changed_when: false
+
+    - name: Is there such a unit?
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ pbs_dsk_unit_name.stdout }}"
+      register: pbs_dsk_unit_file
+
+    # It mounts the OLD filesystem by UUID and would shadow the fstab entry written below.
+    - name: Stop and disable PBS's mount unit
+      ansible.builtin.systemd_service:
+        name: "{{ pbs_dsk_unit_name.stdout }}"
+        state: stopped
+        enabled: false
+      when: pbs_dsk_unit_file.stat.exists
+
+    - name: Remove PBS's mount unit
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ pbs_dsk_unit_name.stdout }}"
+        state: absent
+      when: pbs_dsk_unit_file.stat.exists
+
+    - name: Reload systemd after removing the unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: pbs_dsk_unit_file.stat.exists
+
+    - name: Unmount the disk's filesystems (fstab is rewritten below)
+      ansible.posix.mount:
+        path: "{{ item.mountpoint }}"
+        state: unmounted
+      loop: "{{ pbs_dsk_bd | selectattr('mountpoint') | selectattr('mountpoint', 'match', '^/.') | list }}"
+      loop_control:
+        label: "{{ item.path }} {{ item.mountpoint }}"
+
+    - name: Last look before erasing
+      ansible.builtin.command: lsblk -J -l -o PATH,TYPE,SERIAL,MOUNTPOINT {{ pbs_dsk_dev }}
+      register: pbs_dsk_last
+      changed_when: false
+
+    - name: Still the confirmed disk, and nothing on it is mounted
+      ansible.builtin.assert:
+        that:
+          - ((pbs_dsk_last.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | first).serial
+            == (pbs_datastore_format_confirm_serial | string)
+          - (pbs_dsk_last.stdout | from_json).blockdevices | selectattr('mountpoint') | list | length == 0
+          - pbs_dsk_dev | basename not in pbs_dsk_root.stdout_lines
+        fail_msg: "{{ pbs_dsk_dev }} changed or is still in use: {{ pbs_dsk_last.stdout }}. Nothing was erased."
+
+    - name: Wipe partition and filesystem signatures and the partition table
       ansible.builtin.shell: >-
         set -o pipefail;
         lsblk -n -r -o PATH,TYPE {{ pbs_dsk_dev }} | awk '$2 == "part" {print $1}' | xargs -r wipefs --all &&
-        wipefs --all {{ pbs_dsk_dev }} && udevadm settle
+        wipefs --all {{ pbs_dsk_dev }} && sgdisk --zap-all {{ pbs_dsk_dev }} && udevadm settle
       args:
         executable: /bin/bash
       changed_when: true
 
-    - name: Create the filesystem, its mount unit and the datastore (PBS)
-      ansible.builtin.command: >-
-        proxmox-backup-manager disk fs create {{ pbs_datastore_name }}
-        --disk {{ pbs_dsk_dev | basename }} --filesystem ext4 --add-datastore true
-      changed_when: true
-
-    - name: Find the new partition
+    - name: GPT - datastore (the rest of the disk), then the cache (pbs_datastore_cache_gib, at the end)
       ansible.builtin.shell: >-
-        set -o pipefail;
-        lsblk -n -r -o PATH,TYPE,FSTYPE {{ pbs_dsk_dev }} | awk '$2 == "part" && $3 == "ext4" {print $1}'
-      args:
-        executable: /bin/bash
-      register: pbs_dsk_newpart
+        sgdisk -n 1:0:{{ ('-' ~ (pbs_datastore_cache_gib | int) ~ 'G') if pbs_dsk_cache_wanted else '0' }}
+        -t 1:8300 -c 1:{{ pbs_datastore_part_name | quote }}
+        {{ ('-n 2:0:0 -t 2:8300 -c 2:' ~ (pbs_datastore_cache_part_name | quote)) if pbs_dsk_cache_wanted else '' }}
+        {{ pbs_dsk_dev }} && partx -u {{ pbs_dsk_dev }} && udevadm settle
+      changed_when: true
+
+    - name: Find the new partitions by their GPT names
+      ansible.builtin.command: lsblk -J -l -o PATH,TYPE,PARTLABEL {{ pbs_dsk_dev }}
+      register: pbs_dsk_newparts
       changed_when: false
 
-    - name: Exactly one new ext4 partition
+    - name: The new partitions
+      ansible.builtin.set_fact:
+        pbs_dsk_new_data: >-
+          {{ (pbs_dsk_newparts.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'part')
+             | selectattr('partlabel', 'equalto', pbs_datastore_part_name) | map(attribute='path') | list }}
+        pbs_dsk_new_cache: >-
+          {{ (pbs_dsk_newparts.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'part')
+             | selectattr('partlabel', 'equalto', pbs_datastore_cache_part_name) | map(attribute='path') | list }}
+
+    - name: Exactly the expected partitions
       ansible.builtin.assert:
         that:
-          - pbs_dsk_newpart.stdout_lines | length == 1
-        fail_msg: "Unexpected layout after formatting {{ pbs_dsk_dev }}: {{ pbs_dsk_newpart.stdout_lines }}"
+          - pbs_dsk_new_data | length == 1
+          - pbs_dsk_new_cache | length == (1 if pbs_dsk_cache_wanted else 0)
+        fail_msg: "Unexpected layout after partitioning {{ pbs_dsk_dev }}: {{ pbs_dsk_newparts.stdout }}"
 
-    - name: Label it, so this disk is never formatted again by the opt-in
-      ansible.builtin.command: e2label {{ pbs_dsk_newpart.stdout_lines[0] }} {{ pbs_datastore_fs_label }}
+    - name: Create the filesystems (labelled, so they are never formatted again)
+      ansible.builtin.shell: >-
+        wipefs --all {{ item.dev }} && mkfs.ext4 -q -L {{ item.label | quote }} {{ item.dev }}
+      loop: >-
+        {{ [{'dev': pbs_dsk_new_data[0], 'label': pbs_datastore_fs_label}]
+           + ([{'dev': pbs_dsk_new_cache[0], 'label': pbs_datastore_cache_fs_label}] if pbs_dsk_cache_wanted else []) }}
+      loop_control:
+        label: "{{ item.dev }} {{ item.label }}"
       changed_when: true
 
-    - name: The datastore path is the PBS mount point
+    - name: Let udev read the new filesystems
+      ansible.builtin.command: udevadm trigger --action=change --settle --parent-match={{ pbs_dsk_dev }}
+      changed_when: false
+
+    - name: List the new filesystems
+      ansible.builtin.command: lsblk -J -l -o NAME,PATH,FSTYPE,UUID,LABEL,PARTLABEL,MOUNTPOINT,TYPE {{ pbs_dsk_dev }}
+      register: pbs_dsk_fs_new
+      changed_when: false
+
+    - name: Use the fresh filesystem; the datastore goes to its root
       ansible.builtin.set_fact:
-        pbs_datastore_path: "/mnt/datastore/{{ pbs_datastore_name }}"
+        pbs_dsk_bd: "{{ (pbs_dsk_fs_new.stdout | from_json).blockdevices }}"
+        pbs_dsk_fs: >-
+          {{ (pbs_dsk_fs_new.stdout | from_json).blockdevices
+             | selectattr('label', 'equalto', pbs_datastore_fs_label) | list }}
+        pbs_dsk_stores: []
         pbs_dsk_created: true
+        pbs_has_datastore: false
+
+    - name: The new datastore filesystem is visible
+      ansible.builtin.assert:
+        that:
+          - pbs_dsk_fs | length == 1
+          - pbs_dsk_fs[0].uuid | default('', true) | length > 0
+        fail_msg: "{{ pbs_datastore_fs_label }} not found after formatting {{ pbs_dsk_dev }}: {{ pbs_dsk_fs_new.stdout }}"
 
 # ------------------------------------------------------------------ mount + reuse/create
-- name: Mount the existing filesystem permanently by UUID and use it
-  when: not pbs_dsk_format
+- name: Mount the datastore filesystem permanently by UUID and use it
   block:
     - name: Mount by UUID (nofail; PBS still boots without the USB disk)
       when: pbs_dsk_fs[0].mountpoint != pbs_datastore_mount # already there (e.g. PBS's own mount unit)
@@ -259,15 +446,20 @@
         fstype: "{{ pbs_dsk_fs[0].fstype }}"
         opts: "{{ pbs_datastore_mount_opts }}"
         state: mounted
+      notify: Reload systemd
 
+    # A filesystem this repo formatted (labelled) holds its datastore at the root, as PBS's own
+    # disk setup does; also when an interrupted run formatted it but never created the datastore.
     - name: The datastore path on the disk
       ansible.builtin.set_fact:
         pbs_datastore_path: >-
-          {{ pbs_datastore_mount ~ ('/' ~ pbs_datastore_subdir | regex_replace('^/', '') if pbs_datastore_subdir
+          {{ pbs_datastore_mount if (pbs_dsk_created | default(false) | bool or pbs_dsk_ours | bool)
+             and pbs_dsk_stores | length == 0 and not pbs_datastore_subdir
+             else pbs_datastore_mount ~ ('/' ~ pbs_datastore_subdir | regex_replace('^/', '') if pbs_datastore_subdir
              else (pbs_dsk_stores[0] if pbs_dsk_stores | length == 1 else '/' ~ pbs_datastore_name)) }}
         pbs_dsk_reuse: "{{ pbs_dsk_stores | length > 0 }}"
 
-    - name: Sub-folder for a NEW datastore (the disk had none)
+    - name: Folder for a NEW datastore (the disk had none)
       ansible.builtin.file:
         path: "{{ pbs_datastore_path }}"
         state: directory
@@ -275,3 +467,24 @@
         group: backup
         mode: "0750"
       when: not pbs_dsk_reuse
+
+# ------------------------------------------------------------------ S3 cache partition
+- name: Mount the cache partition (pbs_b2_cache_path lives below it)
+  when: pbs_dsk_cache_wanted
+  vars:
+    pbs_dsk_cache_fs: "{{ pbs_dsk_bd | selectattr('label', 'equalto', pbs_datastore_cache_fs_label) | list }}"
+  block:
+    - name: Exactly one cache filesystem
+      ansible.builtin.assert:
+        that:
+          - pbs_dsk_cache_fs | length == 1
+        fail_msg: "{{ pbs_dsk_dev }}: expected one filesystem labelled {{ pbs_datastore_cache_fs_label }}: {{ pbs_dsk_bd }}"
+
+    - name: Mount it by UUID (nofail)
+      ansible.posix.mount:
+        path: "{{ pbs_datastore_cache_mount }}"
+        src: "UUID={{ pbs_dsk_cache_fs[0].uuid }}"
+        fstype: "{{ pbs_dsk_cache_fs[0].fstype }}"
+        opts: "{{ pbs_datastore_mount_opts }}"
+        state: mounted
+      notify: Reload systemd

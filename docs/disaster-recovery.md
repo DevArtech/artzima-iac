@@ -303,17 +303,24 @@ For every machine in `ansible/hosts.yml` (host01, node01-03, pbs, artnas):
 - `install_disk` and **`install_disk_serial`** (in the installer's debug shell:
   `proxmox-auto-install-assistant device-info -t disk` and
   `udevadm info -q property -n /dev/<disk> | grep ^ID_SERIAL=`; a unique part is enough);
-- for pbs: the external USB disk holds **both the PBS OS and the local datastore** (the Proxmox
-  auto-installer cannot install onto the ZimaBoard's eMMC, which stays unused). Record its serial
-  (`lsblk -d -o NAME,SERIAL,TRAN`) in `pbs_datastore_disk_serial` **and** `install_disk_serial`, keep
-  `pbs_os_on_datastore_disk: true` and the small OS slice `install_lvm` (`hdsize`), as in
-  [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy). Keep the disk plugged in during the
-  PBS install. After the install, `make up` creates the datastore volume in the free rest of the disk
-  (once; later runs reuse it). `pbs_datastore_format_disk` has no effect in this mode; leave it `false`.
-  **Reinstalling PBS wipes that disk, local backups included.** What survives is the offsite copy in
-  Backblaze B2 (datastore `b2`, [backups](backups.md)). If the old USB disk survived and its local
-  backups are still needed, do **not** boot the automated install with it attached: decide first
-  (for example, install onto a new disk and keep the old one aside to read from).
+- for pbs: the OS runs from the ZimaBoard's **eMMC**; the external USB disk is the **datastore disk
+  only** (`pbs_os_on_datastore_disk: false`). Record the USB disk's serial
+  (`lsblk -d -o NAME,SERIAL,TRAN`) in `pbs_datastore_disk_serial`. The auto-installer could not finish
+  on the eMMC, so the 2026-11-23 build installed PBS onto the USB disk and copied its root and swap
+  volumes to the eMMC by hand ([OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)); a
+  rebuild repeats that, which **wipes the USB disk, local backups included**. What survives is the
+  offsite copy in Backblaze B2 (datastore `artzima-b2`, [backups](backups.md)). If the old USB disk
+  survived and its local backups are still needed, do **not** install onto it: decide first (for
+  example, install via a spare disk and keep the old one aside to read from).
+- the USB disk's layout (role `pbs`): a GPT with two ext4 partitions, both mounted by UUID in `/etc/fstab` with `nofail`:
+  p1 `artzima-pbs`, the rest of the disk, at `/mnt/datastore/<name>` (the local datastore is the
+  filesystem root), and p2 `artzima-pbscache` (GPT name `artzima-pbs-cache`; ext4 labels stop at
+  16 characters), `pbs_datastore_cache_gib` = 100 GiB at the end of the disk, at
+  `/mnt/datastore-cache`: the cache of the B2 datastore (`pbs_b2_cache_path`
+  `/mnt/datastore-cache/b2`).
+  After a reinstall, format it once with `pbs_datastore_format_disk: true` and
+  `pbs_datastore_format_confirm_serial` = its serial, run `make pbs`, then set the flag back to
+  `false`; a disk that already has both labels is reused and never formatted.
 
 For a first boot just to read these: boot the prepared USB stick (D7) and choose *Advanced Options →
 Install (Automated) with debug shell*; the answer server refuses unknown machines, so nothing is
@@ -541,7 +548,7 @@ delete it in the B2 web UI after 60 days (Object Lock keeps it 30 days anyway).
 
 ### E3. PBS (only if needed)
 
-Talos and the LXCs are rebuilt by code. The old vzdump backups are in datastore `b2`
+Talos and the LXCs are rebuilt by code. The old vzdump backups are in datastore `artzima-b2`
 (attached in D10); restore a guest from it only if you need its old state
 ([backups: PBS restore](backups.md#restore-runbook-pbs-from-b2-the-pbs-box-is-lost)).
 

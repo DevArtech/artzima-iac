@@ -161,7 +161,7 @@ nas_existing_backup:
 # ---------------------------------------------------------------- PBS -> B2
 # PBS 4.2+ S3 datastore on the B2 bucket, filled by a local sync job from the
 # local datastore (Ansible: make pbs-offsite).
-pbs_b2_datastore: b2 # also the object prefix in the bucket: keep it stable
+pbs_b2_datastore: artzima-b2 # also the object prefix in the bucket: keep it stable (PBS ids: >= 3 chars)
 # Local cache for the S3 datastore (PBS wants 64-128 GiB, NOT on the local datastore).
 pbs_b2_cache_path: /mnt/datastore-cache/b2
 pbs_b2_sync_schedule: "04:30"

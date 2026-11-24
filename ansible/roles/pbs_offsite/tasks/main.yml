@@ -1,7 +1,7 @@
 ---
 # PBS -> Backblaze B2 (docs/backups.md "PBS"). PBS 4.2+ can use an S3 bucket as a
 # datastore backend. This role:
-#   1. creates the S3 endpoint `b2` (Backblaze needs the skip-if-none-match-header quirk),
+#   1. creates the S3 endpoint `backblaze` (Backblaze needs the skip-if-none-match-header quirk),
 #   2. creates the S3-backed datastore pbs_b2_datastore (local cache at pbs_b2_cache_path),
 #   3. a LOCAL sync job (no --remote): local datastore -> S3 datastore, on a schedule,
 #   4. prune + GC on the S3 datastore (its own retention, independent of the local one).

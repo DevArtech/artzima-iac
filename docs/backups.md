@@ -157,7 +157,7 @@ Schedules and retention are variables in `backups.yml`. Restic and VolSync times
    kubectl -n vaultwarden get backups.postgresql.cnpg.io   # *-db-b2-* completed
    kubectl -n vaultwarden get cluster vaultwarden-db -o jsonpath='{.status.conditions}' | jq '.[] | select(.type=="ContinuousArchiving")'
    ```
-   PBS: *Datastore b2 → Content* lists the synced groups.
+   PBS: *Datastore artzima-b2 → Content* lists the synced groups.
 
 ## Postgres (CNPG + Barman Cloud plugin)
 
@@ -268,30 +268,33 @@ The values are in Infisical (`/k8s/backup`), and the endpoint and bucket are in 
 - **What PBS supports:** PBS **4.2** (April 2026) made **S3 datastores** fully supported; they
   were a tech preview in 4.0/4.1.
 - **What `make pbs-offsite` sets up:**
-  - an S3 endpoint `b2`: `{bucket}.s3.<region>.backblazeb2.com`, with the Backblaze quirk
+  - an S3 endpoint `backblaze`: `{bucket}.s3.<region>.backblazeb2.com`, with the Backblaze quirk
     `skip-if-none-match-header`;
-  - an S3-backed datastore `b2` in the **pbs** bucket, with a local cache at `pbs_b2_cache_path`;
-  - a **local sync job** (pull, no remote) from the local datastore `artzima` to `b2` at 04:30;
-  - a prune job (7/4/6) and a weekly GC on `b2`.
+  - an S3-backed datastore `artzima-b2` (`pbs_b2_datastore`) in the **pbs** bucket, with a local
+    cache at `pbs_b2_cache_path`;
+  - a **local sync job** (pull, no remote) from the local datastore `artzima` to `artzima-b2` at 04:30;
+  - a prune job (7/4/6) and a weekly GC on `artzima-b2`.
+  - (PBS ids need at least 3 characters, so the first names, `b2`, were refused.)
 - **The sync job keeps the bucket's own history:** it uses `--remove-vanished false`, so a mistake
-  on the local datastore isn't mirrored into the bucket. Pruning `b2` is separate.
-- **Local datastore:** on the ZimaBoard's external USB disk, found by `pbs_datastore_disk_serial`.
-  That disk also holds the PBS OS (`pbs_os_on_datastore_disk: true`; the auto-installer cannot use the
-  eMMC): the installer puts the OS in a small slice, and the role `pbs` creates the logical volume
-  `datastore` in the free rest of the volume group `pbs` (ext4, label `artzima-pbs`, created once and
-  never reformatted; `tasks/datastore_lv.yml`), mounted by UUID at `/mnt/datastore/<name>`.
-  **Reinstalling PBS wipes this disk, local backups included**; B2 keeps the offsite copy.
-  Without that flag (a dedicated datastore disk): an existing datastore on it is reused, and
-  formatting is a **one-time opt-in** for the first build: `pbs_datastore_format_disk: true` plus
-  `pbs_datastore_format_confirm_serial` pinned to that disk's serial (refused on any mismatch). After it,
-  the filesystem is labelled `artzima-pbs` and never formatted again; set the flag back to `false`
+  on the local datastore isn't mirrored into the bucket. Pruning `artzima-b2` is separate.
+- **Disk layout:** the PBS OS is on the ZimaBoard's eMMC (~24 GiB root). The external USB disk,
+  found by `pbs_datastore_disk_serial`, is the datastore disk only: a GPT with two ext4 partitions, both mounted by UUID in `/etc/fstab` with `nofail`:
+  p1 `artzima-pbs`, the rest of the disk, at `/mnt/datastore/<name>` (the local datastore is the
+  filesystem root), and p2 `artzima-pbscache` (GPT name `artzima-pbs-cache`; ext4 labels stop at
+  16 characters), `pbs_datastore_cache_gib` = 100 GiB at the end of the disk, at
+  `/mnt/datastore-cache`: the cache of the B2 datastore (`pbs_b2_cache_path`
+  `/mnt/datastore-cache/b2`).
+  Formatting is a **one-time opt-in**: `pbs_datastore_format_disk: true` plus
+  `pbs_datastore_format_confirm_serial` pinned to that disk's serial (refused on any mismatch);
+  afterwards both filesystems are labelled and never formatted again; set the flag back to `false`
   (role `pbs`, `tasks/datastore_disk.yml`; [OPERATOR-SETUP B1](OPERATOR-SETUP.md#b1-install-and-deploy)).
-  The first build starts this datastore **empty** (the operator chose to wipe the old disk).
-- **Local cache:** PBS wants **64-128 GiB** for it, ideally on its own disk or partition. It may
-  **not** be the local datastore. The PBS root filesystem (~32 GiB) is too small. Use a folder on
-  the USB disk **outside** the datastore folder (possible when the datastore sits in a sub-folder of
-  that filesystem), or a second disk. Set `pbs_b2_cache_path` accordingly. `make pbs-offsite`
-  **refuses** with less than `pbs_offsite_cache_min_free_gib` (64) free, or a path inside the datastore.
+  A disk in the old single-partition layout is re-partitioned only with that opt-in, which **erases
+  the local datastore** (it was done on 2026-11-24 and restarted the datastore empty); without it the
+  role refuses.
+- **Local cache:** PBS wants **64-128 GiB** for it, on its own disk or partition, and it may **not**
+  be inside the local datastore. The eMMC root is too small, hence the cache partition above.
+  `make pbs-offsite` **refuses** with less than `pbs_offsite_cache_min_free_gib` (64) free, or a path
+  inside the datastore.
 - **Unverified:**
   - Whether a pull sync job **without** `--remote` copies between two local datastores. The CLI
     allows it; the docs have no worked example. If PBS rejects it, add a remote that points at
@@ -308,11 +311,11 @@ The values are in Infisical (`/k8s/backup`), and the endpoint and bucket are in 
 1. Reinstall PBS (≥ 4.2) and run `make pbs`. The local datastore starts empty.
 2. Attach the existing datastore instead of creating a new one:
    `make pbs-offsite ANSIBLE_ARGS="-e pbs_offsite_reuse_datastore=true"`. This re-creates endpoint
-   `b2` and the datastore with `--reuse-datastore true --overwrite-in-use true` under the **same
+   `backblaze` and the datastore with `--reuse-datastore true --overwrite-in-use true` under the **same
    name** (`pbs_b2_datastore`), because the name is the object prefix in the bucket.
 3. In PVE, add the S3 datastore as a storage: *Datacenter → Storage → Add → Proxmox Backup Server*,
-   datastore `b2`. Or restore straight from the PBS UI.
-4. Restore guests from it as usual. Optionally sync `b2` back to the local datastore (a sync job in
+   datastore `artzima-b2`. Or restore straight from the PBS UI.
+4. Restore guests from it as usual. Optionally sync `artzima-b2` back to the local datastore (a sync job in
    the other direction).
 
 ## NAS media and personal files
@@ -534,7 +537,7 @@ in the TODO list of the README.
 - [ ] **restic without Kubernetes:** from the workstation, `restic snapshots` and
       `restic check --read-data-subset=1/20` on one repository.
 - [ ] **PBS:**
-  - restore a small LXC (e.g. a ts-router) from datastore **`b2`** to a spare VMID;
+  - restore a small LXC (e.g. a ts-router) from datastore **`artzima-b2`** to a spare VMID;
   - boot it with no network;
   - delete it.
 - [ ] **NAS media + personal files (Backrest):**

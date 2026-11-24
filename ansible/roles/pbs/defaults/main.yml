@@ -8,6 +8,16 @@ pbs_datastore_disk_serial: null
 pbs_datastore_format_disk: false
 pbs_datastore_format_confirm_serial: ""
 pbs_datastore_fs_label: artzima-pbs # written after formatting (ext4 label, max 16 chars; xfs max 12)
+# Whole-disk mode: formatting makes a GPT with TWO partitions, the datastore (p1, the rest of
+# the disk) and the cache of the S3/B2 datastore (p2, this size, mounted at
+# pbs_datastore_cache_mount; pbs_b2_cache_path lives below it). 0 = no cache partition.
+# A disk still in the old single-partition layout is re-partitioned only with the one-time
+# format opt-in above (it WIPES the datastore); otherwise the role refuses.
+pbs_datastore_cache_gib: 100
+pbs_datastore_cache_fs_label: artzima-pbscache # ext4 label (max 16 chars)
+pbs_datastore_cache_part_name: artzima-pbs-cache # GPT partition name
+pbs_datastore_part_name: artzima-pbs # GPT partition name of the datastore
+pbs_datastore_cache_mount: /mnt/datastore-cache
 # Shared disk (tasks/datastore_lv.yml): the OS and the datastore are on the SAME disk
 # (install_disk_serial == pbs_datastore_disk_serial; install_lvm.hdsize caps the OS slice).
 # The disk is never wiped by the role: the rest of it becomes LV pbs_datastore_lv in the

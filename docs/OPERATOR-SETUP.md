@@ -34,7 +34,7 @@ See the [public-source security review](PUBLIC-SECURITY-REVIEW.md) for checks, f
 
 The accounts-only check verifies credential presence. Hardware readiness requires the full preflight and installer target checks.
 
-- Install-disk serials for host01, node01, node02, node03 and pbs were collected read-only on 2026-11-23 and are in private configuration; all MACs match. The PBS OS and its datastore share the external USB disk, recorded by serial: the Proxmox auto-installer cannot install onto the ZimaBoard's eMMC, so the eMMC stays unused. Confirm the targets once more in the installer's debug shell if hardware changes.
+- Install-disk serials for host01, node01, node02, node03 and pbs were collected read-only on 2026-11-23 and are in private configuration; all MACs match. PBS runs from the ZimaBoard's eMMC (B1); the external USB disk, recorded by serial, is the datastore disk only. Confirm the targets once more in the installer's debug shell if hardware changes.
 - The NAS was inspected read-only on 2026-11-23: the media roots and both personal shares are recorded in private configuration ([NAS plan](nas-plan.md)), and Docker and the admin user are present. Still to verify: the NFS rule (B0) and the data folder's owner.
 - Infisical is split into two projects (2026-11-23): the free plan refuses custom roles, so the cluster's secrets get their own project and ESO the built-in Viewer role there only. Before the cloud bootstrap continues: create that project ([A2b](#a2b-the-clusters-infisical-project)), run the one-time migration, and verify that ESO can read `/k8s` and cannot read the main project.
 - Review the bootstrap plans and generate the remaining credentials/passwords; schedule DNS cutover to avoid breaking the running lab.
@@ -221,7 +221,7 @@ Inspected read-only on 2026-11-23 (G.A.R.T.H.): `volume1` 7.3T (6.9T free), Dock
 
 - [x] (2026-11-23) [`ansible/hosts.yml`](../ansible/hosts.yml) is an example. Edit `.private/site/ansible/hosts.yml` instead: for every Proxmox/PBS machine `mac` (primary
   NIC), `install_disk` and **`install_disk_serial`**; for pbs also `pbs_datastore_disk_serial` (the USB
-  datastore disk). All filled in; `make answers` refuses an install serial that overlaps the datastore disk, except for pbs, where `pbs_os_on_datastore_disk: true` puts the OS on that same disk on purpose (B1). The answer server only answers machines with
+  datastore disk). All filled in; `make answers` refuses an install serial that overlaps the datastore disk, unless `pbs_os_on_datastore_disk: true` (a shared-disk mode pbs no longer uses; B1). The answer server only answers machines with
   a known MAC and installs only onto the disk with that serial. <a id="disk-serials"></a>**Disk
   serials:** on the target system `udevadm info -q property -n /dev/nvme0n1 | grep ^ID_SERIAL=`
   (or `lsblk -d -o NAME,SERIAL,MODEL`); in the installer's debug shell the same command. A
@@ -289,26 +289,28 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 
 ### B1. Install and deploy
 
-- [ ] **PBS install: the USB disk stays PLUGGED IN.** It holds both the PBS OS and the datastore.
-  The Proxmox auto-installer cannot install onto the ZimaBoard's internal eMMC, so the eMMC is not
-  used. The answer file selects the USB disk by serial, **wipes it** (you approved this for the first
-  build: its old backups are gone), and puts the OS in a small slice at the start: about 32 GiB root
-  and 4 GiB swap in the LVM volume group `pbs`. The rest of the disk stays empty for now.
-  In `.private/site/ansible/hosts.yml`, host `pbs`, this is:
-  ```yaml
-  install_disk_serial: <its serial>        # the same as pbs_datastore_disk_serial
-  pbs_os_on_datastore_disk: true           # allows the OS on the datastore disk
-  install_lvm: {hdsize: 38, swapsize: 4, minfree: 1}   # GiB: the OS slice
-  ```
-  `make answers` refuses an install serial that could match a datastore disk unless this flag is
-  `true` and both serials are identical, and it refuses the flag without a small `hdsize`.
-- [ ] **PBS datastore (in `make up`):** the role `pbs` turns the free rest of the USB disk into one
-  new partition, adds it to the volume group `pbs`, and creates the logical volume `datastore` on all
-  free space, with an ext4 filesystem labelled `artzima-pbs`, mounted by UUID at
-  `/mnt/datastore/<name>`. It never wipes or repartitions the disk and never touches the OS
-  partitions. Re-running `make up` reuses the existing volume and filesystem and never formats again.
-  `pbs_datastore_format_disk` (whole-disk formatting) is ignored in this mode; it is still `true`
-  from build-day planning, set it back to `false` after the first `make up` (below).
+- [ ] **PBS install (the OS is on the eMMC).** PBS runs from the ZimaBoard's internal eMMC (LVM
+  volume group `pbs`, BIOS boot, grub on the eMMC). The Proxmox auto-installer could not finish on
+  the eMMC (2026-11-23), so PBS was installed onto the USB disk and its root and swap volumes were
+  copied to the eMMC by hand; a rebuild repeats that by hand (the `install_*` keys of host `pbs` in
+  `.private/site/ansible/hosts.yml` describe that temporary USB install). Afterwards the USB disk is
+  the datastore disk only (`pbs_os_on_datastore_disk` stays `false`). `make answers` refuses an
+  install serial that could match a datastore disk unless that flag is `true` and both serials are
+  identical, and it refuses the flag without a small `hdsize`.
+- [ ] **PBS datastore disk (in `make up`, role `pbs`, `tasks/datastore_disk.yml`):** the USB disk,
+  found by `pbs_datastore_disk_serial`, carries a GPT with two ext4 partitions, both mounted by UUID in `/etc/fstab` with `nofail`:
+  p1 `artzima-pbs`, the rest of the disk, at `/mnt/datastore/<name>` (the local datastore is the
+  filesystem root), and p2 `artzima-pbscache` (GPT name `artzima-pbs-cache`; ext4 labels stop at
+  16 characters), `pbs_datastore_cache_gib` = 100 GiB at the end of the disk, at
+  `/mnt/datastore-cache`: the cache of the B2 datastore (`pbs_b2_cache_path`
+  `/mnt/datastore-cache/b2`).
+  Formatting it is a **one-time opt-in**: `pbs_datastore_format_disk: true` plus
+  `pbs_datastore_format_confirm_serial` = that disk's serial (refused on any mismatch). A disk with
+  both labels is only ever mounted and reused, even if the flag was left `true`. A disk still in the
+  old single-partition layout (`artzima-pbs` only, no cache) is re-partitioned **only** with that
+  opt-in: the role checks that no task uses the datastore, puts it offline, removes it from PBS, wipes
+  the disk, partitions and formats it and re-creates the datastore **empty**. Without the opt-in it
+  refuses and changes nothing. (Done on 2026-11-24: the old layout held only one night of backups.)
 - [ ] **USB installs** (hands-off): `make answers` (validates), `install/prepare-iso.sh …`,
   `make answer-server`, then boot each machine from the stick
   ([install/README.md](../install/README.md)). `<ws-ip>` is the workstation's **home address**,
@@ -326,8 +328,9 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **Right after the first successful `make up`: set `pbs_datastore_format_disk: false` again**
   (`.private/site/ansible/hosts.yml`), then `make private-backup`. From then on the datastore volume is
   only ever mounted and reused. Check: `ssh root@192.0.2.127 proxmox-backup-manager datastore list` shows
-  the datastore below `/mnt/datastore/<name>`, `lvs pbs` shows `root`, `swap` and `datastore`, and
-  `lsblk -o NAME,LABEL,SIZE` shows the label `artzima-pbs` on `pbs-datastore`.
+  the datastore at `/mnt/datastore/<name>`, `lsblk -o NAME,LABEL,SIZE,MOUNTPOINT` shows `artzima-pbs`
+  and `artzima-pbscache` on the USB disk, mounted at `/mnt/datastore/<name>` and
+  `/mnt/datastore-cache`, and `df -h /mnt/datastore-cache` shows about 100 GiB.
 - [ ] **Host01 reboot** after the NVIDIA driver (the `site` output says so).
 - [ ] **UPS:** the NAS's *Network UPS slave* points at host01, `192.0.2.100` (B0;
   [manual steps](manual-steps.md#3-ugreen-nas-ugos)), then `make nut-check`.
