@@ -555,8 +555,8 @@ def render_maintenance() -> str:
             "args": ["--cloud-provider", "aws-s3", "--endpoint-url", "https://${b2_s3_endpoint}",
                      "--retention-policy", policy, f"s3://${{b2_bucket_pg}}/{ns}", c["server"]],
             "env": aws + [{"name": "AWS_DEFAULT_REGION", "value": "${b2_region}"},
-                          {"name": "AWS_REQUEST_CHECKSUM_CALCULATION", "value": "when_required"},
-                          {"name": "AWS_RESPONSE_CHECKSUM_VALIDATION", "value": "when_required"}],
+                          {"name": "AWS_REQUEST_CHECKSUM_CALCULATION", "value": "when_supported"},
+                          {"name": "AWS_RESPONSE_CHECKSUM_VALIDATION", "value": "when_supported"}],
         }, deadline=2 * 3600, suspend=paused))
         sa = f"{name}-restore-test"
         docs += [

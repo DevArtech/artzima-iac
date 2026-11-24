@@ -117,10 +117,11 @@ spec:
     data:
       compression: gzip
   instanceSidecarConfiguration:
-    # boto3 >= 1.36 sends new checksum headers that several S3-compatible stores
-    # reject; the plugin docs recommend this for non-AWS endpoints such as B2.
+    # Keep boto3's default checksums (when_supported). The buckets use B2 Object Lock, which
+    # REQUIRES a checksum on every upload; with when_required B2 drops the connection
+    # (\"Connection was closed before we received a valid response\", proven 2026-11-24).
     env:
       - name: AWS_REQUEST_CHECKSUM_CALCULATION
-        value: when_required
+        value: when_supported
       - name: AWS_RESPONSE_CHECKSUM_VALIDATION
-        value: when_required
+        value: when_supported

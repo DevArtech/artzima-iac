@@ -167,6 +167,10 @@ b2-plan: ## Plan B2 buckets/keys (admin key from Infisical /tofu/B2_ADMIN_*)
 	$(TOFU_ENV) tofu -chdir=tofu/backblaze plan -out=backblaze.tfplan
 b2-apply: ## Plan + confirm + apply; writes each bucket's backup + maintenance key into Infisical
 	$(call tofu_apply,tofu/backblaze,backblaze.tfplan)
+pve-root-password: ## Set root@pam's password on the PVE hosts and PBS from Infisical /operator/PVE_ROOT_PASSWORD (yours; for the web UIs and console)
+	@$(CONFIRM) "set root's password on all PVE hosts and PBS from Infisical"
+	$(WITH_INF) --set PVE_ROOT_PASSWORD=/operator/PVE_ROOT_PASSWORD -- $(PY) scripts/pve_root_password.py
+
 pbs-offsite: ## PBS: S3 datastore on the B2 bucket + local sync/prune/GC jobs (after make b2-apply)
 	$(call ansible_apply,pbs-offsite)
 # The NAS user needs sudo. Its password comes from Infisical /ansible/NAS_SUDO_PASSWORD (optional);

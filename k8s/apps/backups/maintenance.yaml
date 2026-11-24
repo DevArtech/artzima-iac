@@ -187,9 +187,9 @@ spec:
                 - name: AWS_DEFAULT_REGION
                   value: ${b2_region}
                 - name: AWS_REQUEST_CHECKSUM_CALCULATION
-                  value: when_required
+                  value: when_supported
                 - name: AWS_RESPONSE_CHECKSUM_VALIDATION
-                  value: when_required
+                  value: when_supported
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -375,9 +375,9 @@ spec:
                 - name: AWS_DEFAULT_REGION
                   value: ${b2_region}
                 - name: AWS_REQUEST_CHECKSUM_CALCULATION
-                  value: when_required
+                  value: when_supported
                 - name: AWS_RESPONSE_CHECKSUM_VALIDATION
-                  value: when_required
+                  value: when_supported
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -563,9 +563,9 @@ spec:
                 - name: AWS_DEFAULT_REGION
                   value: ${b2_region}
                 - name: AWS_REQUEST_CHECKSUM_CALCULATION
-                  value: when_required
+                  value: when_supported
                 - name: AWS_RESPONSE_CHECKSUM_VALIDATION
-                  value: when_required
+                  value: when_supported
 ---
 apiVersion: v1
 kind: ServiceAccount
