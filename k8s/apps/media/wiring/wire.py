@@ -495,13 +495,26 @@ def prowlarr_indexers(api: Api, definitions: list[str], app_profile: str = "Stan
             log(f"ok   Prowlarr: indexer '{item['name']}'")
             continue
         item.update(want)
-        # forceSave: don't fail the run when the site is briefly down; Prowlarr re-tests on use.
+        if not cur:
+            item.pop("id", None)
+        # Prowlarr tests the site on every save, even with forceSave, and answers HTTP 400
+        # "Unable to connect to indexer ... timed out" when it is slow (archive.org at times):
+        # retried briefly; still down = the step fails and the next run adds it.
+        for attempt in range(4):
+            try:
+                if cur:
+                    api.put(f"/api/v1/indexer/{cur['id']}?forceSave=true", item)
+                else:
+                    api.post("/api/v1/indexer?forceSave=true", item)
+                break
+            except RuntimeError as e:
+                if attempt == 3 or "Unable to connect to indexer" not in str(e):
+                    raise
+                log(f"warn Prowlarr: '{item['name']}' did not answer Prowlarr's test, retrying in 20 s")
+                time.sleep(20)
         if cur:
-            api.put(f"/api/v1/indexer/{cur['id']}?forceSave=true", item)
             log(f"upd  Prowlarr: indexer '{item['name']}' {sorted(diff)}")
         else:
-            item.pop("id", None)
-            api.post("/api/v1/indexer?forceSave=true", item)
             log(f"add  Prowlarr: indexer '{item['name']}' (app profile '{app_profile}')")
         changed = True
     if changed:  # push to the apps now, not at the next scheduled sync
