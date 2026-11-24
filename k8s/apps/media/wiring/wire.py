@@ -17,7 +17,8 @@ Secrets from Infisical /k8s/media) and are never printed.
      unambiguous match), tag `owned-rip`, profile "Owned rip" (no upgrades),
      unmonitored; re-enforced for every tagged title on every run
   3. Prowlarr: Sonarr + Radarr + Lidarr as applications (indexer sync); optional
-     FlareSolverr indexer proxy (only if FLARESOLVERR_URL is set)
+     FlareSolverr indexer proxy (only if FLARESOLVERR_URL is set); the indexer
+     "Internet Archive" (public, no account), synced to the three apps
   4. Bazarr: Sonarr + Radarr connection
   5. qBittorrent: default save path, categories tv / movies / music (WebUI password:
      seeded from Infisical by the qbittorrent pod's init container)
@@ -463,6 +464,51 @@ def prowlarr(api: Api, apps: list[dict], flaresolverr: str) -> None:
     log("note Prowlarr: give indexers that need it the tag 'flaresolverr'")
 
 
+@step("Prowlarr indexers")
+def prowlarr_indexers(api: Api, definitions: list[str], app_profile: str = "Standard") -> None:
+    """Ensure the given Prowlarr indexer definitions exist and are enabled (public ones
+    that need no account; the operator's choice, docs/decisions.md). Only ADDS/fixes these:
+    indexers added by hand are never touched or removed. Every indexer is a "Cardigann"
+    definition, so the schema is picked by definitionName, not by implementation
+    (upsert() would take the first of 600+). Full Sync to Sonarr/Radarr/Lidarr (step
+    "Prowlarr") pushes each one into the apps whose categories it covers."""
+    if not wait_for(api, "/api/v1/system/status"):
+        return
+    profiles = {p["name"]: p["id"] for p in api.get("/api/v1/appprofile")}
+    if app_profile not in profiles:
+        raise RuntimeError(f"Prowlarr has no app profile '{app_profile}' ({sorted(profiles)})")
+    schemas = {s.get("definitionName"): s for s in api.get("/api/v1/indexer/schema")}
+    existing = {i.get("definitionName"): i for i in api.get("/api/v1/indexer")}
+    changed = False
+    for d in definitions:
+        if d not in schemas:
+            raise RuntimeError(f"Prowlarr has no indexer definition '{d}' (renamed upstream?)")
+        cur = existing.get(d)
+        item = json.loads(json.dumps(cur or schemas[d]))
+        base = next((f for f in item["fields"] if f["name"] == "baseUrl"), None)
+        want = {"enable": True, "appProfileId": profiles[app_profile]}
+        diff = [k for k, v in want.items() if item.get(k) != v]
+        if base is not None and not base.get("value"):  # the definition's first (official) URL
+            base["value"] = (item.get("indexerUrls") or [None])[0]
+            diff.append("baseUrl")
+        if cur and not diff:
+            log(f"ok   Prowlarr: indexer '{item['name']}'")
+            continue
+        item.update(want)
+        # forceSave: don't fail the run when the site is briefly down; Prowlarr re-tests on use.
+        if cur:
+            api.put(f"/api/v1/indexer/{cur['id']}?forceSave=true", item)
+            log(f"upd  Prowlarr: indexer '{item['name']}' {sorted(diff)}")
+        else:
+            item.pop("id", None)
+            api.post("/api/v1/indexer?forceSave=true", item)
+            log(f"add  Prowlarr: indexer '{item['name']}' (app profile '{app_profile}')")
+        changed = True
+    if changed:  # push to the apps now, not at the next scheduled sync
+        api.post("/api/v1/command", {"name": "ApplicationIndexerSync"})
+        log("upd  Prowlarr: indexer sync to the apps started")
+
+
 @step("Bazarr")
 def bazarr(api: Api, targets: dict) -> None:
     if not wait_for(api, "/api/system/status"):
@@ -767,6 +813,10 @@ def main() -> None:
         {"impl": "Radarr", "url": url["radarr"], "key": keys["radarr"], "prowlarr_url": url["prowlarr"]},
         {"impl": "Lidarr", "url": url["lidarr"], "key": keys["lidarr"], "prowlarr_url": url["prowlarr"]},
     ], os.environ.get("FLARESOLVERR_URL", ""))
+    # The operator's choice of indexers (Prowlarr definitionName): only public ones without
+    # an account belong in git. More are added by hand in Prowlarr and sync the same way.
+    prowlarr_indexers(Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}),
+                      ["internetarchive"])
     bazarr(Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}), {
         "sonarr": {"host": host["sonarr"], "port": port["sonarr"], "key": keys["sonarr"]},
         "radarr": {"host": host["radarr"], "port": port["radarr"], "key": keys["radarr"]},
