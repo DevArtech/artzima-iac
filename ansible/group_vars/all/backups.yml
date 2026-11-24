@@ -82,6 +82,7 @@ backup_volumes:
   - { namespace: media, pvc: bazarr, uid: 1000, gid: 1000, hour: 4 }
   - { namespace: media, pvc: qbittorrent, uid: 1000, gid: 1000, hour: 4 }
   - { namespace: media, pvc: seerr, uid: 1000, gid: 1000, hour: 4 }
+  - { namespace: media, pvc: sabnzbd, uid: 1000, gid: 1000, hour: 4 }
 
 # The NAS media library (/volume1/Artzima/data/media) and the operator's PERSONAL
 # shares (outside the lab, never written by this repo) go to B2 one of three ways:

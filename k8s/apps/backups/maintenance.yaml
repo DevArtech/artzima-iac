@@ -41,7 +41,7 @@ spec:
                   value: vaultwarden/vaultwarden-data paperless/paperless-media paperless/paperless-data
                     paperless/paperless-export alexandria/alexandria-library monitoring/kube-prometheus-stack-grafana
                     media/sonarr media/radarr media/lidarr media/prowlarr media/bazarr
-                    media/qbittorrent media/seerr
+                    media/qbittorrent media/seerr media/sabnzbd
                 - name: BASE
                   value: s3:https://${b2_s3_endpoint}/${b2_bucket_restic}
                 - name: RESTIC_CACHE_DIR
@@ -117,7 +117,7 @@ spec:
                   value: vaultwarden/vaultwarden-data paperless/paperless-media paperless/paperless-data
                     paperless/paperless-export alexandria/alexandria-library monitoring/kube-prometheus-stack-grafana
                     media/sonarr media/radarr media/lidarr media/prowlarr media/bazarr
-                    media/qbittorrent media/seerr
+                    media/qbittorrent media/seerr media/sabnzbd
                 - name: BASE
                   value: s3:https://${b2_s3_endpoint}/${b2_bucket_restic}
                 - name: RESTIC_CACHE_DIR

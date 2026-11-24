@@ -1,0 +1,130 @@
+---
+# SABnzbd (Usenet downloads), k8s/apps/media. NOT public: tailnet only, via the Tailscale
+# operator (Service annotation below -> http://sabnzbd:8080 on the tailnet, MagicDNS).
+# Image: home-operations (rootless; runs as media_puid:media_pgid).
+#
+# No VPN: unlike BitTorrent, Usenet is a client -> provider download over TLS (port 563,
+# ssl_verify strict); no peers see the lab's IP and nothing is uploaded. The gluetun
+# kill-switch is qBittorrent's alone (docs/decisions.md "Media stack").
+#
+# Config (/config/sabnzbd.ini, nfs-artnas PVC):
+#   - every start (the image's entrypoint): api_key = Infisical /k8s/media/SABNZBD_API_KEY,
+#     host_whitelist = the pod name + the names below;
+#   - the media-wiring Job (wire.py "SABnzbd", over the API, read first, written only on
+#     difference): folders /data/usenet/{incomplete,complete}, categories tv/movies/music
+#     (-> /data/usenet/complete/<cat>), the Usenet server from Infisical /k8s/media/USENET_*
+#     (SSL, 20 connections), and the web UI login = the Jellyfin admin login.
+# The same /data volume as the arrs: imports are atomic moves on one filesystem.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: sabnzbd
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${media_puid}
+        runAsGroup: ${media_pgid}
+        fsGroup: ${media_pgid}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      sabnzbd:
+        replicas: 1 # sabnzbd.ini + queue on an RWO volume
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/home-operations/sabnzbd
+              tag: "5.1.3"
+            env:
+              TZ: ${timezone}
+              SABNZBD__ADDRESS: 0.0.0.0 # the image's default [::] needs IPv6 in the pod
+              SABNZBD__PORT: "8080"
+              SABNZBD__API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: media-apikeys
+                    key: SABNZBD_API_KEY
+              # DNS-rebinding guard (only while no login is set): the Tailscale short name
+              # and the in-cluster names; *.local is always allowed by SABnzbd.
+              SABNZBD__HOST_WHITELIST_ENTRIES: sabnzbd, sabnzbd.media, sabnzbd.media.svc, sabnzbd.media.svc.cluster.local
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api?mode=version # no API key needed
+                    port: 8080
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api?mode=version
+                    port: 8080
+                  periodSeconds: 5
+                  failureThreshold: 60
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 2Gi # article cache + par2/unrar
+    service:
+      app:
+        controller: sabnzbd
+        forceRename: sabnzbd
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: sabnzbd
+        ports:
+          http:
+            port: 8080
+    persistence:
+      config: # NAS /volume1/Artzima/k8s/media/sabnzbd (sabnzbd.ini, queue, history)
+        type: persistentVolumeClaim
+        storageClass: nfs-artnas
+        accessMode: ReadWriteOnce
+        size: 2Gi
+        globalMounts:
+          - path: /config
+      data:
+        type: persistentVolumeClaim
+        existingClaim: media-data
+        globalMounts:
+          - path: /data
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

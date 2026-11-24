@@ -12,6 +12,7 @@ resources:
   - lidarr.yaml # music
   - bazarr.yaml
   - qbittorrent.yaml # + gluetun sidecar (Surfshark WireGuard)
+  - sabnzbd.yaml # Usenet (TLS to the provider, no VPN)
   - database.yaml # CNPG Postgres: seerr-db (Seerr), arr-db (Sonarr, Radarr, Lidarr, Prowlarr)
   - seerr.yaml # the only public one (/apps.yaml)
   - flaresolverr.yaml # optional, suspended

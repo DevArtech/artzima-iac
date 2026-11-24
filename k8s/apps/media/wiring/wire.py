@@ -7,18 +7,23 @@ reads the current state first and only creates/updates what differs, so it is
 safe to run any number of times. API keys and passwords come from env (ESO
 Secrets from Infisical /k8s/media) and are never printed.
 
-  1. /data tree (TRaSH layout): torrents/{tv,movies}, media/{tv,movies}
+  1. /data tree (TRaSH layout): torrents/{tv,movies,music}, usenet/{incomplete,complete/<cat>},
+     media/{tv,movies,music}
+  1b. SABnzbd: folders /data/usenet/..., categories tv / movies / music, the Usenet server
+     (Infisical /k8s/media/USENET_*, SSL, 20 connections, checked by SABnzbd's server test),
+     web login = the Jellyfin admin login; request logging off (passwords go over its API)
   2. Sonarr + Radarr + Lidarr: root folder, hardlinks on, renaming OFF (Lidarr: and
      never write audio tags; Radarr: no folder renames), no chmod / file-date changes
      (adopted rips share their inode with the originals), recycle bin
-     (/data/.recycle), qBittorrent download client (category tv / movies),
+     (/data/.recycle), qBittorrent + SABnzbd download clients (category tv / movies / music),
      Jellyfin "Connect" (library refresh on import)
   2b. existing rips: import unmapped folders of the root folders (only on an
      unambiguous match), tag `owned-rip`, profile "Owned rip" (no upgrades),
      unmonitored; re-enforced for every tagged title on every run
   3. Prowlarr: Sonarr + Radarr + Lidarr as applications (indexer sync); optional
      FlareSolverr indexer proxy (only if FLARESOLVERR_URL is set); the indexer
-     "Internet Archive" (public, no account), synced to the three apps
+     "Internet Archive" (public, no account) and NZBGeek (Usenet, /k8s/media/NZBGEEK_API_KEY),
+     synced to the three apps
   4. Bazarr: Sonarr + Radarr connection
   4b. UI logins: forms login on Sonarr/Radarr/Lidarr/Prowlarr/Bazarr = the Jellyfin admin
      login (checked by a test login / Bazarr's stored digest; written only on difference)
@@ -68,6 +73,7 @@ class Api:
                  prefix: str = ""):
         self.name, self.base = name, base.rstrip("/")
         self.prefix = prefix  # *arr API root: /api/v3 (Sonarr, Radarr), /api/v1 (Lidarr, Prowlarr)
+        self.key = ""  # SABnzbd: its API key goes in the form body (sab()), not a header
         self.headers = {"Accept": "application/json", **(headers or {})}
         self.jar = http.cookiejar.CookieJar()
         handlers = [urllib.request.HTTPCookieProcessor(self.jar)] if cookies else []
@@ -136,13 +142,15 @@ def step(title: str):
 
 # ---------------------------------------------------------------- generic *arr helpers
 def upsert(api: Api, base: str, impl: str, name: str, fields: dict, attrs: dict | None = None,
-           enable_events: list[str] | None = None) -> None:
+           enable_events: list[str] | None = None, preset: str | None = None) -> bool:
     """Create or update the provider `name` (download client, notification,
-    application, ...) of implementation `impl`, starting from the API's schema
-    so fields we don't set keep their defaults."""
-    schema = [s for s in api.get(f"{base}/schema") if s.get("implementation") == impl]
+    application, indexer ...) of implementation `impl`, starting from the API's schema
+    so fields we don't set keep their defaults. `preset`: the schema entry of that name
+    (Prowlarr lists every Newznab site as one more "Newznab" schema). True if it wrote."""
+    schema = [s for s in api.get(f"{base}/schema") if s.get("implementation") == impl
+              and (preset is None or s.get("name") == preset)]
     if not schema:
-        raise RuntimeError(f"{api.name}: no {impl} in {base}/schema")
+        raise RuntimeError(f"{api.name}: no {impl}{f' preset {preset}' if preset else ''} in {base}/schema")
     existing = [x for x in api.get(base) if x.get("name") == name]
     item = json.loads(json.dumps(existing[0] if existing else schema[0]))
     known = {f["name"] for f in item["fields"]}
@@ -168,7 +176,7 @@ def upsert(api: Api, base: str, impl: str, name: str, fields: dict, attrs: dict 
     item.update(name=name, implementation=impl, configContract=schema[0]["configContract"])
     if not changed:
         log(f"ok   {api.name}: {base} '{name}' unchanged")
-        return
+        return False
     # forceSave: skip the connection test (e.g. Jellyfin or the VPN briefly down);
     # the app re-tests on use and shows a health warning if it really is broken.
     if existing:
@@ -178,6 +186,7 @@ def upsert(api: Api, base: str, impl: str, name: str, fields: dict, attrs: dict 
         item.pop("id", None)
         api.post(f"{base}?forceSave=true", item)
         log(f"add  {api.name}: {base} '{name}'")
+    return True
 
 
 def ensure_root_folder(api: Api, path: str, kind: str = "") -> None:
@@ -281,6 +290,7 @@ def data_dirs(root: pathlib.Path) -> None:
     if not root.is_dir():
         raise RuntimeError(f"{root} is not mounted")
     for sub in ("torrents/tv", "torrents/movies", "torrents/music", "media/tv", "media/movies", "media/music",
+                "usenet/incomplete", "usenet/complete/tv", "usenet/complete/movies", "usenet/complete/music",
                 ".recycle/sonarr", ".recycle/radarr", ".recycle/lidarr"):
         d = root / sub
         if not d.is_dir():
@@ -288,7 +298,8 @@ def data_dirs(root: pathlib.Path) -> None:
             log(f"add  {d}")
         if d.stat().st_uid == os.getuid():
             d.chmod(0o2775)  # setgid: new files keep the media group
-    log(f"ok   {root}: torrents/{{tv,movies,music}} media/{{tv,movies,music}} .recycle/{{sonarr,radarr,lidarr}}")
+    log(f"ok   {root}: torrents/{{tv,movies,music}} usenet/{{incomplete,complete/{{tv,movies,music}}}} "
+        "media/{tv,movies,music} .recycle/{sonarr,radarr,lidarr}")
 
 
 @step("Sonarr / Radarr / Lidarr")
@@ -315,6 +326,13 @@ def arr(api: Api, kind: str, cfg: dict) -> None:
            # (Sonarr/Radarr "torrent"), which made every run rewrite Lidarr's client
            {"enable": True, "priority": 1,
             "removeCompletedDownloads": True, "removeFailedDownloads": True})
+    # Usenet: SABnzbd, by API key (its web login is not needed for the API). Same category
+    # names as qBittorrent; SABnzbd puts them under /data/usenet/complete/<category>.
+    upsert(api, f"{api.prefix}/downloadclient", "Sabnzbd", "SABnzbd", {
+        "host": cfg["sab_host"], "port": cfg["sab_port"], "useSsl": False, "urlBase": "",
+        "apiKey": cfg["sab_key"],
+        {"sonarr": "tvCategory", "radarr": "movieCategory", "lidarr": "musicCategory"}[kind]: cfg["category"],
+    }, {"enable": True, "priority": 1, "removeCompletedDownloads": True, "removeFailedDownloads": True})
     events = ["onDownload", "onUpgrade", "onRename", "onImportComplete",
               "onReleaseImport", "onArtistDelete", "onAlbumDelete", "onTrackRetag",
               "onSeriesDelete", "onEpisodeFileDelete", "onEpisodeFileDeleteForUpgrade",
@@ -523,6 +541,135 @@ def prowlarr_indexers(api: Api, definitions: list[str], app_profile: str = "Stan
     if changed:  # push to the apps now, not at the next scheduled sync
         api.post("/api/v1/command", {"name": "ApplicationIndexerSync"})
         log("upd  Prowlarr: indexer sync to the apps started")
+
+
+@step("Prowlarr: NZBGeek")
+def prowlarr_nzbgeek(api: Api, api_key: str, app_profile: str = "Standard") -> None:
+    """The NZBGeek Usenet indexer (the operator's account; key in Infisical
+    /k8s/media/NZBGEEK_API_KEY), from Prowlarr's own Newznab preset "NZBgeek". Full Sync
+    (step "Prowlarr") pushes it to Sonarr/Radarr/Lidarr like the other indexers."""
+    if not api_key:
+        log("skip Prowlarr: NZBGeek (NZBGEEK_API_KEY empty)")
+        return
+    if not wait_for(api, "/api/v1/system/status"):
+        return
+    profiles = {p["name"]: p["id"] for p in api.get("/api/v1/appprofile")}
+    if app_profile not in profiles:
+        raise RuntimeError(f"Prowlarr has no app profile '{app_profile}' ({sorted(profiles)})")
+    if upsert(api, "/api/v1/indexer", "Newznab", "NZBGeek",
+              {"baseUrl": "https://api.nzbgeek.info", "apiPath": "/api", "apiKey": api_key},
+              {"enable": True, "appProfileId": profiles[app_profile]}, preset="NZBgeek"):
+        api.post("/api/v1/command", {"name": "ApplicationIndexerSync"})
+        log("upd  Prowlarr: indexer sync to the apps started")
+
+
+# ---------------------------------------------------------------- SABnzbd
+SAB_SERVER = "usenet"  # SABnzbd's id of the one news server (its display name below)
+SAB_MASKED = "*" * 10  # how SABnzbd's API returns a stored password
+
+
+def sab(api: Api, mode: str, **params) -> dict:
+    """SABnzbd API call: a form POST, so neither the key nor a password is in a URL."""
+    res = api.call("POST", "/api", form={"mode": mode, "output": "json", "apikey": api.key,
+                                         **{k: str(v) for k, v in params.items()}})
+    if isinstance(res, dict) and res.get("status") is False:
+        raise RuntimeError(f"SABnzbd: {mode} {params.get('section', params.get('name', ''))}: {res.get('error')}")
+    return res
+
+
+def sab_login_ok(api: Api, user: str, password: str) -> bool:
+    """A real login on SABnzbd's login page: success = 303 + a login_cookie (with no login
+    configured, SABnzbd also redirects, but sets no cookie). A failed attempt is a warning
+    in SABnzbd's log (no password in it) and has no lockout."""
+    data = urllib.parse.urlencode({"username": user, "password": password}).encode()
+    try:
+        res = urllib.request.build_opener(_NoRedirect).open(
+            urllib.request.Request(api.base + "/sabnzbd/login/", data=data, method="POST"), timeout=TIMEOUT)
+        headers = res.headers
+    except urllib.error.HTTPError as e:
+        headers = e.headers
+    return any(c.startswith("login_cookie=") and not c.startswith(("login_cookie=;", 'login_cookie="";'))
+               for c in headers.get_all("Set-Cookie") or [])
+
+
+@step("SABnzbd")
+def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user: str, password: str) -> None:
+    """SABnzbd over its API (5.x: mode=get_config / set_config / config&name=test_server).
+    Read first, write only what differs; the server is re-saved (which reconnects it) only
+    when a setting differs or its stored login fails SABnzbd's own server test. API key and
+    host whitelist: set by the image's entrypoint from env on every start (sabnzbd.yaml)."""
+    if not wait_for(api, "/api?mode=version"):
+        return
+    misc = sab(api, "get_config", section="misc")["config"]["misc"]
+
+    def set_misc(key: str, value: str, show: bool = True) -> None:
+        if str(misc.get(key)) == value:
+            log(f"ok   SABnzbd: {key}" + (f" = {value}" if show else ""))
+            return
+        sab(api, "set_config", section="misc", keyword=key, value=value)
+        log(f"upd  SABnzbd: {key}" + (f" = {value}" if show else ""))
+
+    # FIRST: never log request parameters (with api_logging on, a debug log level would
+    # write the server and web passwords sent below into sabnzbd.log).
+    set_misc("api_logging", "0")
+    set_misc("download_dir", f"{data_root}/usenet/incomplete")
+    set_misc("complete_dir", f"{data_root}/usenet/complete")
+    set_misc("permissions", "775")  # files 664 / folders 775: the shared media group can move them
+
+    have = {c["name"]: c for c in sab(api, "get_config", section="categories")["config"]["categories"]}
+    for cat in categories:
+        if (have.get(cat) or {}).get("dir") == cat:
+            log(f"ok   SABnzbd: category {cat} -> {data_root}/usenet/complete/{cat}")
+            continue
+        sab(api, "set_config", section="categories", keyword=cat, dir=cat)
+        log(f"{'upd ' if cat in have else 'add '} SABnzbd: category {cat} -> {data_root}/usenet/complete/{cat}")
+
+    # The news server (SSL, strict certificate check, the provider's connection count).
+    want = {"displayname": "Usenet provider", "host": server["host"], "port": server["port"],
+            "username": server["user"], "connections": server["connections"], "ssl": 1, "ssl_verify": 3,
+            "enable": 1}
+    cur = next((s for s in sab(api, "get_config", section="servers")["config"]["servers"]
+                if s.get("name") == SAB_SERVER), None)
+    test = {k: want[k] for k in ("host", "port", "username", "connections", "ssl", "ssl_verify")}
+
+    def save_server(why: str) -> None:
+        sab(api, "set_config", section="servers", keyword=SAB_SERVER, password=server["password"], **want)
+        log(f"{'upd ' if cur else 'add '} SABnzbd: server {SAB_SERVER} ({why}; SSL, {server['connections']} connections)")
+
+    diff = [k for k, v in want.items() if cur is None or str(cur.get(k)) != str(v)]
+    if diff:
+        save_server(f"changed {diff}" if cur else "new")
+    elif sab(api, "queue", limit=0)["queue"].get("status") == "Downloading":
+        # The test opens one more connection, which a busy server's limit may refuse; a
+        # running download already proves the stored login works.
+        log("ok   SABnzbd: server busy downloading (stored login works); test skipped")
+        return sabnzbd_login(api, user, password)
+    # SABnzbd's own test (one NNTP login); a masked password = the stored one.
+    res = sab(api, "config", name="test_server", server=SAB_SERVER, password=SAB_MASKED, **test)["value"]
+    if not res.get("result") and not diff:
+        log(f"warn SABnzbd: server test failed ({res.get('message')}); re-saving the login from Infisical")
+        save_server("stored login failed the test")
+        res = sab(api, "config", name="test_server", server=SAB_SERVER, password=SAB_MASKED, **test)["value"]
+    if not res.get("result"):
+        raise RuntimeError(f"server test failed: {res.get('message')}")
+    log(f"ok   SABnzbd: server test passed ({res.get('message')})")
+    sabnzbd_login(api, user, password)
+
+
+def sabnzbd_login(api: Api, user: str, password: str) -> None:
+    """Web UI login = the Jellyfin admin login (like the arrs, step "UI logins")."""
+    if not (user and password):
+        log("skip SABnzbd: web login (JELLYFIN_ADMIN_USER / _PASSWORD empty, written by `make jellyfin`)")
+        return
+    misc = sab(api, "get_config", section="misc")["config"]["misc"]
+    if str(misc.get("username")) == user and misc.get("password") == SAB_MASKED and sab_login_ok(api, user, password):
+        log(f"ok   SABnzbd: web login (user {user})")
+        return
+    sab(api, "set_config", section="misc", keyword="username", value=user)
+    sab(api, "set_config", section="misc", keyword="password", value=password)
+    if not sab_login_ok(api, user, password):
+        raise RuntimeError("web login still refused after saving it")
+    log(f"upd  SABnzbd: web login (user {user})")
 
 
 @step("Bazarr")
@@ -870,11 +1017,14 @@ def seerr_server(api: Api, s: dict) -> None:
 def main() -> None:
     data = env("DATA_ROOT", "/data")
     ns = env("SERVICE_DOMAIN", "media.svc.cluster.local")
-    host = {a: f"{a}.{ns}" for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "qbittorrent", "seerr")}
+    host = {a: f"{a}.{ns}" for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "qbittorrent", "seerr",
+                                       "sabnzbd")}
     port = {"sonarr": 8989, "radarr": 7878, "lidarr": 8686, "prowlarr": 9696, "bazarr": 6767,
-            "qbittorrent": 8080, "seerr": 5055}
+            "qbittorrent": 8080, "seerr": 5055, "sabnzbd": 8080}
     url = {a: f"http://{host[a]}:{port[a]}" for a in host}
-    keys = {a: env(f"{a.upper()}_API_KEY") for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "seerr")}
+    keys = {a: env(f"{a.upper()}_API_KEY")
+            for a in ("sonarr", "radarr", "lidarr", "prowlarr", "bazarr", "seerr", "sabnzbd")}
+    jf_admin = (os.environ.get("JELLYFIN_ADMIN_USER", "").strip(), os.environ.get("JELLYFIN_ADMIN_PASSWORD", ""))
     qbt_user, qbt_pass = env("QBITTORRENT_USERNAME"), env("QBITTORRENT_PASSWORD")
     jf_host, jf_port, jf_key = env("JELLYFIN_HOST"), int(env("JELLYFIN_PORT", "80")), os.environ.get("JELLYFIN_API_KEY", "").strip()
 
@@ -887,9 +1037,18 @@ def main() -> None:
     import_unmapped = env("ADOPT_UNMAPPED", "true").lower() == "true"
 
     data_dirs(pathlib.Path(data))
+    # SABnzbd first: its categories exist before the arrs add it as a download client.
+    sab_api = Api("SABnzbd", url["sabnzbd"])
+    sab_api.key = keys["sabnzbd"]
+    sabnzbd(sab_api, data, ["tv", "movies", "music"], {
+        "host": env("USENET_HOST"), "port": int(env("USENET_PORT", "563")), "user": env("USENET_USER"),
+        "password": env("USENET_PASSWORD"),
+        # UsenetServer allows 20 SSL connections per account (more = "502 Maximum Connections Exceeded").
+        "connections": int(env("USENET_CONNECTIONS", "20"))}, *jf_admin)
     common = {"qbt_host": host["qbittorrent"], "qbt_port": port["qbittorrent"], "qbt_user": qbt_user,
               "qbt_pass": qbt_pass, "jf_host": jf_host, "jf_port": jf_port, "jf_key": jf_key,
-              "recycle_days": recycle_days}
+              "recycle_days": recycle_days, "sab_host": host["sabnzbd"], "sab_port": port["sabnzbd"],
+              "sab_key": keys["sabnzbd"]}
     arr(sonarr, "sonarr", {**common, "root": f"{data}/media/tv", "category": "tv",
                            "recycle_bin": f"{data}/.recycle/sonarr"})
     arr(radarr, "radarr", {**common, "root": f"{data}/media/movies", "category": "movies",
@@ -908,13 +1067,14 @@ def main() -> None:
     # an account belong in git. More are added by hand in Prowlarr and sync the same way.
     prowlarr_indexers(Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}),
                       ["internetarchive"])
+    prowlarr_nzbgeek(Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}),
+                     os.environ.get("NZBGEEK_API_KEY", "").strip())
     bazarr(Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}), {
         "sonarr": {"host": host["sonarr"], "port": port["sonarr"], "key": keys["sonarr"]},
         "radarr": {"host": host["radarr"], "port": port["radarr"], "key": keys["radarr"]},
     })
     ui_logins([sonarr, radarr, lidarr, Api("Prowlarr", url["prowlarr"], {"X-Api-Key": keys["prowlarr"]}, prefix="/api/v1")],
-              Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}),
-              os.environ.get("JELLYFIN_ADMIN_USER", "").strip(), os.environ.get("JELLYFIN_ADMIN_PASSWORD", ""))
+              Api("Bazarr", url["bazarr"], {"X-API-KEY": keys["bazarr"]}), *jf_admin)
     qbittorrent(Api("qBittorrent", url["qbittorrent"], cookies=True), qbt_user, qbt_pass, data,
                 {"tv": f"{data}/torrents/tv", "movies": f"{data}/torrents/movies",
                  "music": f"{data}/torrents/music"})

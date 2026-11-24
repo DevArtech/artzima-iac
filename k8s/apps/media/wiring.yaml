@@ -73,6 +73,9 @@ spec:
               value: ${media_owned_profile}
             - name: ADOPT_UNMAPPED
               value: "true"
+            # SABnzbd's connections to the news server: UsenetServer's per-account limit.
+            - name: USENET_CONNECTIONS
+              value: "20"
             - name: WAIT_SECONDS
               value: "900"
           envFrom:
@@ -83,7 +86,9 @@ spec:
             - secretRef:
                 name: jellyfin-api # JELLYFIN_API_KEY
             - secretRef:
-                name: jellyfin-admin # JELLYFIN_ADMIN_USER / _PASSWORD (Seerr's first sign-in)
+                name: jellyfin-admin # JELLYFIN_ADMIN_USER / _PASSWORD (Seerr's first sign-in, UI logins)
+            - secretRef:
+                name: usenet # NZBGEEK_API_KEY, USENET_HOST/_PORT/_USER/_PASSWORD (Prowlarr, SABnzbd)
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
