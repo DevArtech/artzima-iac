@@ -69,3 +69,7 @@
     argv: "{{ ['tailscale', 'set'] + (tailscale_args | reject('match', '--advertise-tags') | list) }}"
   when: (tailscale_status.stdout | default('{}') | from_json).BackendState | default('') == 'Running'
   changed_when: false
+
+- name: Tailscale HTTPS certificate for the web UI
+  ansible.builtin.include_tasks: cert.yml
+  when: tailscale_web_cert | bool

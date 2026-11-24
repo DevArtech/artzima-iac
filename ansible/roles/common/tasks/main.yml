@@ -136,3 +136,6 @@
     state: started
     daemon_reload: "{{ common_e1000e_unit is changed }}"
   when: "'driver: e1000e' in common_lan0_driver.stdout"
+
+- name: Per-hardware fixes (laptop, r8169 NIC, battery cap, GRUB install disk)
+  ansible.builtin.include_tasks: hardware.yml

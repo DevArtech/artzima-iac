@@ -1,0 +1,88 @@
+---
+# The Proxmox web UI (PVE :8006, PBS :8007) serves the host's Tailscale HTTPS certificate
+# (Let's Encrypt, for its MagicDNS name), renewed weekly by ts-pve-cert.timer. The MagicDNS name
+# is read at run time from `tailscale status --json` (.Self.DNSName), so no tailnet name is in Git.
+- name: Web UI certificate paths
+  ansible.builtin.set_fact:
+    tailscale_cert_dest: "{{ tailscale_cert_targets[tailscale_cert_product] }}"
+  vars:
+    tailscale_cert_product: "{{ 'pbs' if 'pbs_servers' in group_names else 'pve' }}"
+
+- name: Certificate renewal script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/ts-web-cert
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # {{ ansible_managed }}
+      # Fetch this host's Tailscale HTTPS cert and install it for the web UI.
+      set -eu
+      name=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+      case "$name" in ""|null) echo "no MagicDNS name (is tailscale up?)" >&2; exit 1 ;; esac
+      tmp=$(mktemp -d)
+      trap 'rm -rf "$tmp"' EXIT
+      tailscale cert --cert-file "$tmp/crt" --key-file "$tmp/key" "$name"
+      cp "$tmp/crt" {{ tailscale_cert_dest.cert }}
+      cp "$tmp/key" {{ tailscale_cert_dest.key }}
+      systemctl reload-or-restart {{ tailscale_cert_dest.service }}
+
+- name: Certificate renewal service and weekly timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: ts-pve-cert.service
+      content: |
+        # {{ ansible_managed }}
+        [Unit]
+        Description=Renew the Tailscale HTTPS cert for the Proxmox web UI
+        After=tailscaled.service
+        Wants=tailscaled.service
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/ts-web-cert
+    - name: ts-pve-cert.timer
+      content: |
+        # {{ ansible_managed }}
+        [Unit]
+        Description=Weekly Tailscale cert renewal for the Proxmox web UI
+        [Timer]
+        OnCalendar=weekly
+        Persistent=true
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: tailscale_cert_units
+
+- name: Enable the renewal timer
+  ansible.builtin.systemd_service:
+    name: ts-pve-cert.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ tailscale_cert_units is changed }}"
+
+# First apply (or a lapsed cert): renew now. "Current" = the installed cert names this host's
+# MagicDNS name and is valid for at least 14 more days.
+- name: Check the installed web UI certificate
+  ansible.builtin.shell: |
+    set -euo pipefail
+    name=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+    openssl x509 -in {{ tailscale_cert_dest.cert }} -noout -checkend 1209600 >/dev/null
+    openssl x509 -in {{ tailscale_cert_dest.cert }} -noout -ext subjectAltName | grep -qF "DNS:$name"
+  args:
+    executable: /bin/bash
+  register: tailscale_cert_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the Tailscale certificate now
+  ansible.builtin.systemd_service:
+    name: ts-pve-cert.service
+    state: started
+  when: tailscale_cert_check.rc != 0

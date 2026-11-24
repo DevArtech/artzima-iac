@@ -12,3 +12,8 @@
   ansible.builtin.service:
     name: ssh
     state: reloaded
+
+- name: Restart logind
+  ansible.builtin.service:
+    name: systemd-logind
+    state: restarted

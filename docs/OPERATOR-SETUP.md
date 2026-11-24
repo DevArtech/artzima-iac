@@ -237,6 +237,11 @@ Inspected read-only on 2026-11-23 (G.A.R.T.H.): `volume1` 7.3T (6.9T free), Dock
 ### A7. Hardware and network prerequisites
 
 - [ ] Verify BIOS settings: [manual steps §1](manual-steps.md#1-bios--firmware-on-every-machine).
+- [ ] The laptop host has `hw: laptop` (and `battery_charge_limit`) in `.private/site/ansible/hosts.yml`.
+  `make site` (role `common`) then keeps it awake with the lid closed, masks sleep/suspend/hibernate
+  and caps the battery charge. The same role also fixes NICs by driver: e1000e offloads off (I217
+  hangs), r8169 ASPM/EEE off. On BIOS-boot hosts it points debconf `grub-pc/install_devices` at the
+  install disk, found by `install_disk_serial` (a stale value once broke apt on pbs).
 - [ ] Read [manual steps §2](manual-steps.md#2-firewalla-lab-router-and-the-xfinity-gateway) once: the
   lab moves behind the Firewalla on build day ([B0](#b0-network-firewalla-nas-workstation)). There are no
   reservations to make on the Xfinity any more.

@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   author: artzima
-  description: "Tailscale node (no routes on hosts; routers set tailscale_advertise_routes)"
+  description: "Tailscale node (no routes on hosts; routers set tailscale_advertise_routes) + web UI cert"
   license: MIT
   min_ansible_version: "2.17"
   platforms:

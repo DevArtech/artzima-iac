@@ -7,3 +7,15 @@ tailscale_accept_dns: true # MagicDNS
 tailscale_advertise_routes: []
 tailscale_tags: []
 tailscale_extra_args: []
+# Install the Tailscale HTTPS cert for the Proxmox web UI (PVE/PBS hosts only, not the router LXCs).
+tailscale_web_cert: "{{ 'proxmox' in group_names }}"
+# Where the web UI reads its TLS cert (tasks/cert.yml; the Tailscale cert is installed there).
+tailscale_cert_targets:
+  pve:
+    cert: /etc/pve/local/pveproxy-ssl.pem
+    key: /etc/pve/local/pveproxy-ssl.key
+    service: pveproxy
+  pbs:
+    cert: /etc/proxmox-backup/proxy.pem
+    key: /etc/proxmox-backup/proxy.key
+    service: proxmox-backup-proxy

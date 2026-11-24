@@ -14,7 +14,7 @@ then read `k8s/clusters/artzima/cluster-vars.yaml`).
 | Restore on AC power loss | **Power On** ("Last state" is not enough after an FSD) | the lab comes back by itself when mains returns |
 | Virtualization | VT-x/AMD-V and VT-d/IOMMU **on** | VMs; GPU on host01 |
 | Secure Boot | Off (simplest with the NVIDIA DKMS module on host01) | |
-| Example laptop host | Disable "battery only" / lid-close sleep; plug in permanently | it is a server now |
+| Example laptop host | Disable "battery only" / lid-close sleep in the firmware if it has the option; plug in permanently. The OS side is code (`hw: laptop`, role `common`): logind ignores the lid, suspend and hibernate keys, the sleep targets are masked, and charging stops at `battery_charge_limit` | it is a server now: a closed lid once suspended it and the lab lost the host |
 | Example eMMC host | Boot from the external USB disk after install (it holds the OS; the eMMC is unused); remove the installer stick; second NIC unused for now | the auto-installer cannot target eMMC |
 
 ### 1.1 Power: UPS shutdown, coming back, Wake-on-LAN
@@ -211,7 +211,9 @@ reports low battery / FSD".
   `"autoApprovers": {"routes": {"192.0.2.0/24": ["tag:subnet-router"]}}` to the
   policy file. With two routers advertising the same route, Tailscale fails over
   automatically.
-- Enable MagicDNS. Optional: split DNS for `artzima.local`.
+- Enable MagicDNS **and HTTPS certificates** (DNS page). The tailscale role installs each
+  host's Let's Encrypt cert for its MagicDNS name into the web UI (PVE `:8006`, PBS `:8007`) and
+  renews it weekly (`ts-pve-cert.timer`). Optional: split DNS for `artzima.local`.
 - ONE OAuth client (root credential #3) for the Kubernetes operator **and** the host keys:
   scopes Devices Core, Auth Keys, Services write; tags `tag:k8s-operator`, `tag:artzima`,
   `tag:subnet-router`. Store it in Infisical as `/k8s/tailscale/OPERATOR_CLIENT_ID` and

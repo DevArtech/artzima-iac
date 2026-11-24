@@ -1,0 +1,149 @@
+---
+# Per-hardware fixes found on build night (2026-11-24). Each one only applies where its hardware is.
+
+# --- Laptops never sleep. host01 is a laptop: it suspended when its lid was closed and the lab
+# lost it. A host is a laptop when the inventory says hw: laptop, or DMI says so (chassis type
+# 9 Laptop, 10 Notebook, 14 Sub Notebook).
+- name: Read the DMI chassis type
+  ansible.builtin.slurp:
+    src: /sys/class/dmi/id/chassis_type
+  register: common_chassis_type
+  failed_when: false
+
+- name: Decide whether this host is a laptop
+  ansible.builtin.set_fact:
+    common_is_laptop: >-
+      {{ (hw | default('')) == 'laptop'
+         or ((common_chassis_type.content | default('') | b64decode | trim) in ['9', '10', '14']) }}
+
+- name: Laptop - logind ignores the lid, suspend and hibernate keys and idling
+  ansible.builtin.copy:
+    dest: /etc/systemd/logind.conf.d/90-server.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      # A server: never sleep (a closed lid suspended host01 and the lab lost it).
+      [Login]
+      HandleLidSwitch=ignore
+      HandleLidSwitchExternalPower=ignore
+      HandleLidSwitchDocked=ignore
+      HandleSuspendKey=ignore
+      HandleHibernateKey=ignore
+      IdleAction=ignore
+  when: common_is_laptop | bool
+  notify: Restart logind
+
+- name: Laptop - mask the sleep targets
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: true
+  loop: [sleep.target, suspend.target, hibernate.target, hybrid-sleep.target]
+  when: common_is_laptop | bool
+
+# --- Realtek r8169: link power saving (ASPM, clock PM, EEE) drops the link on these NICs.
+# The PCI device is found from lan0 at run time.
+- name: Keep the r8169 NIC awake (ASPM, clkpm and EEE off)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/lan0-no-powersave.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Unit]
+      Description=Keep the r8169 NIC awake (ASPM and EEE off)
+      After=network-pre.target
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c "for f in l0s_aspm l1_aspm l1_1_aspm l1_2_aspm clkpm; do \
+        p=/sys/class/net/lan0/device/link/$$f; [ -w $$p ] && echo 0 > $$p; done; \
+        ethtool --set-eee lan0 eee off || true"
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+  when: "'driver: r8169' in common_lan0_driver.stdout"
+  register: common_r8169_unit
+
+- name: Enable the r8169 power-save fix
+  ansible.builtin.systemd_service:
+    name: lan0-no-powersave.service
+    enabled: true
+    state: started
+    daemon_reload: "{{ common_r8169_unit is changed }}"
+  when: "'driver: r8169' in common_lan0_driver.stdout"
+
+# --- Battery charge cap: a laptop on permanent wall power keeps its battery at
+# battery_charge_limit percent (host var), where the firmware exposes the threshold.
+- name: Find the battery charge threshold
+  ansible.builtin.stat:
+    path: /sys/class/power_supply/BAT0/charge_control_end_threshold
+  register: common_battery_threshold
+
+- name: Cap battery charging
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/battery-charge-limit.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Unit]
+      Description=Cap battery charging at {{ battery_charge_limit }}% (server on permanent wall power)
+      After=multi-user.target
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c "echo {{ battery_charge_limit | int }} > /sys/class/power_supply/BAT0/charge_control_end_threshold"
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+  when:
+    - battery_charge_limit | default(none) is not none
+    - common_battery_threshold.stat.exists
+  register: common_battery_unit
+
+- name: Enable the battery charge cap
+  ansible.builtin.systemd_service:
+    name: battery-charge-limit.service
+    enabled: true
+    state: "{{ 'restarted' if common_battery_unit is changed else 'started' }}"
+    daemon_reload: "{{ common_battery_unit is changed }}"
+  when:
+    - battery_charge_limit | default(none) is not none
+    - common_battery_threshold.stat.exists
+
+# --- GRUB (BIOS boot): debconf grub-pc/install_devices must name the install disk, by-id.
+# A stale value (pbs once had a USB disk there) makes every grub-pc upgrade fail and breaks apt.
+- name: Check for grub-pc
+  ansible.builtin.command: dpkg-query -W -f=${Status} grub-pc
+  register: common_grub_pc
+  changed_when: false
+  failed_when: false
+
+- name: Find the install disk by serial
+  ansible.builtin.find:
+    paths: /dev/disk/by-id
+    patterns: "*_{{ install_disk_serial }}"
+    file_type: link
+  register: common_install_disk_ids
+  when:
+    - "'install ok installed' in common_grub_pc.stdout"
+    - install_disk_serial | default(none) not in [none, '', 'null', 'TODO']
+
+- name: The install disk must have exactly one by-id name
+  ansible.builtin.assert:
+    that: common_install_disk_ids.files | length == 1
+    fail_msg: >-
+      install_disk_serial={{ install_disk_serial }} matched
+      {{ common_install_disk_ids.files | map(attribute='path') | list }} in /dev/disk/by-id;
+      grub-pc/install_devices was left as it is.
+  when: common_install_disk_ids is not skipped
+
+- name: Point grub-pc/install_devices at the install disk
+  ansible.builtin.debconf:
+    name: grub-pc
+    question: grub-pc/install_devices
+    vtype: multiselect
+    value: "{{ (common_install_disk_ids.files | first).path }}"
+  when: common_install_disk_ids is not skipped
