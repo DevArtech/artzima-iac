@@ -353,6 +353,8 @@ installed. New router or subnet: `ansible/group_vars/all/network.yml` too.
            serverName: vaultwarden-db-dr1        # the NEW cluster archives here
    ```
    Paperless: `database: paperless`, `owner: paperless`, `paperless-db` → `paperless-db-dr1`.
+   Seerr (`k8s/apps/media/database.yaml`, namespace `media`): `database: seerr`, `owner: seerr`,
+   `seerr-db` → `seerr-db-dr1`.
 3. Commit and push:
    ```bash
    make render && make lint
@@ -493,6 +495,7 @@ kubectl get clusters.postgresql.cnpg.io -A -w
 ```bash
 kubectl -n vaultwarden exec vaultwarden-db-1 -c postgres -- psql -tAc 'select count(*) from users' vaultwarden
 kubectl -n paperless exec paperless-db-1 -c postgres -- psql -tAc 'select count(*) from documents_document' paperless
+kubectl -n media exec seerr-db-1 -c postgres -- psql -tAc 'select count(*) from media_request' seerr
 ```
 shows your numbers.
 **If this fails:** `kubectl -n <ns> describe cluster <name>` and
@@ -644,7 +647,8 @@ The lab runs, but every Kubernetes volume **and both Postgres databases** lived 
 3. NFS rule and folders: D6 (NAS part). Proxmox storage: `make storage`.
 4. Postgres: D2 step 2 (recovery blocks), commit, push; then delete the broken clusters so they are
    re-created from B2: `kubectl -n vaultwarden delete cluster vaultwarden-db`,
-   `kubectl -n paperless delete cluster paperless-db`. Continue with **E1**.
+   `kubectl -n paperless delete cluster paperless-db`, `kubectl -n media delete cluster seerr-db`.
+   Continue with **E1**.
 5. Volumes: delete the apps' broken PVCs/PVs (their folders are gone), let Flux re-create them,
    then **E2**: `kubectl get pv | grep Released` lists the leftovers to delete.
 6. `make nas-backup` (Backrest, still paused), then **F**.

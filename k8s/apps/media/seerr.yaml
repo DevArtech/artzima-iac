@@ -8,6 +8,12 @@
 # the init container and enforced on every start by the API_KEY env var. The
 # setup wizard (Jellyfin server + admin sign-in) is a manual first login; after
 # it, the media-wiring Job adds Sonarr and Radarr (docs/manual-steps.md §10).
+#
+# Database: CNPG Cluster seerr-db (database.yaml), credentials from the
+# CNPG-generated Secret seerr-db-app. NOT Seerr's default SQLite: its WAL/-shm
+# files on the NFSv3 config PVC broke the very first migration. The config PVC
+# keeps settings.json and logs only. Env names: docs.seerr.dev
+# "extending-seerr/database-config".
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -43,7 +49,7 @@ spec:
           type: RuntimeDefault
     controllers:
       seerr:
-        replicas: 1 # SQLite in /app/config
+        replicas: 1 # settings.json on an RWO volume; the DB is Postgres (seerr-db)
         strategy: Recreate
         initContainers:
           seed-config:
@@ -78,6 +84,21 @@ spec:
               LOG_LEVEL: info
               PORT: "5055"
               API_KEY: *apiKey
+              DB_TYPE: postgres
+              DB_HOST: seerr-db-rw # CNPG read-write Service
+              DB_PORT: "5432"
+              DB_NAME: seerr
+              DB_USE_SSL: "false" # in-cluster; the Seerr default, explicit for clarity
+              DB_USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: seerr-db-app
+                    key: username
+              DB_PASS:
+                valueFrom:
+                  secretKeyRef:
+                    name: seerr-db-app
+                    key: password
             probes:
               liveness: &probe
                 enabled: true

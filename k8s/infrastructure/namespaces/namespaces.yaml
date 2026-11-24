@@ -70,12 +70,13 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: media # arr stack + qBittorrent/gluetun + Seerr (k8s/apps/media)
+  name: media # arr stack + qBittorrent/gluetun + Seerr + its CNPG Postgres (k8s/apps/media)
   labels:
     # The gluetun sidecar needs NET_ADMIN and the /dev/net/tun hostPath device,
     # which Talos' default "baseline" Pod Security level rejects. Every other
     # media pod still runs non-root with all capabilities dropped.
     pod-security.kubernetes.io/enforce: privileged
+    artzima.io/cnpg-offsite: "true" # gets Secret b2-pg (Seerr's CNPG barman-cloud -> B2), k8s/secrets/backups
 ---
 apiVersion: v1
 kind: Namespace

@@ -9,6 +9,9 @@ ignore: |
   tofu/bootstrap/.terraform/
   .ansible/
   .tools/
+  # written by `flux bootstrap` (do not hand-edit; see the README there)
+  k8s/clusters/*/flux-system/gotk-*.yaml
+  k8s/clusters/*/flux-system/kustomization.yaml
 rules:
   line-length:
     max: 160

@@ -99,12 +99,13 @@ standard webhook JSON; Backrest and the NAS maintenance container post to the sa
 |---|---|---|---|---|
 | Vaultwarden DB | CNPG volume snapshot (NAS) + encrypted `pg_dump` (NAS) | bucket **pg**: `s3://<pg>/vaultwarden/vaultwarden-db/` (WAL continuously + base backup) | base 04:00 UTC, WAL continuous | `backup_pg_retention` (30d): any point in time inside the window |
 | Paperless DB | CNPG volume snapshot (NAS) + `document_exporter` (NAS) | bucket **pg**: `…/paperless/paperless-db/` | base 04:20 UTC, WAL continuous | same |
+| Seerr DB (requests, users) | CNPG volume snapshot (NAS, 03:25 UTC) | bucket **pg**: `…/media/seerr-db/` | base 04:40 UTC, WAL continuous | same |
 | Vaultwarden `/data` (keys, attachments) | encrypted tarball (NAS, nightly) | bucket **restic**: `vaultwarden/vaultwarden-data` | 01:00 UTC | restic: 7 daily, 4 weekly, 6 monthly |
 | Paperless media + data | the NAS folders themselves | restic: `paperless/paperless-media`, `paperless/paperless-data` | 01:07, 01:14 UTC | same |
 | Paperless export (`document_exporter` mirror) | `/volume1/Artzima/backups/paperless` | restic: `paperless/paperless-export` | 03:00 UTC (export runs 02:30 local) | same |
 | Alexandria library | (NFS PVC) | restic: `alexandria/alexandria-library` | 01:21 UTC | same |
 | Grafana | (NFS PVC) | restic: `monitoring/kube-prometheus-stack-grafana` | 01:28 UTC | same |
-| arr configs (Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, qBittorrent, Seerr) | (NFS PVCs; the arrs also write their own zip backups to `/config/Backups`) | restic: `media/<app>` | 04:00-04:42 UTC | same |
+| arr configs (Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, qBittorrent, Seerr's `settings.json`) | (NFS PVCs; the arrs also write their own zip backups to `/config/Backups`) | restic: `media/<app>` | 04:00-04:42 UTC | same |
 | Proxmox guests (vzdump) | PBS datastore `artzima` (ZimaBoard) | bucket **pbs**: S3 datastore `b2` | sync 04:30 (PBS local time) | PBS prune: 7 daily, 4 weekly, 6 monthly; GC Sat 06:00 |
 | **Media library** (`/volume1/Artzima/data/media`: rips, downloads) | the NAS | bucket **nas**: restic by **Backrest on the NAS** (plans `media-daily`, `media-weekly-full`) | 01:00 daily, Sun 03:00 `--force` (NAS local time) | 7 daily, 4 weekly, 12 monthly; monthly `check --read-data-subset=5%` |
 | **Personal files** (the NAS's other shares, outside the lab; read-only) | the NAS | bucket **nas**: Backrest plan `personal-daily` | 00:30 daily | same |

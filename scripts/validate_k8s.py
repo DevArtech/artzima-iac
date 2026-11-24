@@ -212,7 +212,12 @@ def main() -> None:
         if (d / "kustomization.yaml").exists():
             res = run(["kustomize", "build", str(d)])
         else:  # Flux auto-generates a kustomization: emulate with a temp one
-            files = sorted(str(p.relative_to(d)) for p in d.rglob("*.yaml"))
+            # Like Flux: a subdirectory with its own kustomization.yaml (e.g. the
+            # flux-system/ written by `flux bootstrap`) is one directory resource.
+            subs = sorted(p.parent for p in d.rglob("kustomization.yaml"))
+            files = sorted(str(p.relative_to(d)) for p in d.rglob("*.yaml")
+                           if not any(s in p.parents for s in subs))
+            files += [str(s.relative_to(d)) for s in subs]
             (d / "kustomization.yaml").write_text(
                 "resources:\n" + "".join(f"  - {f}\n" for f in files))
             try:
@@ -222,7 +227,9 @@ def main() -> None:
         if res.returncode != 0:
             fail(f"kustomize build {k}: {res.stderr}")
             continue
-        text = substitute(res.stdout, cv)
+        # The cluster dir is applied by flux-system (gotk-sync.yaml), which has no
+        # postBuild: nothing there is substituted (Flux's own CRDs document ${var:=x}).
+        text = res.stdout if k == "clusters/artzima" else substitute(res.stdout, cv)
         built[k] = text
         print(f"built {k}: {text.count(chr(10) + 'kind: ') + text.startswith('kind: ')} objects")
         collect(text, k)

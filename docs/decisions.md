@@ -365,10 +365,15 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
     referenced by TRaSH `trash_id`.
   - **Revisit Configarr** if the Job grows, or if one tool for profiles and wiring becomes
     attractive.
-- **SQLite on NFS** (arr and Seerr configs): this follows the same rule as Alexandria, with one pod
+- **SQLite on NFS** (arr configs): this follows the same rule as Alexandria, with one pod
   per app, `Recreate`, and NFSv4.1 hard mounts. The arr developers advise against network
   storage for `/config`. If corruption ever shows up, Sonarr/Radarr/Prowlarr can move to
   Postgres on the existing CNPG operator (`*__POSTGRES__*` env).
+- **Seerr on Postgres (CNPG `media/seerr-db`), not SQLite.** Seerr 3.5.2's SQLite runs in WAL
+  mode (a `-shm` shared-memory file). On the NFSv3 `nfs-artnas` volume that broke the very first
+  start of a brand-new database (`no such table: migrations`). Seerr therefore uses its own
+  CNPG cluster (`k8s/apps/media/database.yaml`), like Vaultwarden and Paperless, with the same
+  backups and monthly restore self-check. The config PVC keeps only `settings.json` and logs.
 - **FlareSolverr** is only needed for some Cloudflare-protected public indexers. It ships
   suspended (rendered and linted, not deployed), and enabling it is two edits.
 - **Existing rips: hardlinks, then "owned" titles.** The operator's existing rips must

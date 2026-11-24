@@ -143,6 +143,194 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
+  name: seerr-db-retention
+  namespace: media
+spec:
+  schedule: 30 9 * * 0
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  suspend: false
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: barman
+              image: ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0
+              command:
+                - /venv/bin/barman-cloud-backup-delete
+              args:
+                - --cloud-provider
+                - aws-s3
+                - --endpoint-url
+                - https://${b2_s3_endpoint}
+                - --retention-policy
+                - RECOVERY WINDOW OF 30 DAYS
+                - s3://${b2_bucket_pg}/media
+                - seerr-db
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: b2-pg-maint
+                      key: ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: b2-pg-maint
+                      key: ACCESS_SECRET_KEY
+                - name: AWS_DEFAULT_REGION
+                  value: ${b2_region}
+                - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                  value: when_required
+                - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+                  value: when_required
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seerr-db-restore-test
+  namespace: media
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: seerr-db-restore-test
+  namespace: media
+rules:
+  - apiGroups:
+      - postgresql.cnpg.io
+    resources:
+      - clusters
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+  - apiGroups:
+      - postgresql.cnpg.io
+    resources:
+      - clusters
+    resourceNames:
+      - seerr-db-restore-test
+    verbs:
+      - patch
+      - delete
+  - apiGroups:
+      - ''
+    resources:
+      - pods/exec
+    resourceNames:
+      - seerr-db-restore-test-1
+    verbs:
+      - create
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: seerr-db-restore-test
+  namespace: media
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: seerr-db-restore-test
+subjects:
+  - kind: ServiceAccount
+    name: seerr-db-restore-test
+    namespace: media
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: seerr-db-restore-test
+  namespace: media
+  labels:
+    artzima.io/self-check: 'true'
+spec:
+  schedule: 0 7 2 * *
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  suspend: false
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10800
+      template:
+        metadata:
+          labels:
+            artzima.io/self-check: 'true'
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: test
+              image: docker.io/alpine/k8s:1.37.2
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -u
+                  T="$CLUSTER-restore-test"
+                  fail() { echo "RESULT: FAIL $CLUSTER: $1"; exit 1; }
+                  cleanup() { kubectl -n "$NS" delete clusters.postgresql.cnpg.io "$T" --ignore-not-found --wait=false; }
+                  trap cleanup EXIT
+                  kubectl -n "$NS" delete clusters.postgresql.cnpg.io "$T" --ignore-not-found --wait=true
+                  cat <<EOF | kubectl apply -f - || fail "could not create $T"
+                  apiVersion: postgresql.cnpg.io/v1
+                  kind: Cluster
+                  metadata:
+                    name: $T
+                    namespace: $NS
+                    labels: { artzima.io/self-check: "true" }
+                  spec:
+                    instances: 1
+                    imageName: $PG_IMAGE
+                    storage: { storageClass: nfs-artnas-scratch, size: $PG_SIZE }
+                    bootstrap:
+                      recovery: { source: origin }
+                    externalClusters:
+                      - name: origin
+                        plugin:
+                          name: barman-cloud.cloudnative-pg.io
+                          parameters: { barmanObjectName: b2, serverName: $SERVER }
+                  EOF
+                  kubectl -n "$NS" wait "clusters.postgresql.cnpg.io/$T" --for=condition=Ready --timeout=90m \
+                    || fail "recovery did not become Ready in 90 min (kubectl -n $NS describe cluster $T)"
+                  tables=$(kubectl -n "$NS" exec "$T-1" -c postgres -- psql -tAq -d "$DB" \
+                    -c "select count(*) from information_schema.tables where table_schema not in ('pg_catalog','information_schema')") \
+                    || fail "query failed"
+                  [ "$tables" -gt 0 ] || fail "restored database $DB has no tables"
+                  echo "RESULT: PASS $CLUSTER ($tables tables in $DB, recovered from B2)"
+              env:
+                - name: NS
+                  value: media
+                - name: CLUSTER
+                  value: seerr-db
+                - name: SERVER
+                  value: seerr-db
+                - name: DB
+                  value: seerr
+                - name: PG_IMAGE
+                  value: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+                - name: PG_SIZE
+                  value: 2Gi
+          serviceAccountName: seerr-db-restore-test
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
   name: paperless-db-retention
   namespace: paperless
 spec:
@@ -258,7 +446,7 @@ metadata:
   labels:
     artzima.io/self-check: 'true'
 spec:
-  schedule: 0 7 2 * *
+  schedule: 0 8 2 * *
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   suspend: false
@@ -446,7 +634,7 @@ metadata:
   labels:
     artzima.io/self-check: 'true'
 spec:
-  schedule: 0 8 2 * *
+  schedule: 0 9 2 * *
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   suspend: false
