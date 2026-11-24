@@ -366,10 +366,22 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
     referenced by TRaSH `trash_id`.
   - **Revisit Configarr** if the Job grows, or if one tool for profiles and wiring becomes
     attractive.
-- **SQLite on NFS** (arr configs): this follows the same rule as Alexandria, with one pod
-  per app, `Recreate`, and NFSv4.1 hard mounts. The arr developers advise against network
-  storage for `/config`. If corruption ever shows up, Sonarr/Radarr/Prowlarr can move to
-  Postgres on the existing CNPG operator (`*__POSTGRES__*` env).
+- **arr apps on Postgres (CNPG `media/arr-db`), not SQLite on NFS.** Sonarr, Radarr, Lidarr and
+  Prowlarr started on their default SQLite (WAL mode) on the `nfs-artnas` config PVCs. Those are
+  NFSv3 mounts, so every SQLite lock is an NLM round trip to the NAS, and lock waits came in steps
+  of ~30 s (the kernel lockd client's blocked-lock poll). Proven 2026-11-24 from the apps' own
+  request logs: `GET config/naming` 61 s, `PUT downloadclient` 92 s, provider init at startup
+  30-60 s; `/ping` timed out, and the liveness probe restarted each app every few minutes
+  (Sonarr 24 times in 3 h), so the wiring Job's calls timed out. They now use one CNPG cluster
+  (`k8s/apps/media/database.yaml`, a database per app, role `arr`, `*__POSTGRES__*` env) with the
+  same backups and monthly restore self-check as the other CNPG databases. The config PVC keeps
+  `config.xml`, logs and covers; the old `*.db` files there are no longer read.
+  - **Bazarr stays on SQLite:** no stalls seen (it writes little), and its Postgres support is a
+    separate code path. Move it the same way if it ever shows them.
+  - **The switch started the apps empty** (they held only what the wiring Job and Recyclarr
+    create, plus the adopted rips, which the Job re-adopts). Seerr's Sonarr/Radarr entries keep
+    working: the Job re-points a quality-profile id the arr no longer has to the profile of the
+    same name.
 - **Seerr on Postgres (CNPG `media/seerr-db`), not SQLite.** Seerr's SQLite runs in WAL mode (a
   `-shm` shared-memory file), which is a corruption risk on the NFSv3 `nfs-artnas` volume, and its
   requests and users deserve real database backups. Seerr therefore uses its own CNPG cluster

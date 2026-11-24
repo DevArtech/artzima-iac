@@ -100,6 +100,7 @@ standard webhook JSON; Backrest and the NAS maintenance container post to the sa
 | Vaultwarden DB | CNPG volume snapshot (NAS) + encrypted `pg_dump` (NAS) | bucket **pg**: `s3://<pg>/vaultwarden/vaultwarden-db/` (WAL continuously + base backup) | base 04:00 UTC, WAL continuous | `backup_pg_retention` (30d): any point in time inside the window |
 | Paperless DB | CNPG volume snapshot (NAS) + `document_exporter` (NAS) | bucket **pg**: `…/paperless/paperless-db/` | base 04:20 UTC, WAL continuous | same |
 | Seerr DB (requests, users) | CNPG volume snapshot (NAS, 03:25 UTC) | bucket **pg**: `…/media/seerr-db/` | base 04:40 UTC, WAL continuous | same |
+| arr DB (Sonarr, Radarr, Lidarr, Prowlarr: libraries, profiles, history) | CNPG volume snapshot (NAS, 03:30 UTC) | bucket **pg**: `…/media/arr-db/` | base 04:50 UTC, WAL continuous | same |
 | Vaultwarden `/data` (keys, attachments) | encrypted tarball (NAS, nightly) | bucket **restic**: `vaultwarden/vaultwarden-data` | 01:00 UTC | restic: 7 daily, 4 weekly, 6 monthly |
 | Paperless media + data | the NAS folders themselves | restic: `paperless/paperless-media`, `paperless/paperless-data` | 01:07, 01:14 UTC | same |
 | Paperless export (`document_exporter` mirror) | `/volume1/Artzima/backups/paperless` | restic: `paperless/paperless-export` | 03:00 UTC (export runs 02:30 local) | same |
@@ -228,7 +229,8 @@ Vaultwarden's encrypted `pg_dump` (§12.4 B).
 - **Adding a volume:** add a line to `backup_volumes`, run `make render`, commit, push.
 - **Consistency:** a live copy. Fine for files written atomically (documents, attachments,
   backups). Apps with a database keep it in CNPG, or write their own consistent backup files
-  (the arrs' `/config/Backups/*.zip`; restore from those if a live SQLite copy is torn).
+  (Sonarr/Radarr/Lidarr/Prowlarr are on CNPG `arr-db`; Bazarr's SQLite has its own
+  `/config/backup/*.zip`, restore from those if a live SQLite copy is torn).
 
 ### Restore runbook: restic restore of a PVC
 

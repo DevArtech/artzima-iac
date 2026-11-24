@@ -40,7 +40,7 @@ spec:
           type: RuntimeDefault
     controllers:
       sonarr:
-        replicas: 1 # SQLite on RWO: one writer
+        replicas: 1 # config.xml on an RWO volume; the DB is Postgres (arr-db)
         strategy: Recreate
         containers:
           app:
@@ -55,6 +55,20 @@ spec:
               SONARR__AUTH__METHOD: Forms
               SONARR__AUTH__REQUIRED: Enabled
               SONARR__LOG__DBENABLED: "False"
+              # Database: Postgres (CNPG arr-db, database.yaml), not SQLite on NFS.
+              SONARR__POSTGRES__HOST: arr-db-rw # CNPG read-write Service
+              SONARR__POSTGRES__PORT: "5432"
+              SONARR__POSTGRES__MAINDB: sonarr
+              SONARR__POSTGRES__USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: username
+              SONARR__POSTGRES__PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: password
               SONARR__AUTH__APIKEY:
                 valueFrom:
                   secretKeyRef:
@@ -103,7 +117,7 @@ spec:
           http:
             port: 8989
     persistence:
-      config: # NAS /volume1/Artzima/k8s/media/sonarr (SQLite + backups)
+      config: # NAS /volume1/Artzima/k8s/media/sonarr (config.xml, logs, covers; old SQLite files unused)
         type: persistentVolumeClaim
         storageClass: nfs-artnas
         accessMode: ReadWriteOnce

@@ -12,7 +12,7 @@ resources:
   - lidarr.yaml # music
   - bazarr.yaml
   - qbittorrent.yaml # + gluetun sidecar (Surfshark WireGuard)
-  - database.yaml # Seerr's CNPG Postgres (seerr-db)
+  - database.yaml # CNPG Postgres: seerr-db (Seerr), arr-db (Sonarr, Radarr, Lidarr, Prowlarr)
   - seerr.yaml # the only public one (/apps.yaml)
   - flaresolverr.yaml # optional, suspended
   - recyclarr.yaml # CronJob, TRaSH profiles

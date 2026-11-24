@@ -44,7 +44,7 @@ spec:
           type: RuntimeDefault
     controllers:
       lidarr:
-        replicas: 1 # SQLite on RWO: one writer
+        replicas: 1 # config.xml on an RWO volume; the DB is Postgres (arr-db)
         strategy: Recreate
         containers:
           app:
@@ -59,6 +59,20 @@ spec:
               LIDARR__AUTH__METHOD: Forms
               LIDARR__AUTH__REQUIRED: Enabled
               LIDARR__LOG__DBENABLED: "False"
+              # Database: Postgres (CNPG arr-db, database.yaml), not SQLite on NFS.
+              LIDARR__POSTGRES__HOST: arr-db-rw # CNPG read-write Service
+              LIDARR__POSTGRES__PORT: "5432"
+              LIDARR__POSTGRES__MAINDB: lidarr
+              LIDARR__POSTGRES__USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: username
+              LIDARR__POSTGRES__PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: password
               LIDARR__AUTH__APIKEY:
                 valueFrom:
                   secretKeyRef:
@@ -107,7 +121,7 @@ spec:
           http:
             port: 8686
     persistence:
-      config: # NAS /volume1/Artzima/k8s/media/lidarr (SQLite + backups)
+      config: # NAS /volume1/Artzima/k8s/media/lidarr (config.xml, logs, covers; old SQLite files unused)
         type: persistentVolumeClaim
         storageClass: nfs-artnas
         accessMode: ReadWriteOnce

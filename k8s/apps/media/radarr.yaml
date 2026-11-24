@@ -40,7 +40,7 @@ spec:
           type: RuntimeDefault
     controllers:
       radarr:
-        replicas: 1 # SQLite on RWO: one writer
+        replicas: 1 # config.xml on an RWO volume; the DB is Postgres (arr-db)
         strategy: Recreate
         containers:
           app:
@@ -55,6 +55,20 @@ spec:
               RADARR__AUTH__METHOD: Forms
               RADARR__AUTH__REQUIRED: Enabled
               RADARR__LOG__DBENABLED: "False"
+              # Database: Postgres (CNPG arr-db, database.yaml), not SQLite on NFS.
+              RADARR__POSTGRES__HOST: arr-db-rw # CNPG read-write Service
+              RADARR__POSTGRES__PORT: "5432"
+              RADARR__POSTGRES__MAINDB: radarr
+              RADARR__POSTGRES__USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: username
+              RADARR__POSTGRES__PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: arr-db-app
+                    key: password
               RADARR__AUTH__APIKEY:
                 valueFrom:
                   secretKeyRef:
@@ -103,7 +117,7 @@ spec:
           http:
             port: 7878
     persistence:
-      config: # NAS /volume1/Artzima/k8s/media/radarr (SQLite + backups)
+      config: # NAS /volume1/Artzima/k8s/media/radarr (config.xml, logs, covers; old SQLite files unused)
         type: persistentVolumeClaim
         storageClass: nfs-artnas
         accessMode: ReadWriteOnce
