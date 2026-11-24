@@ -612,38 +612,61 @@ def seerr_servers(api: Api, servers: list[dict]) -> None:
     if not api.get("/api/v1/settings/public").get("initialized"):
         log("skip Seerr: not set up yet (step 'Seerr setup'); the next run adds Sonarr/Radarr")
         return
-    for s in servers:
-        conn = {"name": s["name"], "hostname": s["host"], "port": s["port"], "apiKey": s["key"],
-                "useSsl": False, "baseUrl": ""}
-        existing = [x for x in api.get(s["path"]) if x.get("hostname") == s["host"] and not x.get("is4k")]
-        if existing:
-            # Keep what the operator changed in the UI (profile, folder, tags); fix only the connection.
-            cur = existing[0]
-            if all(cur.get(k) == v for k, v in conn.items()):
-                log(f"ok   Seerr: {s['name']}")
-            else:
-                api.post(f"{s['path']}/test", conn)
-                cur.update(conn)
-                api.put(f"{s['path']}/{cur['id']}", cur)
-                log(f"upd  Seerr: {s['name']} connection")
-            continue
-        # Seerr's own connection test, which also lists the profiles and root folders it sees.
-        test = api.post(f"{s['path']}/test", conn)
-        prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
-        if prof is None:
-            log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
-                "(recyclarr creates it; the next run adds the server)")
-            continue
-        if s["root"].rstrip("/") not in {f["path"].rstrip("/") for f in test.get("rootFolders") or []}:
-            log(f"skip Seerr: {s['name']} has no root folder {s['root']} yet (the next run adds the server)")
-            continue
-        api.post(s["path"], {
-            **conn, "activeProfileId": prof["id"], "activeProfileName": prof["name"],
-            "activeDirectory": s["root"], "tags": [], "is4k": False, "isDefault": True,
-            "externalUrl": "", "syncEnabled": True, "preventSearch": False, "tagRequests": False,
-            "overrideRule": [], **s["extra"],
-        })
-        log(f"add  Seerr: {s['name']} (profile '{prof['name']}', {s['root']})")
+    failed = []
+    for s in servers:  # independent: one unreachable arr doesn't hold up the other
+        try:
+            seerr_server(api, s)
+        except RuntimeError as e:
+            log(f"FAIL Seerr: {s['name']}: {e}")
+            failed.append(s["name"])
+    if failed:
+        raise RuntimeError(f"{', '.join(failed)} not set (see above)")
+
+
+def seerr_test(api: Api, path: str, conn: dict, tries: int = 6) -> dict:
+    """Seerr's own connection test of an arr (also lists its profiles and root folders);
+    retried briefly, as an arr can be busy for a moment."""
+    for i in range(tries):
+        try:
+            return api.post(f"{path}/test", conn)
+        except RuntimeError:
+            if i == tries - 1:
+                raise
+            time.sleep(10)
+    return {}
+
+
+def seerr_server(api: Api, s: dict) -> None:
+    conn = {"name": s["name"], "hostname": s["host"], "port": s["port"], "apiKey": s["key"],
+            "useSsl": False, "baseUrl": ""}
+    existing = [x for x in api.get(s["path"]) if x.get("hostname") == s["host"] and not x.get("is4k")]
+    if existing:
+        # Keep what the operator changed in the UI (profile, folder, tags); fix only the connection.
+        cur = existing[0]
+        if all(cur.get(k) == v for k, v in conn.items()):
+            log(f"ok   Seerr: {s['name']}")
+        else:
+            seerr_test(api, s["path"], conn)
+            cur.update(conn)
+            api.put(f"{s['path']}/{cur['id']}", cur)
+            log(f"upd  Seerr: {s['name']} connection")
+        return
+    test = seerr_test(api, s["path"], conn)
+    prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
+    if prof is None:
+        log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
+            "(recyclarr creates it; the next run adds the server)")
+        return
+    if s["root"].rstrip("/") not in {f["path"].rstrip("/") for f in test.get("rootFolders") or []}:
+        log(f"skip Seerr: {s['name']} has no root folder {s['root']} yet (the next run adds the server)")
+        return
+    api.post(s["path"], {
+        **conn, "activeProfileId": prof["id"], "activeProfileName": prof["name"],
+        "activeDirectory": s["root"], "tags": [], "is4k": False, "isDefault": True,
+        "externalUrl": "", "syncEnabled": True, "preventSearch": False, "tagRequests": False,
+        "overrideRule": [], **s["extra"],
+    })
+    log(f"add  Seerr: {s['name']} (profile '{prof['name']}', {s['root']})")
 
 
 # ---------------------------------------------------------------- main
