@@ -660,12 +660,12 @@ def flushed_test(api: Api, s: dict, conn: dict) -> dict:
     return seerr_test(api, s["path"], conn)
 
 
-def profile_list(api: Api, s: dict, conn: dict, want_id) -> list[dict] | None:
-    """The arr's quality profiles as Seerr sees them (fresh if `want_id` is missing from
-    the cached list); None if the arr can't be reached right now (nothing is changed)."""
+def profile_list(api: Api, s: dict, conn: dict, want: tuple) -> list[dict] | None:
+    """The arr's quality profiles as Seerr sees them (fresh if the (id, name) pair `want` is
+    not in the cached list); None if the arr can't be reached right now (nothing is changed)."""
     try:
         profiles = seerr_test(api, s["path"], conn, tries=2).get("profiles")
-        if profiles is not None and want_id not in {p["id"] for p in profiles}:
+        if profiles is not None and want not in {(p["id"], p["name"]) for p in profiles}:
             profiles = flushed_test(api, s, conn).get("profiles")
     except RuntimeError as e:
         log(f"warn Seerr: {s['name']} profile check skipped: {e}")
@@ -679,12 +679,14 @@ def seerr_server(api: Api, s: dict) -> None:
     existing = [x for x in api.get(s["path"]) if x.get("hostname") == s["host"] and not x.get("is4k")]
     if existing:
         # Keep what the operator changed in the UI (profile, folder, tags); fix only the
-        # connection, and a profile id the arr no longer has (e.g. after its database was
-        # rebuilt): re-pointed to the profile of the same name, else to s["profile"].
+        # connection, and a profile id that no longer names the saved profile (after the arr's
+        # database was rebuilt the id can be gone, or belong to another profile, e.g. 8 =
+        # "Owned rip"): re-pointed to the profile of the saved name, else to s["profile"].
         cur = existing[0]
         upd = [] if all(cur.get(k) == v for k, v in conn.items()) else ["connection"]
-        profiles = profile_list(api, s, conn, want_id=cur.get("activeProfileId"))
-        if profiles is not None and cur.get("activeProfileId") not in {p["id"] for p in profiles}:
+        want = (cur.get("activeProfileId"), cur.get("activeProfileName"))
+        profiles = profile_list(api, s, conn, want)
+        if profiles is not None and want not in {(p["id"], p["name"]) for p in profiles}:
             prof = (next((p for p in profiles if p["name"] == cur.get("activeProfileName")), None)
                     or next((p for p in profiles if p["name"] == s["profile"]), None))
             if prof is None:
