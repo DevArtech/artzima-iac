@@ -180,6 +180,7 @@ creates it (recipe from the manifest). Otherwise the named `make` step writes it
 | `/k8s/media/{SONARR,RADARR,LIDARR,PROWLARR,BAZARR}_API_KEY`, `SEERR_API_KEY` | hex:16 / hex:32, **pre-seeded** into the apps | gen | ESO → `media/media-apikeys`: the apps, media-wiring Job, Recyclarr |
 | `/k8s/media/QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD` | `admin`, base64:24 | gen | ESO → `media/qbittorrent` |
 | `/k8s/media/JELLYFIN_API_KEY` | Jellyfin API key `artzima-iac`, created in Jellyfin and written here by `make jellyfin` (role `jellyfin_setup`); the wiring Job skips the Jellyfin connection while it is missing or empty | `make jellyfin` | ESO → `media/jellyfin-api` |
+| `/k8s/media/JELLYFIN_ADMIN_USER`, `JELLYFIN_ADMIN_PASSWORD` | the cluster's copies of `/operator/JELLYFIN_ADMIN_*` (`mirror_of`), rewritten by every `make jellyfin` when they differ; the wiring Job signs in to Seerr with them once (Seerr's setup) | `make jellyfin` | ESO → `media/jellyfin-admin` |
 | `/k8s/paperless/SECRET_KEY`, `ADMIN_USER`, `ADMIN_PASSWORD` | base64:48, `admin`, base64:24 (first start only) | gen | ESO → `paperless/paperless` |
 | `/k8s/backup/RESTIC_PASSWORD` | base64:48: every VolSync repo. **Keep a copy outside the lab** | gen | `<pvc>-restic` Secrets, `restic-maint` |
 

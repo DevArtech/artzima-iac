@@ -294,10 +294,12 @@ flowchart LR
    Pick the country in `ansible/group_vars/all/media.yml`.
 3. **Keys:** generate the arr/Seerr API keys and the qBittorrent login into `/k8s/media`
    (`make gen-secrets`). The **Jellyfin API key** is created by `make jellyfin` and written to
-   `/k8s/media/JELLYFIN_API_KEY`. Run `make secrets-check`.
+   `/k8s/media/JELLYFIN_API_KEY`, along with copies of the Jellyfin admin login
+   (`/k8s/media/JELLYFIN_ADMIN_*`, for Seerr). Run `make secrets-check`.
 4. **Flux sync:** `make render`, `make cf-plan cf-apply` (adds `seerr.<domain>`), commit, push.
    Flux deploys the stack, and the `media-wiring` Job connects everything: download client, root
-   folders, Prowlarr apps, Bazarr, Jellyfin Connect, and Seerr once its wizard is done.
+   folders, Prowlarr apps, Bazarr, Jellyfin Connect, and Seerr's whole setup (Jellyfin sign-in,
+   libraries, application URL, Sonarr/Radarr): no setup wizard by hand.
 5. **After:** verify the VPN IP, run Recyclarr once, first logins
    ([§10.2-10.3](docs/manual-steps.md#102-after-the-sync)).
 6. **Existing rips** (any time after step 1): [below](#bringing-in-your-existing-rips).

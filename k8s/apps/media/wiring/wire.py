@@ -20,7 +20,8 @@ Secrets from Infisical /k8s/media) and are never printed.
   4. Bazarr: Sonarr + Radarr connection
   5. qBittorrent: default save path, categories tv / movies / music (WebUI password:
      seeded from Infisical by the qbittorrent pod's init container)
-  6. Seerr: Sonarr + Radarr servers, once the Jellyfin setup wizard is done
+  6. Seerr: the whole setup wizard (first sign-in with the Jellyfin admin login,
+     Jellyfin server + libraries, application URL, initialized), then Sonarr + Radarr
 
 Exit code 1 if any step failed (the Job retries); steps are independent.
 """
@@ -520,13 +521,96 @@ def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: 
             log(f"ok   qBittorrent: category {cat}")
 
 
-@step("Seerr")
-def seerr(api: Api, servers: list[dict]) -> None:
+# Seerr's MediaServerType (server/constants/server.ts in Seerr 3.5): PLEX 1, JELLYFIN 2,
+# EMBY 3, NOT_CONFIGURED 4 (what wiring/seed.py writes into a new settings.json).
+SEERR_JELLYFIN, SEERR_NOT_CONFIGURED = 2, 4
+
+
+@step("Seerr setup")
+def seerr_setup(api: Api, jf: dict, app_url: str) -> None:
+    """Seerr's setup wizard, over its API (Seerr 3.5.2, routes in server/routes/auth.ts and
+    server/routes/settings/index.ts). Every setting is read first and written only when it
+    differs; nothing is reset.
+      a. first sign-in with the Jellyfin admin (POST /auth/jellyfin, serverType 2): makes
+         that account Seerr's admin (user 1, which SEERR_API_KEY then acts as), connects
+         the Jellyfin server and has Seerr create its own Jellyfin API key. Only while
+         Seerr has no admin / no media server yet.
+      b. Jellyfin server: in-cluster address, public URL for links
+      c. libraries: Seerr reads Jellyfin's library list (Jellyfin is not scanned or
+         changed); all are enabled if none is (later on/off is the operator's choice)
+      d. application URL, then `initialized` (wizard done)."""
+    if not wait_for(api, "/api/v1/settings/public"):
+        return
+    pub = api.get("/api/v1/settings/public")
+    server_type = pub.get("mediaServerType")
+    try:
+        jcur = api.get("/api/v1/settings/jellyfin")
+        has_admin = True
+    except RuntimeError as e:
+        if "HTTP 403" not in str(e):
+            raise
+        # The API key acts as user 1; no user 1 = nobody has signed in yet.
+        if server_type != SEERR_NOT_CONFIGURED:
+            raise RuntimeError("Seerr refuses SEERR_API_KEY (check /k8s/media/SEERR_API_KEY)") from None
+        jcur, has_admin = {}, False
+
+    if server_type not in (SEERR_JELLYFIN, SEERR_NOT_CONFIGURED):
+        raise RuntimeError(f"Seerr is set up for another media server (type {server_type}); not changing it")
+    if server_type == SEERR_NOT_CONFIGURED or not has_admin:
+        if not (jf["admin_user"] and jf["admin_password"]):
+            log("skip Seerr: JELLYFIN_ADMIN_USER / _PASSWORD empty (written by `make jellyfin`); "
+                "the next run sets Seerr up")
+            return
+        body = {"username": jf["admin_user"], "password": jf["admin_password"], "serverType": SEERR_JELLYFIN}
+        if not jcur.get("ip"):  # Seerr refuses a hostname once its Jellyfin server is set
+            body.update(hostname=jf["host"], port=jf["port"], useSsl=False, urlBase="")
+        api.post("/api/v1/auth/jellyfin", body)
+        log(f"add  Seerr: signed in as the Jellyfin admin (Seerr admin, Jellyfin {jf['host']}:{jf['port']})")
+        jcur = api.get("/api/v1/settings/jellyfin")
+
+    want = {"ip": jf["host"], "port": jf["port"], "useSsl": False, "urlBase": "",
+            "externalHostname": jf["public_url"]}
+    diff = {k: v for k, v in want.items() if jcur.get(k) != v}
+    if diff:
+        api.post("/api/v1/settings/jellyfin", diff)  # Seerr tests the connection before saving
+        log(f"upd  Seerr: Jellyfin settings {sorted(diff)}")
+    else:
+        log("ok   Seerr: Jellyfin server")
+
+    libs = api.get("/api/v1/settings/jellyfin/library") or []
+    if not libs:
+        libs = api.post("/api/v1/settings/jellyfin/library/sync") or []
+        log(f"add  Seerr: Jellyfin libraries {[lib['name'] for lib in libs]}")
+    if not libs:
+        raise RuntimeError("Jellyfin has no movie/show library yet (`make jellyfin` creates them)")
+    if not any(lib.get("enabled") for lib in libs):
+        for lib in libs:
+            api.put(f"/api/v1/settings/jellyfin/library/{urllib.parse.quote(lib['id'], safe='')}",
+                    {"enabled": True})
+        log(f"upd  Seerr: enabled libraries {[lib['name'] for lib in libs]}")
+    else:
+        log(f"ok   Seerr: libraries enabled {[lib['name'] for lib in libs if lib.get('enabled')]}")
+
+    main = api.get("/api/v1/settings/main")
+    if main.get("applicationUrl") != app_url:
+        api.post("/api/v1/settings/main", {"applicationUrl": app_url})  # merged into the rest
+        log(f"upd  Seerr: application URL {app_url}")
+    else:
+        log("ok   Seerr: application URL")
+
+    if api.get("/api/v1/settings/public").get("initialized"):
+        log("ok   Seerr: initialized")
+    else:
+        api.post("/api/v1/settings/initialize")
+        log("upd  Seerr: initialized (setup wizard done)")
+
+
+@step("Seerr: Sonarr / Radarr")
+def seerr_servers(api: Api, servers: list[dict]) -> None:
     if not wait_for(api, "/api/v1/settings/public"):
         return
     if not api.get("/api/v1/settings/public").get("initialized"):
-        log("skip Seerr: setup wizard not finished (sign in with Jellyfin first, "
-            "docs/manual-steps.md §10); the next run wires Sonarr/Radarr")
+        log("skip Seerr: not set up yet (step 'Seerr setup'); the next run adds Sonarr/Radarr")
         return
     for s in servers:
         conn = {"name": s["name"], "hostname": s["host"], "port": s["port"], "apiKey": s["key"],
@@ -538,15 +622,20 @@ def seerr(api: Api, servers: list[dict]) -> None:
             if all(cur.get(k) == v for k, v in conn.items()):
                 log(f"ok   Seerr: {s['name']}")
             else:
+                api.post(f"{s['path']}/test", conn)
                 cur.update(conn)
                 api.put(f"{s['path']}/{cur['id']}", cur)
                 log(f"upd  Seerr: {s['name']} connection")
             continue
-        profiles = s["arr"].get(s["profiles_path"])
-        prof = next((p for p in profiles if p["name"] == s["profile"]), None)
+        # Seerr's own connection test, which also lists the profiles and root folders it sees.
+        test = api.post(f"{s['path']}/test", conn)
+        prof = next((p for p in test.get("profiles") or [] if p["name"] == s["profile"]), None)
         if prof is None:
-            log(f"skip Seerr: {s['arr'].name} has no quality profile '{s['profile']}' yet "
+            log(f"skip Seerr: {s['name']} has no quality profile '{s['profile']}' yet "
                 "(recyclarr creates it; the next run adds the server)")
+            continue
+        if s["root"].rstrip("/") not in {f["path"].rstrip("/") for f in test.get("rootFolders") or []}:
+            log(f"skip Seerr: {s['name']} has no root folder {s['root']} yet (the next run adds the server)")
             continue
         api.post(s["path"], {
             **conn, "activeProfileId": prof["id"], "activeProfileName": prof["name"],
@@ -602,14 +691,17 @@ def main() -> None:
     qbittorrent(Api("qBittorrent", url["qbittorrent"], cookies=True), qbt_user, qbt_pass, data,
                 {"tv": f"{data}/torrents/tv", "movies": f"{data}/torrents/movies",
                  "music": f"{data}/torrents/music"})
-    seerr(Api("Seerr", url["seerr"], {"X-Api-Key": keys["seerr"]}), [
-        {"name": "Sonarr", "arr": sonarr, "profiles_path": "/api/v3/qualityprofile",
-         "profile": env("SEERR_SONARR_PROFILE", "WEB-1080p"), "host": host["sonarr"], "port": port["sonarr"],
-         "key": keys["sonarr"], "root": f"{data}/media/tv", "path": "/api/v1/settings/sonarr",
+    seerr = Api("Seerr", url["seerr"], {"X-Api-Key": keys["seerr"]})
+    seerr_setup(seerr, {"host": jf_host, "port": jf_port, "public_url": env("JELLYFIN_PUBLIC_URL"),
+                        "admin_user": os.environ.get("JELLYFIN_ADMIN_USER", "").strip(),
+                        "admin_password": os.environ.get("JELLYFIN_ADMIN_PASSWORD", "")},
+                env("SEERR_APPLICATION_URL"))
+    seerr_servers(seerr, [
+        {"name": "Sonarr", "profile": env("SEERR_SONARR_PROFILE", "WEB-1080p"), "host": host["sonarr"],
+         "port": port["sonarr"], "key": keys["sonarr"], "root": f"{data}/media/tv", "path": "/api/v1/settings/sonarr",
          "extra": {"seriesType": "standard", "animeSeriesType": "anime", "enableSeasonFolders": True,
                    "monitorNewItems": "all"}},
-        {"name": "Radarr", "arr": radarr, "profiles_path": "/api/v3/qualityprofile",
-         "profile": env("SEERR_RADARR_PROFILE", "HD Bluray + WEB"), "host": host["radarr"],
+        {"name": "Radarr", "profile": env("SEERR_RADARR_PROFILE", "HD Bluray + WEB"), "host": host["radarr"],
          "port": port["radarr"], "key": keys["radarr"], "root": f"{data}/media/movies",
          "path": "/api/v1/settings/radarr", "extra": {"minimumAvailability": "released"}},
     ])

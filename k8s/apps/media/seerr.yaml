@@ -5,9 +5,11 @@
 # -> this Service). Optional Cloudflare Access: docs/manual-steps.md §10.
 #
 # API key: Infisical /k8s/media/SEERR_API_KEY, seeded into a NEW settings.json by
-# the init container and enforced on every start by the API_KEY env var. The
-# setup wizard (Jellyfin server + admin sign-in) is a manual first login; after
-# it, the media-wiring Job adds Sonarr and Radarr (docs/manual-steps.md §10).
+# the init container and enforced on every start by the API_KEY env var. No setup
+# wizard by hand: the media-wiring Job (wiring/wire.py "Seerr setup") signs in once
+# with the Jellyfin admin login (Infisical /k8s/media/JELLYFIN_ADMIN_*, copies that
+# `make jellyfin` writes), sets the Jellyfin server, libraries and application URL,
+# marks Seerr initialized, and adds Sonarr and Radarr.
 #
 # Database: CNPG Cluster seerr-db (database.yaml), credentials from the
 # CNPG-generated Secret seerr-db-app, instead of Seerr's default SQLite (WAL/-shm)

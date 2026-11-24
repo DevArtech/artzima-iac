@@ -556,7 +556,10 @@ Talos and the LXCs are rebuilt by code. The old vzdump backups are in datastore 
 
 As in [OPERATOR-SETUP C](OPERATOR-SETUP.md#c-after): Vaultwarden (your account and its data are
 back: log in with the master password from the kit), Paperless, Jellyfin (set up by `make jellyfin`: wizard, libraries, API key →
-`/k8s/media/JELLYFIN_API_KEY`; log in with `/operator/JELLYFIN_ADMIN_*`), Backrest (`http://192.0.2.156:9898`, still paused),
+`/k8s/media/JELLYFIN_API_KEY`; log in with `/operator/JELLYFIN_ADMIN_*`), Seerr (nothing to click: its
+requests and users come back with `seerr-db`, and the wiring Job redoes its setup over the API,
+signing in once with the Jellyfin admin login that `make jellyfin` copies to `/k8s/media/JELLYFIN_ADMIN_*`;
+log in with that login), Backrest (`http://192.0.2.156:9898`, still paused),
 the media stack's VPN check.
 
 ---
@@ -580,7 +583,8 @@ make verify
       (`kubectl -n vaultwarden get cluster vaultwarden-db -o jsonpath='{.status.conditions[?(@.type=="ContinuousArchiving")].status}'` → `True`).
 - [ ] **Apps:** a Vaultwarden item with an attachment opens and existing clients sync; Paperless
       search works; Alexandria answers; Grafana dashboards present; the arrs keep their settings
-      and history; the wiring Job is green; Jellyfin libraries scanned.
+      and history; the wiring Job is green (Seerr: `curl -s https://seerr.<domain>/api/v1/settings/public` shows
+      `"initialized":true`); Jellyfin libraries scanned.
 - [ ] **Public routes:** `https://<app>.<domain>` loads for every `/apps.yaml` entry; `https://vault.<domain>/admin` → 403.
 - [ ] **Tailnet:** `http://paperless`, `http://vault-admin/admin`, the Backrest UI reachable; subnet routes approved.
 

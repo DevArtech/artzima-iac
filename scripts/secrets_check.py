@@ -265,7 +265,10 @@ def check_projects(c, cfg: dict, folders: list[str], secrets: dict, create_folde
             if sk not in found.get(sf, set()):
                 continue
             if _digest(value(f"{folder}/{k}")) != _digest(value(str(src))):
-                r["mirror_drift"].append(f"{folder}/{k} differs from {src}: run `make secrets-migrate-k8s MIGRATE_ARGS=--apply`")
+                fix = str(meta.get("after") or "")
+                if not fix or fix.startswith("make secrets-migrate-k8s"):
+                    fix = "make secrets-migrate-k8s MIGRATE_ARGS=--apply"
+                r["mirror_drift"].append(f"{folder}/{k} differs from {src}: run `{fix}`")
 
     # Old copies of k8s folders left in the MAIN project (before `secrets-migrate-k8s --delete-old`).
     for f in folders:

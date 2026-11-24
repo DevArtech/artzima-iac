@@ -48,6 +48,12 @@ spec:
               value: jellyfin.external.svc.cluster.local
             - name: JELLYFIN_PORT
               value: "80"
+            # Seerr: its public URL (Settings > General > Application URL) and the
+            # Jellyfin URL it links users to (Settings > Jellyfin > External URL).
+            - name: SEERR_APPLICATION_URL
+              value: https://seerr.${public_domain}
+            - name: JELLYFIN_PUBLIC_URL
+              value: https://jellyfin.${public_domain}
             # Optional (flaresolverr.yaml): http://flaresolverr.media.svc.cluster.local:8191
             - name: FLARESOLVERR_URL
               value: ""
@@ -76,6 +82,8 @@ spec:
                 name: qbittorrent # QBITTORRENT_USERNAME / _PASSWORD
             - secretRef:
                 name: jellyfin-api # JELLYFIN_API_KEY
+            - secretRef:
+                name: jellyfin-admin # JELLYFIN_ADMIN_USER / _PASSWORD (Seerr's first sign-in)
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

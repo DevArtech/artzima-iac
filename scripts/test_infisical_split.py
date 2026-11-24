@@ -119,7 +119,11 @@ class SecretsCheckTests(unittest.TestCase):
             target = k8s if infisical_projects.project_of(f) == "k8s" else main
             for k in keys:
                 target[f][k] = SECRET_MARK + k
-        k8s["/k8s/settings"]["PUBLIC_DOMAIN"] = main["/settings"]["PUBLIC_DOMAIN"]
+        for f, keys in secrets.items():  # every mirror equal to its source
+            for k, meta in keys.items():
+                if meta.get("mirror_of"):
+                    sf, _, sk = str(meta["mirror_of"]).rpartition("/")
+                    k8s[f][k] = main[sf][sk]
         return folders, secrets, main, k8s
 
     def test_complete_split_is_clean(self):
@@ -164,6 +168,7 @@ class MigrationTests(unittest.TestCase):
     def setup_main(self):
         folders, secrets, main, k8s = manifest_projects()
         main["/settings"]["PUBLIC_DOMAIN"] = "fictional.example.org"
+        main["/operator"].update(JELLYFIN_ADMIN_USER=SECRET_MARK + "jf-user", JELLYFIN_ADMIN_PASSWORD=SECRET_MARK + "jf-pw")
         main["/k8s"] = {}
         main["/k8s/media"] = {"SONARR_API_KEY": SECRET_MARK + "sonarr", "JELLYFIN_API_KEY": ""}
         main["/k8s/backup"] = {"RESTIC_PASSWORD": SECRET_MARK + "restic", "PG_B2_KEY_ID": SECRET_MARK + "tofu"}
@@ -221,7 +226,9 @@ class MigrationTests(unittest.TestCase):
         folders, secrets, main = self.setup_main()
         fake = FakeInfisical({MAIN: main, K8S: {"/k8s": {}, "/k8s/settings": {"PUBLIC_DOMAIN": "old.example.org"}}})
         p = self.run_plan(fake, folders, secrets)
-        self.assertEqual([m["action"] for m in p["mirrors"]], ["update"])
+        actions = {f"{m['folder']}/{m['key']}": m["action"] for m in p["mirrors"]}
+        self.assertEqual(actions, {"/k8s/settings/PUBLIC_DOMAIN": "update", "/k8s/media/JELLYFIN_ADMIN_USER": "copy",
+                                   "/k8s/media/JELLYFIN_ADMIN_PASSWORD": "copy"})
         quiet(mig.apply, mig.Store(fake, "prod"), MAIN, K8S, p)
         self.assertEqual(fake.data[K8S]["/k8s/settings"]["PUBLIC_DOMAIN"], "fictional.example.org")
 

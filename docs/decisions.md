@@ -352,7 +352,8 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   - **What it wires:** the TRaSH folders, qBittorrent (save path, categories `tv`/`movies`, `tun0`
     binding), Sonarr/Radarr (root folders, hardlinks, qBittorrent download client, Jellyfin
     Connect), Prowlarr (Sonarr/Radarr apps, optional FlareSolverr proxy), Bazarr (Sonarr/Radarr)
-    and Seerr (Sonarr/Radarr, once its Jellyfin wizard is done).
+    and Seerr (its whole setup wizard: first sign-in with the Jellyfin admin login, Jellyfin
+    server and libraries, application URL, initialized; then Sonarr/Radarr).
   - **Buildarr** (last stable release 2023-11, last commit 2024-05) and **Flemmarr** (last commit
     2024-01) are unmaintained.
   - **Configarr** (raydak-labs, actively released, v1.39 in 2026-11) is maintained. It covers

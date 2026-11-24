@@ -284,34 +284,41 @@
           | sort(attribute='DateCreated') | first).AccessToken }}
   no_log: true
 
-# The cluster reads it through the ExternalSecret media/jellyfin-api (k8s/secrets/media).
-- name: Store the API key in Infisical /k8s/media/JELLYFIN_API_KEY
+# ---------------------------------------------------------------- Infisical /k8s/media
+# The API key (ExternalSecret media/jellyfin-api) and copies of the /operator admin login
+# (ExternalSecret media/jellyfin-admin, for the wiring Job's Seerr setup), rewritten on
+# every run when they differ: a password changed in /operator reaches the cluster here.
+- name: Keep the cluster's Jellyfin secrets in Infisical /k8s/media
   vars:
-    jellyfin_setup_inf_now: >-
-      {{ query('infisical.vault.read_secrets', url=artzima_infisical_url, project_id=artzima_infisical_k8s_project,
-      env_slug=artzima_infisical_env, path='/k8s/media', as_dict=True)[0] | default({}, true) }}
     jellyfin_setup_inf_auth: &jellyfin_setup_inf_auth
       url: "{{ artzima_infisical_url }}"
       universal_auth_client_id: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_ID') }}"
       universal_auth_client_secret: "{{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET') }}"
       project_id: "{{ artzima_infisical_k8s_project }}"
       env_slug: "{{ artzima_infisical_env }}"
-      path: "{{ jellyfin_setup_api_key_path }}"
-      secret_name: "{{ jellyfin_setup_api_key_name }}"
+      path: /k8s/media
+      secret_name: "{{ item.name }}"
   delegate_to: localhost
   become: false
-  no_log: true # the lookup reads the whole /k8s/media folder
+  no_log: true # values, and the lookup reads the whole /k8s/media folder
   block:
-    - name: Create the Infisical secret
+    - name: Read Infisical /k8s/media
+      ansible.builtin.set_fact:
+        jellyfin_setup_inf_now: >-
+          {{ query('infisical.vault.read_secrets', url=artzima_infisical_url, project_id=artzima_infisical_k8s_project,
+          env_slug=artzima_infisical_env, path='/k8s/media', as_dict=True)[0] | default({}, true) }}
+    - name: Create the missing Infisical secrets
       infisical.vault.create_secret:
         <<: *jellyfin_setup_inf_auth
-        secret_value: "{{ jellyfin_setup_api_key }}"
-        secret_comment: Jellyfin API key 'artzima-iac' (ansible jellyfin_setup role)
-      when: jellyfin_setup_api_key_name not in jellyfin_setup_inf_now
-    - name: Update the Infisical secret
+        secret_value: "{{ lookup('ansible.builtin.vars', item.var) }}"
+        secret_comment: "{{ item.comment }}"
+      loop: "{{ jellyfin_setup_k8s_secrets }}"
+      when: item.name not in jellyfin_setup_inf_now
+    - name: Update the Infisical secrets that differ
       infisical.vault.update_secret:
         <<: *jellyfin_setup_inf_auth
-        secret_value: "{{ jellyfin_setup_api_key }}"
+        secret_value: "{{ lookup('ansible.builtin.vars', item.var) }}"
+      loop: "{{ jellyfin_setup_k8s_secrets }}"
       when:
-        - jellyfin_setup_api_key_name in jellyfin_setup_inf_now
-        - jellyfin_setup_inf_now[jellyfin_setup_api_key_name] != jellyfin_setup_api_key
+        - item.name in jellyfin_setup_inf_now
+        - jellyfin_setup_inf_now[item.name] != lookup('ansible.builtin.vars', item.var)

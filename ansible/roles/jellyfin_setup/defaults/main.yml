@@ -43,7 +43,14 @@ jellyfin_setup_system:
   EnableLegacyAuthorization: true
 
 # The API key for the media wiring Job (Sonarr/Radarr/Lidarr "Connect"): created once
-# under this app name and stored in Infisical (k8s project) at this path.
+# under this app name.
 jellyfin_setup_api_key_app: artzima-iac
-jellyfin_setup_api_key_path: /k8s/media
-jellyfin_setup_api_key_name: JELLYFIN_API_KEY
+
+# What the cluster needs from Jellyfin, kept in Infisical (k8s project) /k8s/media on every
+# run: created when missing, updated when it differs (never printed). `var` names the
+# variable that holds the value. The admin login is a copy of /operator (mirror_of in
+# secrets.manifest.yaml): the wiring Job signs in to Seerr with it.
+jellyfin_setup_k8s_secrets:
+  - { name: JELLYFIN_API_KEY, var: jellyfin_setup_api_key, comment: "Jellyfin API key 'artzima-iac' (ansible jellyfin_setup role)" }
+  - { name: JELLYFIN_ADMIN_USER, var: jellyfin_admin_user, comment: "mirror of /operator/JELLYFIN_ADMIN_USER (ansible jellyfin_setup role)" }
+  - { name: JELLYFIN_ADMIN_PASSWORD, var: jellyfin_admin_password, comment: "mirror of /operator/JELLYFIN_ADMIN_PASSWORD (ansible jellyfin_setup role)" }
