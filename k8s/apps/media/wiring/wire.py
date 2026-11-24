@@ -568,6 +568,11 @@ SAB_SERVER = "usenet"  # SABnzbd's id of the one news server (its display name b
 SAB_MASKED = "*" * 10  # how SABnzbd's API returns a stored password
 
 
+def sab_str(v) -> str:
+    """SABnzbd answers booleans as true/false but takes (and we want) 0/1."""
+    return str(int(v)) if isinstance(v, bool) else str(v)
+
+
 def sab(api: Api, mode: str, **params) -> dict:
     """SABnzbd API call: a form POST, so neither the key nor a password is in a URL."""
     res = api.call("POST", "/api", form={"mode": mode, "output": "json", "apikey": api.key,
@@ -603,7 +608,7 @@ def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user:
     misc = sab(api, "get_config", section="misc")["config"]["misc"]
 
     def set_misc(key: str, value: str, show: bool = True) -> None:
-        if str(misc.get(key)) == value:
+        if sab_str(misc.get(key)) == value:
             log(f"ok   SABnzbd: {key}" + (f" = {value}" if show else ""))
             return
         sab(api, "set_config", section="misc", keyword=key, value=value)
@@ -616,7 +621,8 @@ def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user:
     set_misc("complete_dir", f"{data_root}/usenet/complete")
     set_misc("permissions", "775")  # files 664 / folders 775: the shared media group can move them
 
-    have = {c["name"]: c for c in sab(api, "get_config", section="categories")["config"]["categories"]}
+    # A section SABnzbd has no entries in yet is missing from the answer ({"config": {}}).
+    have = {c["name"]: c for c in sab(api, "get_config", section="categories")["config"].get("categories", [])}
     for cat in categories:
         if (have.get(cat) or {}).get("dir") == cat:
             log(f"ok   SABnzbd: category {cat} -> {data_root}/usenet/complete/{cat}")
@@ -628,7 +634,7 @@ def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user:
     want = {"displayname": "Usenet provider", "host": server["host"], "port": server["port"],
             "username": server["user"], "connections": server["connections"], "ssl": 1, "ssl_verify": 3,
             "enable": 1}
-    cur = next((s for s in sab(api, "get_config", section="servers")["config"]["servers"]
+    cur = next((s for s in sab(api, "get_config", section="servers")["config"].get("servers", [])
                 if s.get("name") == SAB_SERVER), None)
     test = {k: want[k] for k in ("host", "port", "username", "connections", "ssl", "ssl_verify")}
 
@@ -636,7 +642,7 @@ def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user:
         sab(api, "set_config", section="servers", keyword=SAB_SERVER, password=server["password"], **want)
         log(f"{'upd ' if cur else 'add '} SABnzbd: server {SAB_SERVER} ({why}; SSL, {server['connections']} connections)")
 
-    diff = [k for k, v in want.items() if cur is None or str(cur.get(k)) != str(v)]
+    diff = [k for k, v in want.items() if cur is None or sab_str(cur.get(k)) != str(v)]
     if diff:
         save_server(f"changed {diff}" if cur else "new")
     elif sab(api, "queue", limit=0)["queue"].get("status") == "Downloading":
