@@ -25,18 +25,28 @@ spec:
   values:
     crds:
       enabled: true
-    # Talos: control-plane components listen on the node IPs.
+    # Talos binds kube-controller-manager and kube-scheduler metrics to 127.0.0.1 (and kube-proxy's
+    # too), so Prometheus can't scrape them: they only ever raised false "unreachable"/TargetDown
+    # alerts. Off, with their rules (below). To monitor them, bind them to 0.0.0.0 in the Talos
+    # machine config first (controllerManager/scheduler extraArgs bind-address, proxy
+    # metrics-bind-address), then turn these back on.
     kubeControllerManager:
-      enabled: true
+      enabled: false
     kubeScheduler:
-      enabled: true
+      enabled: false
     kubeEtcd:
       enabled: true
       service:
         port: 2381
         targetPort: 2381
     kubeProxy:
-      enabled: true # Talos default: flannel + kube-proxy
+      enabled: false # Talos default: flannel + kube-proxy, metrics on 127.0.0.1 only (see above)
+    defaultRules:
+      rules:
+        kubeControllerManager: false
+        kubeSchedulerAlerting: false
+        kubeSchedulerRecording: false
+        kubeProxy: false
     grafana:
       admin:
         existingSecret: grafana-admin
