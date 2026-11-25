@@ -7,11 +7,13 @@ reads the current state first and only creates/updates what differs, so it is
 safe to run any number of times. API keys and passwords come from env (ESO
 Secrets from Infisical /k8s/media) and are never printed.
 
-  1. /data tree (TRaSH layout): torrents/{tv,movies,music}, usenet/{incomplete,complete/<cat>},
+  1. /data tree (TRaSH layout): torrents/{tv,movies,music}, usenet/{incomplete,complete/<cat>,quarantine},
      media/{tv,movies,music}
   1b. SABnzbd: folders /data/usenet/..., categories tv / movies / music, the Usenet server
      (Infisical /k8s/media/USENET_*, SSL, 20 connections, checked by SABnzbd's server test),
-     web login = the Jellyfin admin login; request logging off (passwords go over its API)
+     web login = the Jellyfin admin login; request logging off (passwords go over its API);
+     malware protection: DANGEROUS_EXT and encrypted RARs abort a job, every finished job
+     runs /scripts/clamav-scan.py (ClamAV, fail closed; infected -> /data/usenet/quarantine)
   2. Sonarr + Radarr + Lidarr: root folder, hardlinks on, renaming OFF (Lidarr: and
      never write audio tags; Radarr: no folder renames), no chmod / file-date changes
      (adopted rips share their inode with the originals), recycle bin
@@ -27,8 +29,9 @@ Secrets from Infisical /k8s/media) and are never printed.
   4. Bazarr: Sonarr + Radarr connection
   4b. UI logins: forms login on Sonarr/Radarr/Lidarr/Prowlarr/Bazarr = the Jellyfin admin
      login (checked by a test login / Bazarr's stored digest; written only on difference)
-  5. qBittorrent: default save path, categories tv / movies / music (WebUI password:
-     seeded from Infisical by the qbittorrent pod's init container)
+  5. qBittorrent: default save path, categories tv / movies / music, DANGEROUS_EXT never
+     downloaded (excluded file names) (WebUI password: seeded from Infisical by the
+     qbittorrent pod's init container)
   6. Seerr: the whole setup wizard (first sign-in with the Jellyfin admin login,
      Jellyfin server + libraries, application URL, initialized), then Sonarr + Radarr
 
@@ -50,6 +53,16 @@ import urllib.parse
 import urllib.request
 
 MASK = "********"  # how the *arr APIs return stored secrets
+# Malware protection, layer 1: file types no movie, show or album ever needs. SABnzbd
+# aborts a job that has one (also inside its RARs); qBittorrent never downloads them.
+# Not here: subtitles (srt ass ssa sub idx sup vtt), nfo, sfv, images, video/audio.
+# iso/img ARE here: disc images are not wanted media in this setup (the TRaSH profiles
+# reject BR-DISK, Jellyfin plays files) and are a common malware wrapper.
+DANGEROUS_EXT = ("exe", "com", "scr", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+                 "msi", "msp", "mst", "lnk", "pif", "hta", "jar", "apk", "dll", "cpl", "reg", "scf",
+                 "application", "gadget", "appx", "msix", "iso", "img", "vhd", "vhdx")
+SAB_SCRIPT = "clamav-scan.py"  # layer 2: ClamAV scan of every finished job (sabnzbd/clamav-scan.py)
+SAB_SCRIPT_DIR = "/scripts"  # ConfigMap sabnzbd-scripts (sabnzbd.yaml)
 WAIT = int(os.environ.get("WAIT_SECONDS", "900"))
 # Per request. Generous: a root folder listing scans the NFS media tree, and an arr
 # that is still starting answers only once it is up.
@@ -291,6 +304,7 @@ def data_dirs(root: pathlib.Path) -> None:
         raise RuntimeError(f"{root} is not mounted")
     for sub in ("torrents/tv", "torrents/movies", "torrents/music", "media/tv", "media/movies", "media/music",
                 "usenet/incomplete", "usenet/complete/tv", "usenet/complete/movies", "usenet/complete/music",
+                "usenet/quarantine",  # infected SABnzbd jobs (sabnzbd/clamav-scan.py)
                 ".recycle/sonarr", ".recycle/radarr", ".recycle/lidarr"):
         d = root / sub
         if not d.is_dir():
@@ -298,7 +312,7 @@ def data_dirs(root: pathlib.Path) -> None:
             log(f"add  {d}")
         if d.stat().st_uid == os.getuid():
             d.chmod(0o2775)  # setgid: new files keep the media group
-    log(f"ok   {root}: torrents/{{tv,movies,music}} usenet/{{incomplete,complete/{{tv,movies,music}}}} "
+    log(f"ok   {root}: torrents/{{tv,movies,music}} usenet/{{incomplete,complete/{{tv,movies,music}},quarantine}} "
         "media/{tv,movies,music} .recycle/{sonarr,radarr,lidarr}")
 
 
@@ -569,7 +583,10 @@ SAB_MASKED = "*" * 10  # how SABnzbd's API returns a stored password
 
 
 def sab_str(v) -> str:
-    """SABnzbd answers booleans as true/false but takes (and we want) 0/1."""
+    """SABnzbd answers booleans as true/false but takes (and we want) 0/1, and lists as
+    JSON lists but takes them comma-separated."""
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v)
     return str(int(v)) if isinstance(v, bool) else str(v)
 
 
@@ -621,8 +638,32 @@ def sabnzbd(api: Api, data_root: str, categories: list[str], server: dict, user:
     set_misc("complete_dir", f"{data_root}/usenet/complete")
     set_misc("permissions", "775")  # files 664 / folders 775: the shared media group can move them
 
+    # Malware protection (SABnzbd 5.1 keys; 0 = off, 1 = pause, 2 = abort). The extension
+    # check covers the NZB's file names and the file lists inside its RARs.
+    set_misc("unwanted_extensions", ", ".join(DANGEROUS_EXT))
+    set_misc("unwanted_extensions_mode", "0")  # the list is a blacklist
+    set_misc("action_on_unwanted_extensions", "2")  # abort the job
+    set_misc("pause_on_pwrar", "2")  # password-protected / encrypted RAR: abort
+    set_misc("fail_hopeless_jobs", "1")
+    set_misc("safe_postproc", "1")  # post-process (and so import) only verified jobs
+    # ClamAV: the script runs on every finished job; a non-zero exit fails the job (it
+    # stays out of Sonarr/Radarr/Lidarr). SABnzbd 5.1 postproc.py fails a job on a script's
+    # exit code only with script_can_fail on.
+    set_misc("script_dir", SAB_SCRIPT_DIR)
+    set_misc("script_can_fail", "1")
+
     # A section SABnzbd has no entries in yet is missing from the answer ({"config": {}}).
     have = {c["name"]: c for c in sab(api, "get_config", section="categories")["config"].get("categories", [])}
+    # "*" is the default category: every category with script "Default" inherits its script.
+    if (have.get("*") or {}).get("script") == SAB_SCRIPT:
+        log(f"ok   SABnzbd: script {SAB_SCRIPT} (category *)")
+    else:
+        sab(api, "set_config", section="categories", keyword="*", script=SAB_SCRIPT)
+        log(f"upd  SABnzbd: script {SAB_SCRIPT} (category *)")
+    for name, c in have.items():
+        if name != "*" and c.get("script") not in ("Default", SAB_SCRIPT):
+            sab(api, "set_config", section="categories", keyword=name, script="Default")
+            log(f"upd  SABnzbd: category {name} script {c.get('script')} -> Default ({SAB_SCRIPT})")
     for cat in categories:
         if (have.get(cat) or {}).get("dir") == cat:
             log(f"ok   SABnzbd: category {cat} -> {data_root}/usenet/complete/{cat}")
@@ -814,6 +855,10 @@ def qbittorrent(api: Api, user: str, password: str, data_root: str, categories: 
         "current_network_interface": "tun0",  # gluetun's VPN_INTERFACE: no traffic without the tunnel
         "bypass_local_auth": False,
         "bypass_auth_subnet_whitelist_enabled": False,
+        # Malware protection: files matching these are set to "do not download" when a
+        # torrent is added (a torrent of only such files never completes an import).
+        "excluded_file_names_enabled": True,
+        "excluded_file_names": "\n".join(f"*.{ext}" for ext in DANGEROUS_EXT),
     }
     diff = {k: v for k, v in want.items() if prefs.get(k) != v}
     if diff:

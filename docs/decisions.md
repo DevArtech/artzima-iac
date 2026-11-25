@@ -350,6 +350,21 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   SABnzbd downloads into `/data/usenet/{incomplete,complete/<category>}` on the same `/data` volume, so
   the arrs' imports are atomic moves. It is wired over its API by the same Job (server, categories,
   login); NZBGeek is a Prowlarr Newznab indexer synced to the apps like the others.
+- **Malware protection: block file types, then scan before import.** Fake releases carry
+  executables, shortcuts or disc images, not infected video. Layer 1 (wire.py `DANGEROUS_EXT`):
+  SABnzbd aborts a job with such a file (also inside its RARs) or with a password-protected RAR;
+  qBittorrent's *excluded file names* never downloads them. Subtitles, nfo and media types are
+  not on the list; `iso`/`img` are (the TRaSH profiles reject disc images anyway). Layer 2: a
+  ClamAV clamd (official image, signatures in an emptyDir seeded from the image, freshclam every
+  6 h) and a SABnzbd post-processing script that streams every file of a finished job to clamd
+  and **fails closed** (`script_can_fail`: infected, unreadable or clamd unreachable = job
+  Failed, so the arrs never import it). Infected jobs are renamed into `/data/usenet/quarantine`,
+  never deleted. Video/audio files with a matching container header send only their first
+  32 MiB (a real MKV cannot run; streaming whole remuxes over NFS would take minutes); anything
+  else up to 512 MiB. **No ClamAV hook for qBittorrent:** its *run on torrent finished* program
+  runs asynchronously, while Sonarr/Radarr import as soon as the torrent is complete, so it
+  cannot hold an import (not fail closed); and the pod's DNS is gluetun's (no cluster names).
+  Torrents rely on layer 1.
 - **qBittorrent only through Surfshark: gluetun as a sidecar.** One pod, one network
   namespace. gluetun owns the namespace's routes and iptables, and qBittorrent has no other way out.
   - **Kill-switch:** gluetun's firewall (default DROP) allows only the tunnel, the Talos pod and

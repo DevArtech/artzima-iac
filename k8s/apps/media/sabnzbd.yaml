@@ -13,7 +13,10 @@
 #   - the media-wiring Job (wire.py "SABnzbd", over the API, read first, written only on
 #     difference): folders /data/usenet/{incomplete,complete}, categories tv/movies/music
 #     (-> /data/usenet/complete/<cat>), the Usenet server from Infisical /k8s/media/USENET_*
-#     (SSL, 20 connections), and the web UI login = the Jellyfin admin login.
+#     (SSL, 20 connections), the web UI login = the Jellyfin admin login, and malware
+#     protection: dangerous file types and password-protected RARs abort the job, and
+#     every finished job is scanned by ClamAV (/scripts/clamav-scan.py, clamav.yaml;
+#     infected or no scan = Failed, not imported; infected -> /data/usenet/quarantine).
 # The same /data volume as the arrs: imports are atomic moves on one filesystem.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -124,6 +127,13 @@ spec:
         existingClaim: media-data
         globalMounts:
           - path: /data
+      scripts: # script_dir: the ClamAV scan run on every finished job (sabnzbd/clamav-scan.py)
+        type: configMap
+        name: sabnzbd-scripts
+        defaultMode: 365 # = 0555 (decimal: YAML 1.1 vs 1.2 read 0555 differently); SABnzbd needs the x bit
+        globalMounts:
+          - path: /scripts
+            readOnly: true
       tmp:
         type: emptyDir
         globalMounts:

@@ -13,6 +13,7 @@ resources:
   - bazarr.yaml
   - qbittorrent.yaml # + gluetun sidecar (Surfshark WireGuard)
   - sabnzbd.yaml # Usenet (TLS to the provider, no VPN)
+  - clamav.yaml # clamd + freshclam: SABnzbd scans every finished job before import
   - database.yaml # CNPG Postgres: seerr-db (Seerr), arr-db (Sonarr, Radarr, Lidarr, Prowlarr)
   - seerr.yaml # the only public one (/apps.yaml)
   - flaresolverr.yaml # optional, suspended
@@ -34,3 +35,12 @@ configMapGenerator:
     namespace: media
     files:
       - recyclarr/recyclarr.yml
+  - name: clamav-config
+    namespace: media
+    files:
+      - clamav/clamd.conf
+      - clamav/freshclam.conf
+  - name: sabnzbd-scripts # SABnzbd's script_dir (mounted at /scripts)
+    namespace: media
+    files:
+      - sabnzbd/clamav-scan.py

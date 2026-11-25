@@ -1,0 +1,162 @@
+---
+# ClamAV (clamd + freshclam) for the media stack: the virus scan BEFORE import.
+# Internal only (Service clamav.media:3310, no Tailscale or public exposure).
+# Client: SABnzbd's post-processing script k8s/apps/media/sabnzbd/clamav-scan.py
+# (fail closed: infected or clamd unreachable = job Failed, never imported; infected
+# job folders are moved to /data/usenet/quarantine). Design: docs/decisions.md
+# "Media stack" (malware protection).
+#
+# Image: the official clamav/clamav, the variant WITH signatures baked in (rebuilt daily
+# upstream). Its /init needs root (chown, sed of the configs), so it is bypassed: the
+# containers run clamd / freshclam directly as the image's clamav user (uid 100) with
+# our configs (clamav/clamd.conf, clamav/freshclam.conf, ConfigMap clamav-config).
+#
+# Signatures: an emptyDir, seeded at pod start from the image's copy (init container), so
+# clamd is up in about a minute without a download; freshclam (second container) then
+# fetches only the diffs, and checks every 6 h. No PVC: the only storage classes are on
+# the NAS (NFSv3, where freshclam's lock file stalls like SQLite does) and the data is
+# re-creatable at every start. ~400 MiB of node ephemeral storage.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: clamav
+  namespace: media
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100 # the image's clamav user
+        runAsGroup: 101 # its clamav group
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      clamav:
+        replicas: 1
+        # Recreate: a rolling update would hold two signature sets (2 x ~1.3 GiB) at once.
+        # The scan script waits up to 5 min for clamd, so a restart fails no job.
+        strategy: Recreate
+        initContainers:
+          seed-db:
+            image: &image
+              repository: docker.io/clamav/clamav
+              tag: "1.5.5"
+            command: ["/bin/sh", "-c"]
+            # Only into an empty volume: after a container restart the volume keeps the
+            # newer signatures freshclam already fetched.
+            args:
+              - if [ -f /db/main.cvd ] || [ -f /db/main.cld ]; then echo "signatures present"; else cp /var/lib/clamav/* /db/ && ls -l /db; fi
+            securityContext: &securityContext
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+        containers:
+          clamd:
+            image: *image
+            command: ["clamd", "--foreground", "--config-file=/etc/clamav/clamd.conf"]
+            env:
+              TZ: ${timezone}
+            probes:
+              # clamd opens its TCP port only after loading the signatures (~1 min).
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 3310
+                  periodSeconds: 5
+                  failureThreshold: 60
+              readiness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: 3310
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5 # a signature reload pauses clamd for about a minute
+              liveness: *probe
+            securityContext: *securityContext
+            resources:
+              requests:
+                cpu: 100m
+                memory: 1536Mi # signatures in memory (~1.3 GiB)
+              limits:
+                memory: 2304Mi
+          freshclam:
+            image: *image
+            command: ["freshclam", "--daemon", "--foreground", "--stdout", "--checks=4", "--config-file=/etc/clamav/freshclam.conf"]
+            env:
+              TZ: ${timezone}
+            securityContext: *securityContext
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 256Mi
+    service:
+      app:
+        controller: clamav
+        forceRename: clamav
+        ports:
+          clamd:
+            port: 3310
+            protocol: TCP
+    persistence:
+      config:
+        type: configMap
+        name: clamav-config
+        advancedMounts:
+          clamav:
+            clamd:
+              - path: /etc/clamav
+                readOnly: true
+            freshclam:
+              - path: /etc/clamav
+                readOnly: true
+      db:
+        type: emptyDir
+        sizeLimit: 1Gi
+        advancedMounts:
+          clamav:
+            seed-db:
+              - path: /db
+            clamd:
+              - path: /var/lib/clamav
+            freshclam:
+              - path: /var/lib/clamav
+      tmp: # clamd writes each stream to a temp file (up to 4 x 520 MiB)
+        type: emptyDir
+        sizeLimit: 3Gi
+        advancedMounts:
+          clamav:
+            clamd:
+              - path: /tmp
+            freshclam:
+              - path: /tmp
