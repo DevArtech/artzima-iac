@@ -101,6 +101,21 @@ def record_applied(auth: tuple[str, str]) -> None:
     print(f"recorded the applied login in Secret {ns}/{APPLIED_SECRET}")
 
 
+def set_home(auth: tuple[str, str]) -> None:
+    """The org's home dashboard by uid, so the home page always shows the CURRENT provisioned
+    dashboard (default_home_dashboard_path would load a copy once, at Grafana's start)."""
+    uid = os.environ.get("HOME_DASHBOARD_UID", "artzima-overview")
+    code, prefs = grafana("GET", "/api/org/preferences", auth)
+    if code == 200 and prefs.get("homeDashboardUID") == uid:
+        print(f"home dashboard: {uid}")
+        return
+    code, resp = grafana("PATCH", "/api/org/preferences", auth, {"homeDashboardUID": uid})
+    if code != 200:
+        print(f"warning: setting the home dashboard failed: HTTP {code} {resp.get('message', '')}")
+        return
+    print(f"home dashboard set: {uid}")
+
+
 def main() -> None:
     want = (env("ADMIN_USER"), env("ADMIN_PASSWORD"))
     applied = (env("APPLIED_USER", False), env("APPLIED_PASSWORD", False))
@@ -110,6 +125,7 @@ def main() -> None:
     if me and me.get("id") == 1:
         print("Grafana admin (user 1) already matches Infisical")
         record_applied(want)
+        set_home(want)
         return
     if me:
         sys.exit(f"the Infisical login is Grafana user {me.get('id')}, not the admin (user 1): fix by hand")
@@ -142,6 +158,7 @@ def main() -> None:
         sys.exit("the new admin login does not work after the change")
     print("Grafana admin (user 1) now matches Infisical")
     record_applied(want)
+    set_home(want)
 
 
 if __name__ == "__main__":

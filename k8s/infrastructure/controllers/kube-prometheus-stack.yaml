@@ -64,9 +64,9 @@ spec:
           folderAnnotation: grafana_folder
           provider:
             foldersFromFilesStructure: true
-      grafana.ini:
-        dashboards:
-          default_home_dashboard_path: /tmp/dashboards/Artzima/artzima-overview.json
+      # Home page: the org preference homeDashboardUID=artzima-overview, set by the grafana-admin-sync
+      # Job (k8s/apps/monitoring), not default_home_dashboard_path: that loads a copy only at startup,
+      # so dashboard updates didn't show on the home page until Grafana restarted.
     # ALERTS -> ONE webhook (Infisical /k8s/alerts/WEBHOOK_URL -> Secret alert-webhook,
     # k8s/secrets/monitoring). Rules: k8s/infrastructure/configs/alerts.yaml + the chart's
     # defaults. Empty URL = nothing is sent yet (alerts still visible in Alertmanager).
