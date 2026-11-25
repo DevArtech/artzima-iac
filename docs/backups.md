@@ -117,7 +117,6 @@ doesn't; resolved alerts send a short note). HQ is on the tailnet only, so:
 | Paperless DB | CNPG volume snapshot (NAS) + `document_exporter` (NAS) | bucket **pg**: `…/paperless/paperless-db/` | base 04:20 UTC, WAL continuous | same |
 | Seerr DB (requests, users) | CNPG volume snapshot (NAS, 03:25 UTC) | bucket **pg**: `…/media/seerr-db/` | base 04:40 UTC, WAL continuous | same |
 | arr DB (Sonarr, Radarr, Lidarr, Prowlarr: libraries, profiles, history) | CNPG volume snapshot (NAS, 03:30 UTC) | bucket **pg**: `…/media/arr-db/` | base 04:50 UTC, WAL continuous | same |
-| Spoolman DB (spools, filaments) | CNPG volume snapshot (NAS, 03:35 UTC) | bucket **pg**: `…/spoolman/spoolman-db/` | base 04:10 UTC, WAL continuous | same |
 | Vaultwarden `/data` (keys, attachments) | encrypted tarball (NAS, nightly) | bucket **restic**: `vaultwarden/vaultwarden-data` | 01:00 UTC | restic: 7 daily, 4 weekly, 6 monthly |
 | Paperless media + data | the NAS folders themselves | restic: `paperless/paperless-media`, `paperless/paperless-data` | 01:07, 01:14 UTC | same |
 | Paperless export (`document_exporter` mirror) | `/volume1/Artzima/backups/paperless` | restic: `paperless/paperless-export` | 03:00 UTC (export runs 02:30 local) | same |

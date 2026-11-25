@@ -95,13 +95,6 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: spoolman # Spoolman filament inventory (tailnet only) + CNPG Postgres (k8s/apps/spoolman)
-  labels:
-    artzima.io/cnpg-offsite: "true" # gets Secret b2-pg (CNPG barman-cloud -> B2), k8s/secrets/backups
----
-apiVersion: v1
-kind: Namespace
-metadata:
   name: volsync-system # VolSync controller
 ---
 apiVersion: v1

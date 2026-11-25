@@ -1064,30 +1064,3 @@ The Job then renames the admin and verifies the new login.
   at the provisioned Prometheus (`uid: prometheus`), with the panels that cannot work here removed.
   Edits in the UI are not kept: change `scripts/grafana_dashboards.py` / `scripts/grafana_overview.py`,
   regenerate, and run its `check` (every panel returns data), see `k8s/apps/monitoring/README.md`.
-
-## 16. Spoolman (filament inventory)
-
-What runs (`k8s/apps/spoolman`, namespace `spoolman`): [Spoolman](https://github.com/Donkie/Spoolman)
-0.27.1, an inventory of 3D-printer filament spools (filament types, vendors, weight left per spool,
-usage history), on its own CNPG Postgres `spoolman-db` (not SQLite: SQLite on the NFS NAS stalls).
-
-- **URL:** `http://spoolman` from a tailnet device (Tailscale operator Service, like Paperless).
-  **Tailnet only:** no `/apps.yaml` entry, no Traefik route, no tunnel. Don't add it to `/apps.yaml`.
-- **Nothing to do before the sync:** no secrets of its own. CNPG generates the database login
-  (`spoolman-db-app`); the namespace label `artzima.io/cnpg-offsite` brings the B2 key.
-- **No login:** Spoolman has no user accounts. Anyone on the tailnet who can reach `tag:k8s` can
-  read and edit the inventory.
-- **API:** `http://spoolman/api/v1/` (OpenAPI docs at `/api/v1/docs`). Health: `/api/v1/health`,
-  version: `/api/v1/info`. Prometheus metrics (`SPOOLMAN_METRICS_ENABLED`) on `/metrics`, not scraped.
-- **Backups:** CNPG volume snapshot (NAS, 03:35 UTC) + B2 WAL/base backups (04:10 UTC), retention
-  and the monthly restore check generated like the other clusters ([backups](backups.md)).
-  Restore: the same procedures as Paperless in §13.4, with `spoolman-db` / namespace `spoolman`.
-
-### 16.1 Removing it
-
-1. Delete `- ../spoolman` from `k8s/apps/artzima/kustomization.yaml` and the folder `k8s/apps/spoolman`,
-   then the `spoolman` Namespace from `k8s/infrastructure/namespaces/namespaces.yaml`. Run `make render`
-   (drops its generated retention/restore-check CronJobs) and `make lint`, commit, push.
-2. Flux prunes the app and the Cluster. If the namespace lingers: `kubectl delete namespace spoolman`.
-3. The database volume folder stays on the NAS (`Retain`); delete it by hand only if you are sure.
-   The B2 backups under `…/spoolman/` expire on their own (`backup_pg_retention` + Object Lock).
