@@ -60,10 +60,11 @@ spec:
               repository: docker.io/clamav/clamav
               tag: "1.5.5"
             command: ["/bin/sh", "-c"]
-            # Only into an empty volume: after a container restart the volume keeps the
+            # Once per pod (the marker is written only after a complete copy, so an
+            # interrupted copy is redone): after a container restart the volume keeps the
             # newer signatures freshclam already fetched.
             args:
-              - if [ -f /db/main.cvd ] || [ -f /db/main.cld ]; then echo "signatures present"; else cp /var/lib/clamav/* /db/ && ls -l /db; fi
+              - if [ -f /db/.seeded ]; then echo "signatures present"; else cp /var/lib/clamav/* /db/ && touch /db/.seeded && ls -l /db; fi
             securityContext: &securityContext
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
@@ -72,13 +73,13 @@ spec:
             resources:
               requests:
                 cpu: 10m
-                memory: 16Mi
+                memory: 32Mi
               limits:
-                memory: 64Mi
+                memory: 512Mi # the copied ~350 MiB pass through its page cache
         containers:
           clamd:
             image: *image
-            command: ["clamd", "--foreground", "--config-file=/etc/clamav/clamd.conf"]
+            command: ["clamd", "--foreground", "--config-file=/etc/clamav-k8s/clamd.conf"]
             env:
               TZ: ${timezone}
             probes:
@@ -110,7 +111,7 @@ spec:
                 memory: 2304Mi
           freshclam:
             image: *image
-            command: ["freshclam", "--daemon", "--foreground", "--stdout", "--checks=4", "--config-file=/etc/clamav/freshclam.conf"]
+            command: ["freshclam", "--daemon", "--foreground", "--stdout", "--checks=4", "--config-file=/etc/clamav-k8s/freshclam.conf"]
             env:
               TZ: ${timezone}
             securityContext: *securityContext
@@ -135,10 +136,10 @@ spec:
         advancedMounts:
           clamav:
             clamd:
-              - path: /etc/clamav
+              - path: /etc/clamav-k8s # not /etc/clamav: the image keeps its certs/ there (CVD signature check)
                 readOnly: true
             freshclam:
-              - path: /etc/clamav
+              - path: /etc/clamav-k8s # not /etc/clamav: the image keeps its certs/ there (CVD signature check)
                 readOnly: true
       db:
         type: emptyDir
