@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Render the disaster-recovery runbook + the emergency-kit checklist into ONE printable PDF.
 
-    make dr-pdf                          -> dist/artzima-disaster-recovery.pdf
-    make dr-pdf DR_PDF_ARGS="--engine python"     force the built-in renderer
+    make dr-pdf                                    -> dist/artzima-disaster-recovery.pdf
+    make dr-pdf DR_PDF_ARGS="--png /tmp/dr"        also page previews: /tmp/dr/page-01.png, ...
+    make dr-pdf DR_PDF_ARGS="--engine python"      force the plain built-in renderer
 
 Every page's footer carries the print date and the git commit (plus "UNCOMMITTED CHANGES" if
 the runbook or kit differ from that commit), so a stale printout is obvious: compare it with
 `git log -1 --format='%h %cs' -- docs/disaster-recovery.md emergency-kit.yaml`.
 
-Engines: `pandoc` with a LaTeX engine (xelatex/lualatex/pdflatex) or weasyprint, if installed;
-otherwise (or with --engine python) a dependency-free renderer: plain monospace text, US Letter,
-no images. Code lines that are too long continue on the next line, marked with "+ ".
+Engines: `designed` (default; reportlab + markdown-it-py + IBM Plex fonts from `make deps`, layout
+in scripts/dr_pdf_layout.py): cover, contents with page numbers, section openers, step tags with
+tick boxes, callouts, wrapped code. Without those (or with --engine python) a dependency-free
+renderer: plain monospace text, US Letter; long code lines continue on the next line after "+ ".
+The output is private (real addresses in the private runtime): dist/ is gitignored.
 """
 
 from __future__ import annotations
@@ -20,10 +23,8 @@ import datetime
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 RUNBOOK = REPO / "docs/disaster-recovery.md"
@@ -36,11 +37,14 @@ def git(*args: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def stamp() -> str:
-    sha = git("rev-parse", "--short", "HEAD") or "no commit yet"
-    dirty = git("status", "--porcelain", "--", str(RUNBOOK), str(KIT))
-    when = datetime.date.today().isoformat()
-    return f"printed {when} | commit {sha}{' + UNCOMMITTED CHANGES' if dirty else ''}"
+def meta() -> dict:
+    return {"sha": git("rev-parse", "--short", "HEAD") or "no commit yet",
+            "dirty": bool(git("status", "--porcelain", "--", str(RUNBOOK), str(KIT))),
+            "date": datetime.date.today().isoformat()}
+
+
+def stamp(m: dict) -> str:
+    return f"printed {m['date']} | commit {m['sha']}{' + UNCOMMITTED CHANGES' if m['dirty'] else ''}"
 
 
 def source() -> str:
@@ -49,40 +53,28 @@ def source() -> str:
     return RUNBOOK.read_text() + "\n\f\n" + kit
 
 
-# ---------------------------------------------------------------- pandoc
-def with_pandoc(md: str, footer: str, out: pathlib.Path) -> bool:
-    if not shutil.which("pandoc"):
-        return False
-    md = md.replace("\n\f\n", "\n\n\\newpage\n\n")
-    with tempfile.TemporaryDirectory() as tmp:
-        src = pathlib.Path(tmp, "dr.md")
-        for engine in ("xelatex", "lualatex", "pdflatex"):
-            if not shutil.which(engine):
-                continue
-            src.write_text(md)
-            hdr = pathlib.Path(tmp, "h.tex")
-            safe = footer.replace("_", r"\_").replace("#", r"\#").replace("&", r"\&")
-            hdr.write_text("\\usepackage{fancyhdr}\\pagestyle{fancy}\\fancyhf{}\n"
-                           f"\\cfoot{{\\scriptsize artzima-iac disaster recovery | {safe} | page \\thepage}}\n"
-                           "\\renewcommand{\\headrulewidth}{0pt}\n")
-            r = subprocess.run(["pandoc", str(src), "-o", str(out), f"--pdf-engine={engine}", "-H", str(hdr),
-                                "-V", "geometry:margin=2cm", "-V", "papersize=letter", "--toc"],
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                return True
-            print(f"pandoc/{engine} failed, trying the next engine:\n{r.stderr[-400:]}", file=sys.stderr)
-        if shutil.which("weasyprint"):
-            src.write_text(md.replace("\\newpage", '<div style="page-break-after: always"></div>'))
-            css = pathlib.Path(tmp, "p.css")
-            css.write_text("@page { size: letter; margin: 2cm; @bottom-center { font-size: 8pt; content: "
-                           f'"artzima-iac disaster recovery | {footer} | page " counter(page) " of " counter(pages); }} }}'
-                           " body { font-family: sans-serif; font-size: 10pt } pre, code { font-size: 8.5pt }")
-            r = subprocess.run(["pandoc", str(src), "-o", str(out), "--pdf-engine=weasyprint", "--css", str(css),
-                                "-s", "--metadata", "title=artzima disaster recovery"], capture_output=True, text=True)
-            if r.returncode == 0:
-                return True
-            print(f"pandoc/weasyprint failed:\n{r.stderr[-400:]}", file=sys.stderr)
-    return False
+# ---------------------------------------------------------------- designed (reportlab)
+def designed_unavailable() -> str | None:
+    try:
+        import dr_pdf_layout  # noqa: F401  (reportlab, markdown-it-py)
+    except ImportError as e:
+        return f"{e.name} is not installed (run make deps)"
+    return dr_pdf_layout.available()
+
+
+def with_designed(md: str, m: dict, out: pathlib.Path) -> None:
+    import dr_pdf_layout
+    pages = dr_pdf_layout.render(md.split("\n\f\n"), m, out)
+    print(f"{pages} pages (designed layout)")
+
+
+def previews(pdf: pathlib.Path, dest: pathlib.Path, dpi: int) -> None:
+    import pypdfium2
+    dest.mkdir(parents=True, exist_ok=True)
+    doc = pypdfium2.PdfDocument(str(pdf))
+    for i, page in enumerate(doc, 1):
+        page.render(scale=dpi / 72).to_pil().save(dest / f"page-{i:02d}.png")
+    print(f"{len(doc)} page previews in {dest} ({dpi} dpi)")
 
 
 # ---------------------------------------------------------------- built-in renderer
@@ -218,20 +210,28 @@ def with_python(md: str, footer: str, out: pathlib.Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--engine", choices=["auto", "pandoc", "python"], default="auto")
+    ap.add_argument("--engine", choices=["auto", "designed", "python"], default="auto")
     ap.add_argument("--out", type=pathlib.Path, default=OUT)
+    ap.add_argument("--png", type=pathlib.Path, metavar="DIR", help="also write page previews (PNG) into DIR")
+    ap.add_argument("--png-dpi", type=int, default=72)
     args = ap.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    md, footer = source(), stamp()
-    if args.engine in ("auto", "pandoc") and with_pandoc(md, footer, args.out):
-        print("rendered with pandoc")
-    elif args.engine == "pandoc":
-        sys.exit("pandoc (with xelatex/lualatex/pdflatex or weasyprint) not available")
+    md, m = source(), meta()
+    footer = stamp(m)
+    why = designed_unavailable() if args.engine != "python" else "plain renderer requested"
+    if why is None:
+        with_designed(md, m, args.out)
+    elif args.engine == "designed":
+        sys.exit(f"designed layout not available: {why}")
     else:
+        if args.engine == "auto":
+            print(f"designed layout not available ({why}); using the plain renderer", file=sys.stderr)
         with_python(md, footer, args.out)
     print(f"wrote {args.out.relative_to(REPO) if args.out.is_relative_to(REPO) else args.out}  ({footer})")
     print("Print it double-sided and put it in the emergency kit; replace older printouts.")
-    os.chmod(args.out, 0o644)
+    os.chmod(args.out, 0o600)
+    if args.png:
+        previews(args.out, args.png, args.png_dpi)
 
 
 if __name__ == "__main__":

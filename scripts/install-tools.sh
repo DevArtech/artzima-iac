@@ -52,6 +52,18 @@ PYYAML=6.0.4
 NETADDR=1.3.0
 # renovate: datasource=pypi depName=jmespath
 JMESPATH=1.1.0
+# renovate: datasource=pypi depName=reportlab
+REPORTLAB=5.1.1        # make dr-pdf: the PDF layout engine
+# renovate: datasource=pypi depName=markdown-it-py
+MARKDOWN_IT_PY=4.3.0   # make dr-pdf: parses docs/disaster-recovery.md
+# renovate: datasource=pypi depName=pypdfium2
+PYPDFIUM2=5.15.2       # make dr-pdf DR_PDF_ARGS="--png DIR": page previews to check the layout
+# Fonts for make dr-pdf: IBM Plex Sans + Mono (SIL Open Font License), fetched once, never at
+# render time. A version bump needs its new SHA256 (on purpose: a human checks it).
+PLEX_SANS=1.3.6
+PLEX_SANS_SHA256=a52bd405930040a6bfdb5c8aff67f1b7205538999986e2186d8f8895ca6a5de1
+PLEX_MONO=2.5.0
+PLEX_MONO_SHA256=6d23f01257663d8cc49a0d64c22ced630b79e0e2a0ac08a0da86e9a38bbc481c
 
 fetch() { # url dir
   mkdir -p "$T/dl/$2"
@@ -95,7 +107,29 @@ export UV_CACHE_DIR="$T/uv-cache" UV_PYTHON_INSTALL_DIR="$T/python"
 [ -x "$T/venv/bin/python" ] || "$T/bin/uv" venv -q "$T/venv" --python 3.13
 VIRTUAL_ENV="$T/venv" "$T/bin/uv" pip install -q \
   "ansible-core==$ANSIBLE_CORE" "ansible-lint==$ANSIBLE_LINT" "yamllint==$YAMLLINT" "pyyaml==$PYYAML" \
-  "netaddr==$NETADDR" "jmespath==$JMESPATH" "infisicalsdk==$INFISICALSDK" "argon2-cffi==$ARGON2_CFFI" "bcrypt==$BCRYPT"
+  "netaddr==$NETADDR" "jmespath==$JMESPATH" "infisicalsdk==$INFISICALSDK" "argon2-cffi==$ARGON2_CFFI" "bcrypt==$BCRYPT" \
+  "reportlab==$REPORTLAB" "markdown-it-py==$MARKDOWN_IT_PY" "pypdfium2==$PYPDFIUM2"
+
+# Fonts for make dr-pdf (static TTFs, checksum-pinned).
+plex() { # family version sha256
+  local zip="$T/dl/plex-$1/ibm-plex-$1.zip"
+  [ -f "$T/fonts/IBMPlex${1^}-Regular.ttf" ] && [ -f "$T/fonts/.plex-$1-$2" ] && return 0
+  rm -rf "$T/dl/plex-$1"
+  fetch "https://github.com/IBM/plex/releases/download/%40ibm/plex-$1%40$2/ibm-plex-$1.zip" "plex-$1"
+  echo "$3  $zip" | sha256sum -c - >/dev/null
+  mkdir -p "$T/fonts"
+  "$T/venv/bin/python" - "$zip" "$T/fonts" "$1" <<'EOF'
+import pathlib, sys, zipfile
+zf, dest, fam = zipfile.ZipFile(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+for name in zf.namelist():
+    if name.startswith(f"ibm-plex-{fam}/fonts/complete/ttf/") and name.endswith(".ttf"):
+        (dest / pathlib.PurePosixPath(name).name).write_bytes(zf.read(name))
+(dest / f"LICENSE-plex-{fam}.txt").write_bytes(zf.read(f"ibm-plex-{fam}/LICENSE.txt"))
+EOF
+  touch "$T/fonts/.plex-$1-$2"
+}
+plex sans "$PLEX_SANS" "$PLEX_SANS_SHA256"
+plex mono "$PLEX_MONO" "$PLEX_MONO_SHA256"
 
 # Ansible collections (pinned in ansible/requirements.yml).
 "$T/venv/bin/ansible-galaxy" collection install -p "$T/collections" \
