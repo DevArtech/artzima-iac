@@ -51,6 +51,7 @@
            {'id': 'media-daily', 'paths': ['/userdata/media'], 'cron': nas_backup_media_daily_cron, 'flags': []},
            {'id': 'media-weekly-full', 'paths': ['/userdata/media'], 'cron': nas_backup_media_weekly_cron,
             'flags': ['--force']},
+           {'id': 'lab-state-daily', 'paths': ['/userdata/lab-state'], 'cron': nas_backup_lab_state_cron, 'flags': []},
          ] + ([] if nas_personal_shares | length == 0 else [
            {'id': 'personal-daily', 'paths': nas_personal_shares | map(attribute='name') | map('regex_replace', '^', '/userdata/') | list,
             'cron': nas_backup_personal_cron, 'flags': []}]) }}
@@ -138,6 +139,13 @@
         - { dir: restore, mode: "0700" }
       loop_control:
         label: "{{ nas_backup_root }}/{{ item.dir }}"
+
+    - name: Lab-state folder (encrypted OpenTofu state copies; written by make tofu-state-backup)
+      ansible.builtin.file:
+        path: "{{ nas_backup_lab_state_dir }}"
+        state: directory
+        owner: "{{ nas_backup_lab_state_owner }}"
+        mode: "0700"
 
     - name: Compose file
       ansible.builtin.template:

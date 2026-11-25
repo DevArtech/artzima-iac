@@ -45,6 +45,7 @@ define tofu_apply
 	$(TOFU_ENV) tofu -chdir=$(1) plan -input=false -out=$(2)
 	@$(CONFIRM) "tofu: apply the plan above ($(1))"
 	$(TOFU_ENV) tofu -chdir=$(1) apply -input=false $(2)
+	@$(PY) scripts/tofu_state_backup.py || echo "WARNING: the OpenTofu state was NOT copied to the NAS; run make tofu-state-backup" >&2
 endef
 
 .DEFAULT_GOAL := help
@@ -52,7 +53,7 @@ endef
         preflight bootstrap up verify gen-secrets ids-init ids-plan ids-apply \
         site common network cluster pbs storage nut nut-check tailscale host-prep \
         proxmox-api lxc-devices ts-routers jellyfin firewalla-plan firewalla-apply \
-        tofu-init tofu-plan tofu-apply tofu-destroy talos-env flux-bootstrap eso-bootstrap \
+        tofu-init tofu-plan tofu-apply tofu-destroy tofu-state-backup talos-env flux-bootstrap eso-bootstrap \
         cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
         lint lint-yaml lint-ansible lint-tofu lint-k8s lint-flux lint-python lint-images
 
@@ -146,6 +147,8 @@ tofu-plan: ## Plan (secrets from Infisical; plan file is encrypted)
 	$(TOFU_ENV) tofu -chdir=tofu plan -out=artzima.tfplan
 tofu-apply: ## Plan + confirm + apply (VMs, LXCs, Talos bootstrap, kubeconfig)
 	$(call tofu_apply,tofu,artzima.tfplan)
+tofu-state-backup: ## Copy the encrypted OpenTofu state to the NAS (-> B2 nightly); also runs after every tofu apply
+	$(PY) scripts/tofu_state_backup.py
 tofu-destroy: ## Destroy everything OpenTofu created (tofu asks again)
 	@$(CONFIRM) "DESTROY every VM/LXC of tofu/ (the NAS and backups are untouched)"
 	$(TOFU_ENV) tofu -chdir=tofu destroy

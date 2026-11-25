@@ -13,3 +13,10 @@ nas_backup_repo_id: b2-nas
 nas_backup_repo_uri: "s3:https://{{ b2_s3_endpoint }}/{{ b2_bucket_nas }}/restic"
 # healthchecks.io: one check per plan, auto-created from the ping key (slug URLs).
 nas_backup_hc_slug_prefix: artzima-nas-
+
+# OpenTofu state, off the workstation: `make tofu-state-backup` (after every tofu apply) copies the
+# ENCRYPTED state files here over SSH as the NAS login user; plan lab-state-daily sends them to B2.
+# Outside the root-only Backrest folder so that user can write it; Backrest reads it read-only.
+nas_backup_lab_state_dir: "{{ artnas_export }}/lab-state"
+nas_backup_lab_state_owner: "{{ ansible_user | default('root') }}"
+nas_backup_lab_state_cron: "45 0 * * *"

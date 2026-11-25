@@ -713,7 +713,13 @@ Talos or Kubernetes; the apps don't notice.
    then E and F. Check in the B2 web UI first that last night's uploads exist (`artzima-restic`,
    `artzima-pg` modification times), so nothing newer is lost.
 
-Prevention (open item, README TODOs): keep the encrypted state files off the workstation too.
+Prevention (done 2026-11-24): the encrypted state files are copied to the NAS after every `tofu apply`
+(`make tofu-state-backup`, `/volume1/Artzima/lab-state/<UTC time>/`), and Backrest's plan `lab-state-daily`
+sends them to B2 nightly. **Restore them first**, before the steps above: take the newest dated folder (from
+the NAS, or restore `/userdata/lab-state` from the B2 repo in Backrest), copy its `tofu/...` files back into
+the private runtime's `tofu/` with the same relative paths, and keep `TOFU_STATE_PASSPHRASE` (Infisical
+`/tofu`) at hand: the files open only with it. With the state back, `make talos-env` gives the kubeconfig
+again and no rebuild is needed.
 
 ### P5. Firewalla: replace or factory-reset
 

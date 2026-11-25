@@ -501,10 +501,10 @@ What *you* do lives in [`docs/OPERATOR-SETUP.md`](docs/OPERATOR-SETUP.md). Open 
       host01) against `lxc_devices` in `hosts.yml`.
 - [ ] PBS + B2 Object Lock: verify PBS's S3 datastore with a locked bucket before setting
       `b2_object_lock_days.pbs` > 0 (docs/backups.md "Immutability").
-- [ ] **OpenTofu state off the workstation:** the (encrypted) state files exist only on the
-      workstation; losing it means losing Talos/Kubernetes admin access until a rebuild
-      (docs/disaster-recovery.md P4). Candidate: an S3 backend on a separate B2 bucket (state stays
-      client-side encrypted), or a nightly copy into Infisical/B2.
+- [x] **OpenTofu state off the workstation:** every `tofu apply` (and `make tofu-state-backup`)
+      copies the encrypted state files to the NAS (`/volume1/Artzima/lab-state/<UTC time>/`, newest
+      20 kept); Backrest's plan `lab-state-daily` sends them to B2 nightly
+      (docs/disaster-recovery.md P4).
 - [ ] `vpn_server_countries` in `ansible/group_vars/all/media.yml` (today `Netherlands`).
 - [ ] **Existing rips:** set `media_existing_paths` (and, if the rips are in another UGOS shared
       folder, decide copy vs. move first), `make media-adopt`, then `MEDIA_ADOPT_ARGS=--apply`
