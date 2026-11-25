@@ -1,0 +1,128 @@
+---
+# Spoolman (github.com/Donkie/Spoolman): filament spool inventory (spools, filament
+# types, weight left), REST API + web UI on :8000. TAILNET ONLY: no /apps.yaml entry,
+# no Traefik route, no tunnel; the Service `spoolman` is exposed by the Tailscale
+# operator as http://spoolman (MagicDNS), and nothing else.
+# Image tag verified on ghcr.io 2026-11-25 (release v0.27.1; the image tags have no "v").
+#
+# Runs as the image's `app` user (uid 1000) directly: its entrypoint only uses gosu
+# when started as root. Database: CNPG Cluster spoolman-db (database.yaml), login
+# from the CNPG-generated Secret spoolman-db-app. No SQLite, no app volume: the data
+# dir only holds the log file (emptyDir).
+# Steps and removal: docs/manual-steps.md §16.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: spoolman
+  namespace: spoolman
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: app-template
+      version: "5.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      enableServiceLinks: false # a Service named spoolman would set SPOOLMAN_PORT=tcp://...
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # the image's `app` user
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    controllers:
+      spoolman:
+        replicas: 1
+        strategy: Recreate # one writer runs the DB migrations on start
+        containers:
+          app:
+            image:
+              repository: ghcr.io/donkie/spoolman
+              tag: "0.27.1"
+            env:
+              TZ: ${timezone}
+              SPOOLMAN_HOST: 0.0.0.0
+              SPOOLMAN_PORT: "8000"
+              SPOOLMAN_BASE_PATH: ""
+              SPOOLMAN_LOGGING_LEVEL: INFO
+              SPOOLMAN_METRICS_ENABLED: "TRUE" # Prometheus format on /metrics
+              SPOOLMAN_DB_TYPE: postgres
+              SPOOLMAN_DB_HOST: spoolman-db-rw # CNPG read-write Service
+              SPOOLMAN_DB_PORT: "5432"
+              SPOOLMAN_DB_NAME: spoolman
+              SPOOLMAN_DB_USERNAME:
+                valueFrom:
+                  secretKeyRef:
+                    name: spoolman-db-app
+                    key: username
+              SPOOLMAN_DB_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: spoolman-db-app
+                    key: password
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8000
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+              readiness: *probe
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8000
+                  periodSeconds: 5
+                  failureThreshold: 60 # first start runs the migrations
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+    service:
+      # Tailnet ONLY (Tailscale operator): http://spoolman on port 80. No route, no tunnel.
+      app:
+        controller: spoolman
+        forceRename: spoolman
+        annotations:
+          tailscale.com/expose: "true"
+          tailscale.com/hostname: spoolman
+        ports:
+          http:
+            port: 80
+            targetPort: 8000
+    persistence:
+      data: # log file only (the inventory is in Postgres)
+        type: emptyDir
+        globalMounts:
+          - path: /home/app/.local/share/spoolman
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp

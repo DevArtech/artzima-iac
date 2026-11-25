@@ -1,0 +1,11 @@
+---
+# Spoolman (filament spool inventory), TAILNET ONLY (no /apps.yaml entry):
+# app (helmrelease.yaml) + CNPG Postgres (database.yaml). No secrets of its own:
+# the DB login is the CNPG-generated Secret spoolman-db-app.
+# Remove: drop ../spoolman from k8s/apps/artzima/kustomization.yaml and the
+# namespace from k8s/infrastructure/namespaces (docs/manual-steps.md §16).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - database.yaml
+  - helmrelease.yaml

@@ -10,5 +10,6 @@ resources:
   - ../media
   - ../vaultwarden
   - ../paperless
+  - ../spoolman # filament inventory, tailnet only (http://spoolman)
   - ../backups
   - ../monitoring # Grafana: admin login sync + dashboards as code
