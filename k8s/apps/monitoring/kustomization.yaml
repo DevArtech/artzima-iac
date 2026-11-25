@@ -9,6 +9,7 @@ kind: Kustomization
 namespace: monitoring
 resources:
   - grafana-admin-sync.yaml
+  - hq-egress.yaml # the tailnet route to Headquarters for alerts
 generatorOptions:
   disableNameSuffixHash: true
   labels:

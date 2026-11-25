@@ -1,0 +1,22 @@
+---
+# hq-egress: the cluster's way to Headquarters (HQ), the operator's command center that
+# turns lab alerts into notifications. HQ is reachable on the tailnet only, so the
+# Tailscale operator makes this ExternalName Service a proxy to HQ's tailnet name
+# (${hq_tailnet_fqdn} <- Infisical /k8s/settings/HQ_TAILNET_FQDN, never in git).
+# Alertmanager posts to http://hq-egress.monitoring.svc.cluster.local:4800/hooks/lab/<token>
+# (Infisical /k8s/alerts/WEBHOOK_URL, docs/backups.md "Alerts"). The hop pod -> proxy is
+# inside the cluster; proxy -> HQ is WireGuard (tailnet). HQ answers 401 without the token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hq-egress
+  namespace: monitoring
+  annotations:
+    tailscale.com/tailnet-fqdn: ${hq_tailnet_fqdn}
+spec:
+  type: ExternalName
+  externalName: placeholder # rewritten by the Tailscale operator
+  ports:
+    - name: http
+      port: 4800
+      protocol: TCP

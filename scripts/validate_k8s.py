@@ -45,7 +45,7 @@ KUSTOMIZATIONS = [
     "apps/artzima",
 ]
 # Stand-ins for values that only exist in the cluster (ESO, from Infisical).
-TEST_VARS = {"public_domain": "example.test"}
+TEST_VARS = {"public_domain": "example.test", "hq_tailnet_fqdn": "hq.example.ts.net"}
 HOST_RULE = re.compile(r"Host\(`([^`]+)`\)")
 VAR = re.compile(r"(?<!\$)\$\{([_a-zA-Z][_a-zA-Z0-9]*)\}")
 

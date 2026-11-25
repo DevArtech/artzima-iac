@@ -76,9 +76,25 @@ non-zero on FAIL (alert `RestoreTestFailed`; `make verify` shows the last result
 
 ## Alerts
 
-ONE endpoint: Infisical `/k8s/alerts/WEBHOOK_URL` (an https URL; Headquarters later). Empty = the
-alerts exist (Alertmanager UI, Grafana, `make verify`) but are not sent. Alertmanager posts its
-standard webhook JSON; Backrest and the NAS maintenance container post to the same URL.
+ONE endpoint: Infisical `/k8s/alerts/WEBHOOK_URL`. Empty = the alerts exist (Alertmanager UI,
+Grafana, `make verify`) but are not sent. Alertmanager posts its standard webhook JSON.
+
+Since 2026-11-24 the endpoint is **Headquarters** (HQ), the operator's command center: it turns each
+alert into one notification (repeats held back for 4 h; warning and critical push to the phone, info
+doesn't; resolved alerts send a short note). HQ is on the tailnet only, so:
+
+- `k8s/apps/monitoring/hq-egress.yaml`: an ExternalName Service the Tailscale operator turns into a
+  proxy to HQ's tailnet name (`${hq_tailnet_fqdn}` <- Infisical `/k8s/settings/HQ_TAILNET_FQDN`).
+- `WEBHOOK_URL` = `http://hq-egress.monitoring.svc.cluster.local:4800/hooks/lab/<token>`. The token is
+  HQ's (`~/.hq-secrets/lab-alerts.json` on the HQ machine); without it HQ answers 401.
+- After a rebuild of the lab: nothing to do (both values are in Infisical). After HQ moves to
+  another machine or gets a new token: update `HQ_TAILNET_FQDN` and/or `WEBHOOK_URL`, then
+  force-sync the ExternalSecrets (`alert-webhook` in monitoring, `cluster-secret-vars` in flux-system).
+- Flux health reaches HQ through Alertmanager (`FluxResourceNotReady`), so Flux has no own Provider.
+- Info-level alerts go nowhere (route `severity =~ "info|none"` -> null), on purpose.
+- **Not wired yet:** Backrest and `restic-maint` on the NAS. They post from the NAS, which is not on the
+  tailnet and cannot use the cluster's egress, so they don't reach HQ. Their failures still show as
+  missed-backup alerts in Alertmanager where a metric exists.
 
 | Alert | Fires when |
 |---|---|
