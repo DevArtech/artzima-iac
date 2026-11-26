@@ -340,6 +340,14 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   may set bind mounts; OpenTofu ignores `mount_point`. host01 mounts the NAS folder read-only
   (`hard`), and `pve-guests` waits for remote filesystems. Bind-mounting a *sub*-folder means a
   missing NFS mount makes the CT fail to start instead of showing Jellyfin an empty library.
+- **Transcodes on the NAS too** (2026-11-25, after leftover segments filled the LXC's 32 GB root
+  disk). `data/transcodes` is a separate **read-write** NFS mount on host01 (the library mount stays
+  read-only), bind-mounted at `/data/transcodes` (`rw: true` in `lxc_mounts`). Because a failed
+  `nofail` mount would leave an empty local directory to bind, the folder carries a marker file and
+  Jellyfin refuses to start without it, rather than fall back to a local disk. Cleared by Jellyfin's
+  segment deletion + throttling and a 15-minute timer (files > 60 min). NFS write latency doesn't
+  matter at these rates; a NAS outage stalls playback (hard mount) instead of breaking the database.
+  [§10.4](manual-steps.md#104-jellyfin-lxc-uidgid-mapping-unprivileged).
 - **Images: home-operations** (`ghcr.io/home-operations/*`) for the arr apps and qBittorrent.
   They are rootless and run as any uid with a read-only root filesystem, without s6 or
   `PUID`/`PGID` root init. LSIO images need root at start. Sonarr is pinned to that image's

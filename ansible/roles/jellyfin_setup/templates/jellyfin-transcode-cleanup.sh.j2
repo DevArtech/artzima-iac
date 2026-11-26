@@ -1,0 +1,25 @@
+#!/bin/sh
+# Managed by Ansible (jellyfin_setup). Deletes Jellyfin transcode files older than
+# {{ jellyfin_setup_transcode_max_age_min }} minutes, then empty directories, ONLY inside {{ jellyfin_setup_transcode_dir }}.
+# Runs as the jellyfin user (jellyfin-transcode-cleanup.timer). Refuses to run unless:
+#   - the folder is exactly Jellyfin's configured TranscodingTempPath (encoding.xml), and
+#   - it sits on the NAS mount (jellyfin-transcodes-check: mount point + NAS marker).
+set -eu
+dir='{{ jellyfin_setup_transcode_dir }}'
+max_age='{{ jellyfin_setup_transcode_max_age_min }}'
+fail() { echo "jellyfin-transcode-cleanup: refusing: $*" >&2; exit 1; }
+
+case "$dir" in /?*/?*) ;; *) fail "unexpected folder '$dir'" ;; esac
+case "$max_age" in '' | *[!0-9]*) fail "bad age '$max_age'" ;; esac
+[ "$max_age" -ge 30 ] || fail "age $max_age min is below 30"
+configured=$(sed -n 's:.*<TranscodingTempPath>\(.*\)</TranscodingTempPath>.*:\1:p' /etc/jellyfin/encoding.xml)
+[ "$configured" = "$dir" ] || fail "Jellyfin's TranscodingTempPath is '$configured', not '$dir'"
+[ "$(realpath -e -- "$dir")" = "$dir" ] || fail "$dir is not a real path (symlink?)"
+/usr/local/sbin/jellyfin-transcodes-check || fail "$dir is not on the NAS mount"
+
+# -xdev: never leave the NAS mount; -mindepth 1: never the folder itself; never
+# Jellyfin's own folder marker (.jellyfin-transcode), which it checks at startup.
+files=$(find "$dir" -xdev -mindepth 1 -type f -mmin "+$max_age" ! -name '.jellyfin-*' -print -delete | wc -l)
+dirs=$(find "$dir" -xdev -mindepth 1 -type d -empty -mmin "+$max_age" -print -delete | wc -l)
+left=$(find "$dir" -xdev -mindepth 1 -type f | wc -l)
+echo "jellyfin-transcode-cleanup: $dir: deleted $files file(s) and $dirs empty dir(s) older than $max_age min; $left file(s) left"

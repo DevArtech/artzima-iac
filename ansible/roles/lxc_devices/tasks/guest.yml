@@ -8,28 +8,60 @@
     loop_var: dev
     index_var: idx
     label: "dev{{ idx }}: {{ dev.path }}"
-  when: "('dev' ~ idx ~ ': ' ~ dev.path) not in lxc_devices_res.stdout"
+  # PVE prints the line as `devN: path=/dev/x[,gid=..]` (older releases: `devN: /dev/x`).
+  when:
+    - "('dev' ~ idx ~ ': path=' ~ dev.path) not in lxc_devices_res.stdout"
+    - "('dev' ~ idx ~ ': ' ~ dev.path) not in lxc_devices_res.stdout"
   changed_when: true
   register: lxc_devices_set
 
-# Read-only bind mounts of the node's media data mount into the guest
-# (unprivileged LXC: see docs/manual-steps.md §10 for the uid/gid mapping).
+# Bind mounts of the node's NAS mounts into the guest (unprivileged LXC: see
+# docs/manual-steps.md §10 for the uid/gid mapping). Read-only from the library mount
+# (media_host_mount), or read-write from the entry's own rw mount (rw: true,
+# group_vars/all/lxc_storage.yml).
 - name: Set mp lines for {{ lxc_devices_res.item.inventory_hostname }}
+  vars:
+    lxc_devices_mp_src: "{{ (lxc_rw_host_mount if mnt.rw | default(false) else media_host_mount) ~ '/' ~ mnt.data_subdir }}"
   ansible.builtin.command: >-
     pct set {{ lxc_devices_res.item.host_index }}
-    --mp{{ idx }} {{ media_host_mount }}/{{ mnt.data_subdir }},mp={{ mnt.mp }},ro=1,backup=0
+    --mp{{ idx }} {{ lxc_devices_mp_src }},mp={{ mnt.mp }},{{ '' if mnt.rw | default(false) else 'ro=1,' }}backup=0
   loop: "{{ lxc_devices_res.item.lxc_mounts | default([]) }}"
   loop_control:
     loop_var: mnt
     index_var: idx
-    label: "mp{{ idx }}: {{ media_host_mount }}/{{ mnt.data_subdir }} -> {{ mnt.mp }} (ro)"
+    label: "mp{{ idx }}: {{ lxc_devices_mp_src }} -> {{ mnt.mp }} ({{ 'rw' if mnt.rw | default(false) else 'ro' }})"
   when: >-
-    ('mp' ~ idx ~ ': ' ~ media_host_mount ~ '/' ~ mnt.data_subdir ~ ',mp=' ~ mnt.mp)
+    ('mp' ~ idx ~ ': ' ~ lxc_devices_mp_src ~ ',mp=' ~ mnt.mp)
     not in lxc_devices_res.stdout
   changed_when: true
   register: lxc_devices_mount_set
 
+# Proxmox hotplugs what it can into a running container (bind mounts, for example); the
+# rest stays "pending" until the container restarts. Restart only for pending changes.
+- name: Check for pending changes on {{ lxc_devices_res.item.inventory_hostname }}
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    pct status {{ lxc_devices_res.item.host_index }} | grep -q running || exit 0;
+    pct pending {{ lxc_devices_res.item.host_index }} | grep -qE '^(new|del) ' && echo pending || true
+  args:
+    executable: /bin/bash
+  register: lxc_devices_pending
+  changed_when: false
+  when: lxc_devices_set is changed or lxc_devices_mount_set is changed
+
 - name: Restart the container to pick up devices and mounts # noqa: no-handler (per-guest, inside a loop)
   ansible.builtin.command: pct reboot {{ lxc_devices_res.item.host_index }}
-  when: lxc_devices_set is changed or lxc_devices_mount_set is changed
+  when:
+    - lxc_devices_set is changed or lxc_devices_mount_set is changed
+    - "'pending' in lxc_devices_pending.stdout | default('')"
+    - lxc_devices_reboot | bool
   changed_when: true
+
+- name: Report changes that wait for a container restart
+  ansible.builtin.debug:
+    msg: >-
+      {{ lxc_devices_res.item.inventory_hostname }} has pending config changes (lxc_devices_reboot=false):
+      run `pct reboot {{ lxc_devices_res.item.host_index }}` on the node when convenient.
+  when:
+    - "'pending' in lxc_devices_pending.stdout | default('')"
+    - not (lxc_devices_reboot | bool)

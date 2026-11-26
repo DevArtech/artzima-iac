@@ -54,7 +54,7 @@ endef
         site common network cluster pbs storage nut nut-check tailscale host-prep \
         proxmox-api lxc-devices ts-routers jellyfin firewalla-plan firewalla-apply \
         tofu-init tofu-plan tofu-apply tofu-destroy tofu-state-backup talos-env flux-bootstrap eso-bootstrap \
-        cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
+        cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup nas-folders media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
         lint lint-yaml lint-ansible lint-tofu lint-k8s lint-flux lint-python lint-images
 
 help: ## Show targets
@@ -96,7 +96,7 @@ bootstrap: ## PHASE: folders, generated secrets, then every DERIVED credential (
 	$(MAKE) --no-print-directory cf-apply
 	@echo "bootstrap done. next: USB installs (docs/OPERATOR-SETUP.md), then make preflight && make up"
 
-UP_STEPS := site tofu-apply lxc-devices ts-routers jellyfin pbs-offsite nas-backup eso-bootstrap flux-bootstrap
+UP_STEPS := site tofu-apply nas-folders lxc-devices ts-routers jellyfin pbs-offsite nas-backup eso-bootstrap flux-bootstrap
 up: ## PHASE: hosts -> VMs/LXCs/Talos -> devices -> off-site -> ESO -> Flux (preflight first; each step confirms)
 	$(PY) scripts/preflight.py
 	@for t in $(UP_STEPS); do echo; echo "=== make $$t"; $(MAKE) --no-print-directory $$t || exit 1; done
@@ -181,6 +181,8 @@ pbs-offsite: ## PBS: S3 datastore on the B2 bucket + local sync/prune/GC jobs (a
 NAS_ANSIBLE_ARGS ?=
 nas-backup: ## Backrest (restic) on the NAS -> B2 (after make b2-apply); -e nas_backup_deploy=false = render only
 	$(call ansible_apply,nas-backup,$(NAS_ANSIBLE_ARGS))
+nas-folders: ## NAS sub-folders that LXCs mount read-write (Jellyfin transcodes) + their marker files; before lxc-devices
+	$(call ansible_apply,nas-folders,$(NAS_ANSIBLE_ARGS))
 
 # ---------------------------------------------------------------- 3d. derived identities (tofu/bootstrap)
 ids-init: ## Init tofu/bootstrap (Tailscale auth keys + ESO machine identity)

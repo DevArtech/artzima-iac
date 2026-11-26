@@ -1,0 +1,14 @@
+#!/bin/sh
+# Managed by Ansible (jellyfin_setup). Succeeds only if Jellyfin's transcode folder is the
+# NAS folder: {{ jellyfin_setup_transcode_mount }} is a mount point with the NAS marker in it, and
+# {{ jellyfin_setup_transcode_dir }} is a writable directory inside it. If the Proxmox node's NFS
+# mount failed, the bind mount points at an empty directory on the node's own disk (no
+# marker): Jellyfin must then NOT start, rather than fill a local root disk again.
+set -eu
+mnt='{{ jellyfin_setup_transcode_mount }}'
+dir='{{ jellyfin_setup_transcode_dir }}'
+fail() { echo "jellyfin-transcodes-check: $*" >&2; exit 1; }
+mountpoint -q "$mnt" || fail "$mnt is not a mount point (make lxc-devices)"
+[ -f "$mnt/{{ lxc_rw_marker }}" ] || fail "$mnt has no NAS marker: the node's NFS mount is missing (make nas-folders / lxc-devices)"
+[ -d "$dir" ] && [ ! -L "$dir" ] || fail "$dir is missing (make jellyfin)"
+[ -w "$dir" ] || fail "$dir is not writable for $(id -un)"

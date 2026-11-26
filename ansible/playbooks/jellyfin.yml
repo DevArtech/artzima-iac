@@ -67,8 +67,10 @@
         enabled: true
         state: started
     # Media library: /data/media (read-only bind mount of the NAS media data
-    # folder, set by `make lxc-devices` from lxc_mounts in hosts.yml). The wizard,
-    # libraries, NVENC, proxies and the API key: role jellyfin_setup (below).
+    # folder, set by `make lxc-devices` from lxc_mounts in hosts.yml). Transcodes:
+    # /data/transcodes (read-write bind mount of the NAS folder data/transcodes, made by
+    # `make nas-folders`; Jellyfin refuses to start without it). The wizard, libraries,
+    # NVENC, transcode folder + cleanup, proxies and the API key: role jellyfin_setup (below).
 
     - name: Check the media library mount
       ansible.builtin.stat:
@@ -80,6 +82,6 @@
         msg: "/data/media is missing: run `make lxc-devices` (after the NAS data folder exists, docs/manual-steps.md §3)"
       when: not jellyfin_media.stat.exists
 
-    - name: Configure Jellyfin (wizard, libraries, NVENC, proxies, API key)
+    - name: Configure Jellyfin (transcodes on the NAS, wizard, libraries, NVENC, proxies, API key)
       ansible.builtin.include_role:
         name: jellyfin_setup

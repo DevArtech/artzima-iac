@@ -40,6 +40,20 @@
     state: mounted
   when: lxc_devices_mount_guests | length > 0
 
+# Read-WRITE sub-folders (lxc_mounts entries with rw: true, group_vars/all/lxc_storage.yml):
+# each its own NFS mount, so the library mount above stays read-only. The NAS folder must
+# exist first (`make nas-folders`); without it this mount fails, loudly.
+- name: Mount the NAS read-write sub-folders
+  ansible.posix.mount:
+    src: "{{ artnas_ip }}:{{ artnas_export }}/{{ media_data_subdir }}/{{ item }}"
+    path: "{{ lxc_rw_host_mount }}/{{ item }}"
+    fstype: nfs
+    opts: "{{ lxc_rw_mount_opts }}"
+    state: mounted
+  loop: >-
+    {{ lxc_devices_mount_guests | map(attribute='lxc_mounts') | flatten
+       | selectattr('rw', 'defined') | selectattr('rw') | map(attribute='data_subdir') | unique | list }}
+
 # Start guests only after network filesystems: otherwise Jellyfin would boot with
 # a missing library. (A missing source dir makes `pct start` fail, which is the
 # safe outcome: Jellyfin never sees an empty /data/media.)

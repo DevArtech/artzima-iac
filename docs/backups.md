@@ -106,6 +106,7 @@ doesn't; resolved alerts send a short note). HQ is on the tailnet only, so:
 | `CertificateExpiringSoon`, `CertificateNotReady` | < 14 days left / not Ready for 1 h |
 | `UPSOnBattery`, `UPSLowBattery`, `UPSExporterDown` | from NUT on host01 (`nut-exporter`) |
 | `NASSpaceLow`, `ProxmoxStorageLow` (+ the chart's node/disk/PVC rules) | < 10 % free on the NAS / > 90 % used on a Proxmox storage |
+| `LXCRootDiskFilling`, `LXCRootDiskAlmostFull` | an LXC's root disk (Jellyfin, ts-routers) > 85 % for 10 min (warning) / > 95 % for 5 min (critical), from pve-exporter |
 | Backrest (on the NAS) | any backup/check error or warning; missed runs only with the optional healthchecks.io key |
 | `restic-maint` (on the NAS) | forget/prune failed |
 

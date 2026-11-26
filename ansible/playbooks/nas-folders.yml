@@ -1,0 +1,58 @@
+---
+# Sub-folders of the NAS media data folder that LXCs mount READ-WRITE (lxc_mounts entries
+# with rw: true in hosts.yml; today Jellyfin's transcode folder <data>/transcodes).
+# Creates each folder and the marker file the guests check before writing
+# (group_vars/all/lxc_storage.yml). Never touches anything else on the NAS: no chown or
+# chmod outside these folders (the guest's own sub-folder in each is made, and owned by
+# its mapped service uid, by `make jellyfin`). Same NAS login as `make nas-backup`:
+#   make nas-folders          (sudo password from Infisical /ansible/NAS_SUDO_PASSWORD)
+#   make nas-folders NAS_ANSIBLE_ARGS=-K
+# Run before `make lxc-devices` (which mounts the folders on the Proxmox node).
+- name: NAS folders for read-write LXC mounts
+  hosts: artnas
+  gather_facts: false # UGOS: only what the tasks need
+  become: true
+  vars:
+    ansible_become_password: "{{ lookup('ansible.builtin.env', 'NAS_SUDO_PASSWORD') or omit }}"
+  tasks:
+    - name: Collect the read-write sub-folders from the inventory
+      ansible.builtin.set_fact:
+        nas_folders_subdirs: >-
+          {{ (nas_folders_subdirs | default([]) + (hostvars[item].lxc_mounts | default([])
+              | selectattr('rw', 'defined') | selectattr('rw') | map(attribute='data_subdir') | list)) | unique }}
+      loop: "{{ groups['all'] }}"
+
+    - name: Only plain sub-folders inside the lab export
+      ansible.builtin.assert:
+        that:
+          - item is match('^[a-z0-9][a-z0-9_-]*$') # one folder name: no '/', no '..'
+          - media_data_subdir is match('^[a-z0-9][a-z0-9_-]*$')
+        fail_msg: "lxc_mounts data_subdir {{ item }}: one plain folder name (it lands in {{ artnas_export }}/{{ media_data_subdir }})"
+      loop: "{{ nas_folders_subdirs }}"
+
+    - name: The media data folder exists (docs/manual-steps.md §3)
+      ansible.builtin.stat:
+        path: "{{ artnas_export }}/{{ media_data_subdir }}"
+      register: nas_folders_data
+      failed_when: not (nas_folders_data.stat.isdir | default(false))
+
+    # The folder itself stays root's (guests can't delete the marker); each guest gets
+    # its own sub-folder in it, owned by its mapped service user (make jellyfin).
+    - name: Create the read-write sub-folders
+      ansible.builtin.file:
+        path: "{{ artnas_export }}/{{ media_data_subdir }}/{{ item }}"
+        state: directory
+        owner: root
+        group: "{{ media_pgid }}"
+        mode: "2755"
+      loop: "{{ nas_folders_subdirs }}"
+
+    - name: Marker file (guests refuse a folder without it)
+      ansible.builtin.copy:
+        dest: "{{ artnas_export }}/{{ media_data_subdir }}/{{ item }}/{{ lxc_rw_marker }}"
+        content: |
+          This folder is on the NAS (artzima-iac `make nas-folders`). LXCs check for this
+          file before writing here; do not delete it.
+        mode: "0644"
+        force: false
+      loop: "{{ nas_folders_subdirs }}"

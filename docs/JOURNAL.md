@@ -167,3 +167,30 @@ cannot establish whether anyone downloaded a copy during the exposure window.
   Viewer on it alone ([decisions](decisions.md#infisical-two-projects-2026-11-23)). The project is
   created once by the operator; existing `/k8s` secrets move with `make secrets-migrate-k8s`
   ([OPERATOR-SETUP A2b](OPERATOR-SETUP.md#a2b-the-clusters-infisical-project)).
+
+## 25 November 2026 — Jellyfin down: transcodes filled its root disk
+
+- **Incident (evening):** Jellyfin stopped loading. Its LXC root disk (32 GB, `vm-130-disk-0`) was
+  100 % full: `/var/cache/jellyfin/transcodes` held 27 GB of leftover transcode segments, and SQLite
+  failed with "database or disk is full". Cause: the transcode path was on the root disk, and
+  nothing removed segments while or after playing (`EnableSegmentDeletion` and `EnableThrottling`
+  were off; the only cleanup was Jellyfin's daily task, for files older than a day).
+- **Immediate fix (G.A.R.T.H.):** cleared the transcode folder, restarted Jellyfin: healthy, 12 % used.
+- **Follow-up, by the operator's instruction** ("cleared more frequently and also stored on the NAS"),
+  applied live the same night:
+  - Transcodes moved to the NAS: `/volume1/Artzima/data/transcodes` (`make nas-folders`), its own
+    read-write NFS mount on host01, bind-mounted at `/data/transcodes` (`make lxc-devices`; hotplugged,
+    no LXC reboot). `TranscodingTempPath` = `/data/transcodes/jellyfin` (`make jellyfin`).
+  - No silent fallback to a local disk: Jellyfin starts only when that folder is the NAS mount
+    (marker file check as `ExecStartPre`, `RequiresMountsFor`).
+  - Cleared continuously: segment deletion (720 s) and throttling on, a 15-minute timer deleting
+    files older than 60 min, and Jellyfin's *Clean Transcode Directory* kept at startup + every 24 h.
+  - Alerts `LXCRootDiskFilling` (> 85 %, warning) and `LXCRootDiskAlmostFull` (> 95 %, critical)
+    on every LXC root disk, from pve-exporter.
+  - Found on the way: `make lxc-devices` never recognised existing `devN:` lines (Proxmox prints
+    `devN: path=…`), so every run re-set them and rebooted the GPU LXC and the ts-routers. Fixed; it
+    now restarts a container only for changes Proxmox could not hotplug.
+- Verified: a forced 1280p NVENC transcode wrote its HLS segments to the NAS folder (118 MB in 15 s)
+  while the LXC root disk stayed at 3.5 GB; stopping the stream removed them; the cleanup service
+  deleted a 3-hour-old dummy file and folder and kept a new one; with a simulated missing NFS mount
+  both the start check and the cleanup refused. Details: [manual steps §10.4](manual-steps.md#104-jellyfin-lxc-uidgid-mapping-unprivileged).

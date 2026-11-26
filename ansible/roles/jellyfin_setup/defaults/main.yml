@@ -34,6 +34,31 @@ jellyfin_setup_encoding:
   EnableDecodingColorDepth10Vp9: true
   EnableEnhancedNvdecDecoder: true
   EnableTonemapping: true
+  # Transcodes on the NAS (tasks/transcodes.yml), and cleared while playing: segments
+  # older than SegmentKeepSeconds are deleted, and ffmpeg pauses once it is
+  # ThrottleDelaySeconds ahead of the player instead of transcoding the whole file.
+  TranscodingTempPath: "{{ jellyfin_setup_transcode_dir }}"
+  EnableSegmentDeletion: true
+  SegmentKeepSeconds: 720
+  EnableThrottling: true
+  ThrottleDelaySeconds: 180
+
+# Transcode scratch space: the LXC's read-write bind mount of the NAS folder
+# <artnas_export>/<media_data_subdir>/transcodes (lxc_mounts in hosts.yml,
+# group_vars/all/lxc_storage.yml), and Jellyfin's own sub-folder in it.
+jellyfin_setup_transcode_mount: /data/transcodes
+jellyfin_setup_transcode_dir: /data/transcodes/jellyfin
+# jellyfin-transcode-cleanup.timer: every 15 min, delete files older than this (minutes,
+# at least 30). Active streams only keep recent segments anyway (SegmentKeepSeconds).
+jellyfin_setup_transcode_max_age_min: 60
+jellyfin_setup_transcode_cleanup_calendar: "*:0/15"
+
+# Scheduled task triggers (Dashboard > Scheduled tasks), by task key; set exactly.
+# "Clean Transcode Directory": at startup and every 24 h (Jellyfin's default, kept).
+jellyfin_setup_task_triggers:
+  DeleteTranscodeFiles:
+    - { Type: StartupTrigger }
+    - { Type: IntervalTrigger, IntervalTicks: 864000000000 } # 24 h in 100 ns ticks
 
 # Server settings (Dashboard > General / Networking). Jellyfin 12 turns legacy
 # authorization OFF by default, and then rejects API keys sent as X-Emby-Token,

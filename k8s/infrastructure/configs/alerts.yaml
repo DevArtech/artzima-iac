@@ -95,3 +95,17 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "Proxmox storage {{ $labels.id }} is over 90% full"
+        # LXC root disks (Proxmox reports their usage; VMs without the guest agent report 0).
+        # JOURNAL 2026-11-25: Jellyfin's 32 GB root filled with transcodes and its DB broke.
+        - alert: LXCRootDiskFilling
+          expr: pve_disk_usage_bytes{id=~"lxc/.*"} / pve_disk_size_bytes{id=~"lxc/.*"} > 0.85 and pve_disk_size_bytes > 0
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "LXC {{ $labels.id }} root disk is over 85% full"
+        - alert: LXCRootDiskAlmostFull
+          expr: pve_disk_usage_bytes{id=~"lxc/.*"} / pve_disk_size_bytes{id=~"lxc/.*"} > 0.95 and pve_disk_size_bytes > 0
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "LXC {{ $labels.id }} root disk is over 95% full: services there are about to fail"

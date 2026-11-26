@@ -529,9 +529,14 @@ idempotent Job, `wizarr-setup` (§10.3).
    - `USENET_HOST` (`news.usenetserver.com`), `USENET_PORT` (`563`, SSL), `USENET_USER`,
      `USENET_PASSWORD`: the UsenetServer news server login (*UsenetServer member area*).
    - `SABNZBD_API_KEY` is generated (`make gen-secrets`, hex:16).
-6. **Jellyfin's read-only library mount**: `make lxc-devices`. It mounts the NAS data folder
-   read-only on host01 (`/mnt/artnas-data`, fstab) and adds `mp0: /mnt/artnas-data/media,mp=/data/media,ro=1`
-   to the Jellyfin LXC (then reboots it). Check with `pct exec 130 -- ls /data/media` on host01.
+6. **Jellyfin's mounts**: `make nas-folders`, then `make lxc-devices`. `nas-folders` creates the
+   transcode folder `/volume1/Artzima/data/transcodes` on the NAS (root-owned `2755`, with the marker
+   file `.artzima-nas-folder`). `lxc-devices` mounts the NAS data folder read-only on host01
+   (`/mnt/artnas-data`, fstab) and the transcode folder read-write (`/mnt/artnas-rw/transcodes`,
+   fstab), and adds `mp0: /mnt/artnas-data/media,mp=/data/media,ro=1` and
+   `mp1: /mnt/artnas-rw/transcodes,mp=/data/transcodes` to the Jellyfin LXC. Proxmox hotplugs bind
+   mounts into the running LXC; the role restarts it only for changes left pending. Check with
+   `pct exec 130 -- ls /data/media /data/transcodes` on host01.
 7. **Tailscale policy**: `tag:k8s` owned by `tag:k8s-operator` ([§4](#4-tailscale-admin-console)).
 8. `make secrets-check` (nothing missing).
 9. Seerr's public hostname: `make cf-apply` (the `seerr` entry in `/apps.yaml`; part of
@@ -600,6 +605,29 @@ is **not** mapped into the container, so inside the LXC they show as `nobody:nog
 stay world-readable (664/775, which the pods' umask 002 produces). Jellyfin never needs to write
 there (`ro=1`, and the NFS mount itself is read-only). Images and metadata go to its own
 `/var/lib/jellyfin`.
+
+**Transcodes are on the NAS, not on the LXC's 32 GB root disk** ([JOURNAL 2026-11-25](JOURNAL.md#25-november-2026--jellyfin-down-transcodes-filled-its-root-disk)).
+The NAS folder `/volume1/Artzima/data/transcodes` is its own read-write NFS mount on host01, bind-mounted
+at `/data/transcodes`. The folder itself is root's and holds the marker `.artzima-nas-folder`;
+Jellyfin's `TranscodingTempPath` is the sub-folder `/data/transcodes/jellyfin`, owned on the NAS by
+`100104:100106` (the container's `jellyfin` 104:106 + 100000; `make jellyfin` sets it from host01, whose
+root may chown over the `no_root_squash` export). Jellyfin needs a sub-folder because it deletes every
+file in its transcode path at startup, which would take the marker with it.
+
+- **No fallback to a local disk.** If host01's NFS mount failed at boot (`nofail`), the bind mount
+  would point at an empty directory on host01's disk. `jellyfin.service` has
+  `RequiresMountsFor=/data/transcodes` and `ExecStartPre=/usr/local/sbin/jellyfin-transcodes-check`
+  (mount point + NAS marker + writable folder), so Jellyfin then **does not start** (`systemctl status
+  jellyfin` shows why). Fix the NAS mount (`make lxc-devices`), then `systemctl restart jellyfin`.
+- **Cleared all the time:** Jellyfin deletes segments behind the player (`EnableSegmentDeletion`,
+  720 s) and pauses ffmpeg 180 s ahead of it (`EnableThrottling`). `jellyfin-transcode-cleanup.timer`
+  (every 15 min, as `jellyfin`) deletes files older than 60 min and empty folders, only inside
+  `/data/transcodes/jellyfin`, and refuses to run unless that is Jellyfin's configured path and on the
+  NAS mount. Jellyfin's own task *Clean Transcode Directory* runs at startup and every 24 h.
+  Run it by hand: `systemctl start jellyfin-transcode-cleanup.service; journalctl -u jellyfin-transcode-cleanup`.
+- The folder is scratch space: not backed up (Backrest only reads `data/media`; `backup=0` on the mount).
+- As root in the LXC you can't list `/data/transcodes/jellyfin` (root is uid 100000 on the NAS):
+  use `su -s /bin/sh jellyfin -c 'ls -la /data/transcodes/jellyfin'`.
 
 Stricter alternative (not automated): map just the media group into the container and drop
 the `o+r` requirement. On host01, add `root:1000:1` to `/etc/subgid`. Then add to

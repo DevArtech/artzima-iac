@@ -1,0 +1,142 @@
+---
+# Transcode scratch space on the NAS, not on the LXC's 32 GB root disk (JOURNAL 2026-11-25:
+# 27 GB of leftover segments filled it and Jellyfin's SQLite failed).
+#   <NAS>/data/transcodes          -> node <lxc_rw_host_mount>/transcodes (NFS rw, make lxc-devices)
+#                                  -> LXC  {{ jellyfin_setup_transcode_mount }} (bind mount)
+#   {{ jellyfin_setup_transcode_mount }}/<marker>    root-owned, from make nas-folders
+#   {{ jellyfin_setup_transcode_dir }}       Jellyfin's TranscodingTempPath (owned by jellyfin)
+# Jellyfin gets a SUB-folder because it deletes every file in its transcode path at
+# startup (and its daily task deletes old ones): the marker would not survive there.
+# Cleared: Jellyfin's own segment deletion + throttling (defaults/main.yml encoding), the
+# jellyfin-transcode-cleanup.timer here, and the daily "Clean Transcode Directory" task.
+- name: Transcode folder paths
+  ansible.builtin.set_fact:
+    jellyfin_setup_transcode_subdir: >-
+      {{ (lxc_mounts | default([]) | selectattr('mp', 'equalto', jellyfin_setup_transcode_mount) | first | default({})).data_subdir | default('') }}
+    jellyfin_setup_transcode_leaf: "{{ jellyfin_setup_transcode_dir | relpath(jellyfin_setup_transcode_mount) }}"
+
+- name: The transcode mount is a read-write lxc_mounts entry and the folder is one level inside it
+  ansible.builtin.assert:
+    that:
+      - jellyfin_setup_transcode_subdir | length > 0
+      - (lxc_mounts | selectattr('mp', 'equalto', jellyfin_setup_transcode_mount) | first).rw | default(false)
+      - jellyfin_setup_transcode_leaf is match('^[a-z0-9][a-z0-9_-]*$')
+    fail_msg: >-
+      hosts.yml: {{ inventory_hostname }} needs an lxc_mounts entry with mp: {{ jellyfin_setup_transcode_mount }}
+      and rw: true, and jellyfin_setup_transcode_dir must be one folder inside it
+
+- name: Check the NAS marker in the transcode mount
+  ansible.builtin.stat:
+    path: "{{ jellyfin_setup_transcode_mount }}/{{ lxc_rw_marker }}"
+  register: jellyfin_setup_tc_marker
+
+- name: Refuse a transcode mount that is not the NAS folder
+  ansible.builtin.fail:
+    msg: >-
+      {{ jellyfin_setup_transcode_mount }}/{{ lxc_rw_marker }} is missing: run `make nas-folders` and
+      `make lxc-devices` first (the folder must be the NAS, never the LXC's or the node's disk)
+  when: not jellyfin_setup_tc_marker.stat.exists
+
+# Unprivileged LXC: the jellyfin user is <offset + uid> on the node, and NFS (sec=sys,
+# no squash for non-root) stores that number. Only the node's root may chown on the NAS.
+- name: Read the jellyfin user and the LXC's uid/gid offset
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    echo "$(id -u jellyfin) $(id -g jellyfin)
+    $(awk '$1 == 0 {print $2}' /proc/self/uid_map) $(awk '$1 == 0 {print $2}' /proc/self/gid_map)"
+  args:
+    executable: /bin/bash
+  register: jellyfin_setup_ids
+  changed_when: false
+  check_mode: false # read-only
+
+- name: Jellyfin's transcode folder on the NAS (owned by the mapped jellyfin user)
+  vars:
+    jellyfin_setup_id: "{{ jellyfin_setup_ids.stdout.split() | map('int') | list }}"
+  ansible.builtin.file:
+    path: "{{ lxc_rw_host_mount }}/{{ jellyfin_setup_transcode_subdir }}/{{ jellyfin_setup_transcode_leaf }}"
+    state: directory
+    owner: "{{ jellyfin_setup_id[2] + jellyfin_setup_id[0] }}"
+    group: "{{ jellyfin_setup_id[3] + jellyfin_setup_id[1] }}"
+    mode: "0750"
+  delegate_to: "{{ proxmox_node }}"
+
+- name: Transcode folder check and cleanup scripts
+  ansible.builtin.template:
+    src: "{{ item }}.sh.j2"
+    dest: /usr/local/sbin/{{ item }}
+    mode: "0755"
+  loop: [jellyfin-transcodes-check, jellyfin-transcode-cleanup]
+
+- name: Cleanup service and timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/{{ item.name }}
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: jellyfin-transcode-cleanup.service
+      content: |
+        # Managed by Ansible (jellyfin_setup)
+        [Unit]
+        Description=Delete Jellyfin transcode files older than {{ jellyfin_setup_transcode_max_age_min }} min ({{ jellyfin_setup_transcode_dir }}, NAS)
+        RequiresMountsFor={{ jellyfin_setup_transcode_mount }}
+
+        [Service]
+        Type=oneshot
+        User=jellyfin
+        Group=jellyfin
+        ExecStart=/usr/local/sbin/jellyfin-transcode-cleanup
+        Nice=10
+        IOSchedulingClass=idle
+    - name: jellyfin-transcode-cleanup.timer
+      content: |
+        # Managed by Ansible (jellyfin_setup)
+        [Unit]
+        Description=Delete old Jellyfin transcode files ({{ jellyfin_setup_transcode_cleanup_calendar }})
+
+        [Timer]
+        OnCalendar={{ jellyfin_setup_transcode_cleanup_calendar }}
+        AccuracySec=1min
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  register: jellyfin_setup_tc_units
+
+# No fallback to the root disk: jellyfin.service needs the mount, and refuses to start
+# when the mount is not the NAS folder (the check above, as ExecStartPre).
+- name: Drop-in directory for jellyfin.service
+  ansible.builtin.file:
+    path: /etc/systemd/system/jellyfin.service.d
+    state: directory
+    mode: "0755"
+
+- name: Jellyfin starts only with the NAS transcode folder
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/jellyfin.service.d/artzima-transcodes.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible (jellyfin_setup): transcodes live on the NAS, never on this disk.
+      [Unit]
+      RequiresMountsFor={{ jellyfin_setup_transcode_mount }}
+
+      [Service]
+      ExecStartPre=/usr/local/sbin/jellyfin-transcodes-check
+  register: jellyfin_setup_tc_dropin
+
+- name: Reload systemd # noqa: no-handler (one-off, inline: the restart below needs it)
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: jellyfin_setup_tc_units is changed or jellyfin_setup_tc_dropin is changed
+
+- name: Enable the cleanup timer
+  ansible.builtin.systemd_service:
+    name: jellyfin-transcode-cleanup.timer
+    enabled: true
+    state: started
+
+- name: Restart Jellyfin for the new unit settings # noqa: no-handler (before the API calls below)
+  ansible.builtin.systemd_service:
+    name: jellyfin
+    state: restarted
+  when: jellyfin_setup_tc_dropin is changed

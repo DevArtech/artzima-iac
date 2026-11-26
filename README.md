@@ -284,14 +284,17 @@ flowchart LR
   data[("NAS /volume1/Artzima/data<br/>torrents/{tv,movies,music} · usenet/… · media/{tv,movies,music}")]
   qbt & sab & sonarr & radarr & bazarr -- "/data (one RWX volume:<br/>hardlinks, atomic moves)" --> data
   jellyfin -- "/data/media (read-only bind mount)" --> data
+  jellyfin -- "/data/transcodes (read-write bind mount,<br/>scratch, cleared every 15 min)" --> data
   infisical[("Infisical /k8s/media, /k8s/vpn")] -. "ESO" .-> media
 ```
 
 **Order of operations** (inside the main table: steps 0, 12, 14a, 16, 20):
 
 1. **NAS:** create `/volume1/Artzima/data/{torrents,media}/{tv,movies,music}`, `chown -R 1000:1000`,
-   dirs `2775` ([§3](docs/manual-steps.md#3-ugreen-nas-ugos)). Then `make lxc-devices` mounts
-   `media/` read-only into the Jellyfin LXC at `/data/media`.
+   dirs `2775` ([§3](docs/manual-steps.md#3-ugreen-nas-ugos)). `make nas-folders` creates
+   `data/transcodes` (Jellyfin's transcode scratch space). Then `make lxc-devices` mounts
+   `media/` read-only into the Jellyfin LXC at `/data/media`, and `transcodes/` read-write at
+   `/data/transcodes`.
 2. **Surfshark:** generate a WireGuard key pair (*Manual setup → WireGuard*), and put the private key
    and the `Address` into Infisical `/k8s/vpn` ([§10.1](docs/manual-steps.md#101-before-the-flux-sync-in-this-order)).
    Pick the country in `ansible/group_vars/all/media.yml`.

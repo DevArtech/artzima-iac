@@ -1,0 +1,19 @@
+---
+# LXC bind mounts that must be WRITABLE (lxc_mounts entries with `rw: true` in hosts.yml).
+# Plain YAML (no Jinja). The read-only library mount is media_host_mount (media.yml).
+#
+# Each rw entry is a sub-folder of the NAS media data folder
+# (<artnas_export>/<media_data_subdir>/<data_subdir>) with its OWN read-write NFS mount on
+# the Proxmox node at <lxc_rw_host_mount>/<data_subdir>, bind-mounted into the LXC
+# (`make lxc-devices`). Today only Jellyfin's transcode scratch space,
+# /volume1/Artzima/data/transcodes -> /data/transcodes in the Jellyfin LXC. It is not the
+# library: nothing there is backed up, and files older than an hour are deleted.
+#
+# `make nas-folders` creates the folders on the NAS with a marker file in each. Guests
+# refuse to use a folder without the marker: if the node's NFS mount failed (nofail), the
+# bind mount would silently point at an empty directory on the node's own root disk.
+lxc_rw_host_mount: /mnt/artnas-rw
+lxc_rw_marker: .artzima-nas-folder
+# NFSv3 like the library mount, but rw; hard (never silently empty), _netdev + nofail so a
+# NAS outage doesn't block the node's boot (the marker check catches the missing mount).
+lxc_rw_mount_opts: "vers=3,rw,hard,noatime,_netdev,nofail"

@@ -5,3 +5,6 @@ lxc_devices_mount_guests: []
 # NAS media data folder on the node: read-only, hard (never silently empty),
 # _netdev + nofail so a NAS outage doesn't block the node's boot.
 lxc_devices_media_mount_opts: "vers=3,ro,hard,noatime,_netdev,nofail"
+# Restart a running container when a device/mount change could not be hotplugged
+# (pending in `pct config`). false = only report it (e.g. -e lxc_devices_reboot=false).
+lxc_devices_reboot: true
