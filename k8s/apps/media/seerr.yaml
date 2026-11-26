@@ -98,7 +98,7 @@ spec:
           app:
             image:
               repository: ghcr.io/devartech/seerr
-              tag: v3.5.2-artzima.1@sha256:DIGEST_PENDING
+              tag: v3.5.2-artzima.1@sha256:cbdcd55e3051d56362a6d9d23fd4d7b5635fc5c7d0704c80a337d4e789d9b976
             env:
               TZ: ${timezone}
               LOG_LEVEL: info
