@@ -48,6 +48,12 @@
       "groupName": "container images"
     },
     {
+      "description": "Our patched Seerr (DevArtech/artzima-images, private GHCR package): tags <upstream vX.Y.Z>-artzima.<n>. Regex versioning: an upstream patch release or a new patch revision <n> is a 'patch' update (automerge after CI, rule below); an upstream minor waits for a human. Its own PR, tag + digest.",
+      "matchPackageNames": ["ghcr.io/devartech/seerr"],
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-artzima\\.(?<build>\\d+)$",
+      "groupName": "patched seerr"
+    },
+    {
       "matchFileNames": ["scripts/render.py", "k8s/apps/backups/maintenance.yaml"],
       "groupName": "backup maintenance images"
     },

@@ -18,6 +18,20 @@
 # seed-config also writes main.mediaServerType (wiring/seed.py): without it Seerr
 # takes a new settings.json for an Overseerr install and its merge crashes on a
 # brand-new database ("Failed to insert migration records").
+#
+# Image: OUR patched Seerr, ghcr.io/devartech/seerr:<upstream tag>-artzima.<n>
+# (private package, pulled with ghcr-pull). It is upstream's release plus one
+# feature, the "External list" Discover row (DevArtech/artzima-images,
+# patches/seerr/README.md). The row's URL template is fetched server-side per
+# viewer, and ONLY from the hosts in SEERR_EXTERNAL_LIST_HOSTS (exact host:port;
+# empty = off). The media-wiring Job creates the "For you" row, which points at
+# the recs service. Updates: Renovate bumps the upstream tag in artzima-images;
+# CI applies the patches and runs Seerr's tests; a new image tag reaches this
+# file through Renovate (tag + digest, custom versioning in renovate.json).
+# If the patches stop applying, no image is built and this pin stays put.
+# Going back to stock Seerr = ghcr.io/seerr-team/seerr:<same upstream tag>.
+# The DB is unchanged by the patch: the new row type is just a number in
+# discover_slider.type, and stock Seerr renders nothing for a type it does not know.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -41,6 +55,8 @@ spec:
       retries: 3
   values:
     defaultPodOptions:
+      imagePullSecrets:
+        - name: ghcr-pull # private ghcr.io/devartech/seerr (k8s/secrets/ghcr-pull.yaml)
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
@@ -81,12 +97,15 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/seerr-team/seerr
-              tag: v3.5.2
+              repository: ghcr.io/devartech/seerr
+              tag: v3.5.2-artzima.1@sha256:DIGEST_PENDING
             env:
               TZ: ${timezone}
               LOG_LEVEL: info
               PORT: "5055"
+              # External list rows may only fetch from these hosts (exact host:port):
+              # the recs service (personal recommendations, the "For you" row).
+              SEERR_EXTERNAL_LIST_HOSTS: recs.media.svc.cluster.local:8080
               API_KEY: *apiKey
               DB_TYPE: postgres
               DB_HOST: seerr-db-rw # CNPG read-write Service

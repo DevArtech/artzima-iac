@@ -62,6 +62,11 @@ spec:
               value: WEB-1080p
             - name: SEERR_RADARR_PROFILE
               value: HD Bluray + WEB
+            # Seerr's Discover row "For you" (External list, patched image only): the recs
+            # service's per-user list; Seerr substitutes each viewer's Jellyfin user id.
+            # Its host must be in seerr.yaml SEERR_EXTERNAL_LIST_HOSTS. Empty = no row.
+            - name: SEERR_FOR_YOU_URL
+              value: http://recs.media.svc.cluster.local:8080/v1/recs/{jellyfinUserId}?limit=20
             # Existing rips (README "Bringing in your existing rips"), group_vars/all/media.yml:
             # recycle bin retention, the no-upgrade profile, and importing the
             # unmapped folders of /data/media/{tv,movies} as owned titles.

@@ -33,7 +33,8 @@ Secrets from Infisical /k8s/media) and are never printed.
      downloaded (excluded file names) (WebUI password: seeded from Infisical by the
      qbittorrent pod's init container)
   6. Seerr: the whole setup wizard (first sign-in with the Jellyfin admin login,
-     Jellyfin server + libraries, application URL, initialized), then Sonarr + Radarr
+     Jellyfin server + libraries, application URL, initialized), then Sonarr + Radarr,
+     then the Discover row "For you" (External list -> the recs service; patched image only)
 
 Exit code 1 if any step failed (the Job retries); steps are independent.
 """
@@ -980,6 +981,48 @@ def seerr_servers(api: Api, servers: list[dict]) -> None:
         raise RuntimeError(f"{', '.join(failed)} not set (see above)")
 
 
+# DiscoverSliderType.EXTERNAL_LIST: only in our patched image (artzima-images
+# patches/seerr; fixed value 1000 so it never collides with an upstream type).
+SEERR_EXTERNAL_LIST = 1000
+
+
+@step("Seerr: Discover row 'For you'")
+def seerr_for_you(api: Api, title: str, url: str, position: int = 1) -> None:
+    """The personal-recommendations row (External list Discover row, data = URL template
+    with {jellyfinUserId}; Seerr fetches it per viewer, only from SEERR_EXTERNAL_LIST_HOSTS).
+    Created once, enabled, at `position` (0 = top); afterwards only its URL is enforced,
+    so moving or disabling it in Settings > Discover sticks."""
+    if not url:
+        log("skip Seerr: SEERR_FOR_YOU_URL empty")
+        return
+    if not wait_for(api, "/api/v1/settings/public"):
+        return
+    try:  # the patched route answers this 404 itself; stock Seerr has no such route
+        api.get("/api/v1/discover/external/0")
+    except RuntimeError as e:
+        if "External list not found" not in str(e):
+            log("skip Seerr: this image has no External list row type (not the patched image)")
+            return
+    sliders = api.get("/api/v1/settings/discover") or []
+    mine = [s for s in sliders if s.get("type") == SEERR_EXTERNAL_LIST and s.get("title") == title]
+    if mine:
+        cur = mine[0]
+        if cur.get("data") == url:
+            log(f"ok   Seerr: Discover row '{title}'")
+        else:
+            api.put(f"/api/v1/settings/discover/{cur['id']}",
+                    {"type": SEERR_EXTERNAL_LIST, "title": title, "data": url})
+            log(f"upd  Seerr: Discover row '{title}' URL")
+        return
+    new = api.post("/api/v1/settings/discover/add",
+                   {"type": SEERR_EXTERNAL_LIST, "title": title, "data": url})
+    # /add stores it disabled at the end; the bulk save sets order = list index + enabled.
+    rest = [s for s in sliders if s.get("id") != new.get("id")]
+    rest.insert(min(position, len(rest)), {**new, "enabled": True})
+    api.post("/api/v1/settings/discover", rest)
+    log(f"add  Seerr: Discover row '{title}' (position {position}, enabled)")
+
+
 def seerr_test(api: Api, path: str, conn: dict, tries: int = 6) -> dict:
     """Seerr's own connection test of an arr (also lists its profiles and root folders);
     retried briefly, as an arr can be busy for a moment."""
@@ -1143,6 +1186,8 @@ def main() -> None:
          "port": port["radarr"], "key": keys["radarr"], "root": f"{data}/media/movies",
          "path": "/api/v1/settings/radarr", "extra": {"minimumAvailability": "released"}},
     ])
+    seerr_for_you(seerr, os.environ.get("SEERR_FOR_YOU_TITLE", "For you"),
+                  os.environ.get("SEERR_FOR_YOU_URL", "").strip())
 
     if errors:
         log(f"\n{len(errors)} step(s) failed:")
