@@ -1023,6 +1023,24 @@ def seerr_for_you(api: Api, title: str, url: str, position: int = 1) -> None:
     log(f"add  Seerr: Discover row '{title}' (position {position}, enabled)")
 
 
+def seerr_full_scan_every(api: Api, cron: str) -> None:
+    """Seerr's full Jellyfin scan, more often than its nightly default. Its "recently added"
+    scan only looks at Jellyfin's newest items by date added, and Jellyfin dates an item by the
+    FILE's date, which for downloads is the release's (years old): such a title would stay
+    "Requested" in Seerr until the 03:00 full scan. The library is small, so a frequent full
+    scan is cheap."""
+    jobs = api.get("/api/v1/settings/jobs") or []
+    cur = next((j for j in jobs if j.get("id") == "jellyfin-full-scan"), None)
+    if cur is None:
+        log("skip Seerr: no jellyfin-full-scan job")
+        return
+    if cur.get("cronSchedule") == cron:
+        log(f"ok   Seerr: full Jellyfin scan '{cron}'")
+        return
+    api.post("/api/v1/settings/jobs/jellyfin-full-scan/schedule", {"schedule": cron})
+    log(f"upd  Seerr: full Jellyfin scan '{cron}'")
+
+
 def seerr_test(api: Api, path: str, conn: dict, tries: int = 6) -> dict:
     """Seerr's own connection test of an arr (also lists its profiles and root folders);
     retried briefly, as an arr can be busy for a moment."""
@@ -1188,6 +1206,7 @@ def main() -> None:
     ])
     seerr_for_you(seerr, os.environ.get("SEERR_FOR_YOU_TITLE", "For you"),
                   os.environ.get("SEERR_FOR_YOU_URL", "").strip())
+    seerr_full_scan_every(seerr, os.environ.get("SEERR_FULL_SCAN_CRON", "0 */20 * * * *"))
 
     if errors:
         log(f"\n{len(errors)} step(s) failed:")
