@@ -499,6 +499,100 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   + year). Everything else is listed for a manual Library Import, because a wrong match is worse
   than a manual step. Removing the tag releases a title.
 
+## Recommendations: classic + local AI, fused (2026-11-26)
+
+`recs` (`k8s/apps/recs`, namespace `media`) recommends films and series per Jellyfin user; Seerr
+displays them. It combines SuggestArr's idea (what you watch → TMDb's similar/recommended titles)
+with Recommendarr's (an AI that reasons over your taste) and **mixes both scores**, so neither
+side decides alone. Everything runs in the lab: the AI is a small local model on host01, not the
+DGX Spark or the HQ PC, and nothing is published.
+
+```mermaid
+flowchart LR
+  jf["Jellyfin (LXC)<br/>plays, favourites, ratings"] --> recs
+  seerr["Seerr<br/>users, OWN requests, watchlist,<br/>TMDb via its API"] --> recs
+  arr["Radarr / Sonarr<br/>library + queue"] --> recs
+  recs["recs (media ns, ClusterIP :8080)<br/>seeds → candidates → classic + AI → fusion"] -- "JSON-schema prompts" --> llm["llm LXC on host01<br/>llama.cpp, Qwen3-4B Q4, CPU"]
+  seerrpatch["Seerr (patched UI)"] -- "GET /v1/recs/{jellyfinUserId}" --> recs
+  cron["CronJob recs-refresh 03:30"] -- "POST /v1/refresh" --> recs
+```
+
+**Inputs and weights** (per user; every weight is an env var `RECS_<NAME>`, defaults in
+`recs_core.DEFAULTS`). A title keeps its strongest signal:
+
+| Signal | Weight | Notes |
+|---|---|---|
+| Jellyfin favourite | 1.0 | decays at most to 0.75 |
+| Completed watch, rating ≥ 8 or "like" | 0.8 | series: ≥ 80 % of episodes; +10 % per extra play, max +30 % |
+| **Own Seerr request** | 0.6 | the user's OWN requests only (others' say nothing about this user); half-life 90 days, so recent requests weigh more; the requested title itself is never recommended |
+| Seerr watchlist | 0.4 | |
+| Partial watch | 0.25 | |
+| Disliked (Jellyfin "dislike", rating ≤ 4) | −0.8 | never overridden by a later request |
+| Abandoned (film stopped before 20 %, untouched 21 days) | −0.3 | |
+
+Watches decay with a 180-day half-life, never below 35 %. Jellyfin's `Filters=Dislikes` is not
+used: on Jellyfin 12 it matched every item; recs reads `UserData.Likes` itself.
+
+**Candidates** (shared by both sides): page 1 of TMDb *recommendations* and *similar* (×0.5) of
+the 40 strongest seeds, through Seerr's TMDb proxy (no TMDb key of our own), plus up to 10 titles
+the model proposes by name + year, resolved with Seerr's search (same type, title match, year ±1;
+unresolvable ones are dropped). **Excluded:** anything in Jellyfin, Radarr or Sonarr (owned or
+queued), anything anyone requested (Seerr requests and media status), the user's own seeds
+(watched, requested, watchlisted) and dislikes. The 120 most promising candidates go on, split
+between films and series by their share of the seed weight (at least 25 % each).
+
+**Classic score (0-1):** 0.45 × seed strength (seed weight × recency, earlier TMDb ranks count
+more, summed over seeds) + 0.15 × frequency (how many seeds point at it) + 0.25 × genre/keyword
+affinity with the user's profile + 0.15 × TMDb prior (Bayesian rating average, a little
+popularity); seed strength and frequency are scaled per media type, then min-max per user.
+AI-proposed titles the classic side never saw get the affinity alone.
+
+**AI score (0-1):** the local model rates **every** candidate, 12 per request, 0-10 with a
+one-line reason, constrained by a JSON schema (llama.cpp `response_format: json_schema`: candidate
+ids as an `enum`, integer scores 0-10). Answers are validated again (unknown or repeated ids,
+non-numeric or out-of-range scores are dropped), then min-max per user.
+
+**Fusion:** `final = 0.5 × classic + 0.5 × ai` (`RECS_W_CLASSIC`, `RECS_W_AI`); ties (3 decimals)
+are broken by reciprocal-rank fusion of the two rankings (k = 60). Diversity: at most 3 titles
+per seed or franchise (TMDb collection, or a shared-universe keyword like the MCU) in the top 20.
+The reason shown is the model's, else a template ("Because you watched X" / "Because you requested
+X" / "Because X is on your watchlist"). **If the LLM is down or times out, the run is classic only**
+(logged as `fusion: classic only`, `mode: classic-only` in the debug output) and everything still works.
+
+**Running it:** results are cached per user on a small PVC (`recs-cache`, JSON, regenerable, not
+backed up) and served from there. CronJob `recs-refresh` recomputes every user at 03:30 and its
+Job lasts as long as the run (measured 2026-11-26: see the README). On demand:
+`kubectl -n media exec deploy/recs -- wget -qO- --post-data= http://localhost:8080/v1/refresh/<jellyfinUserId>`
+(`?wait=1` blocks). Per-item component scores, seeds, profile and run stats:
+`GET /v1/recs/<jellyfinUserId>/debug`; last runs: `GET /v1/status`. All cluster-internal only.
+
+**The model and where it runs:** LXC `llm` on host01 (OpenTofu `tofu/host01_apps.tf`, role
+`llm_server`, `make llm`): llama.cpp **v1.0.0** (build b12359, upstream's CPU tarball,
+sha256-pinned) serving **Qwen3-4B-Instruct-2507 Q4_K_M** (unsloth GGUF, revision and sha256 pinned
+in `ansible/roles/llm_server/defaults/main.yml`), on the lab address only, port 8080, API key
+`/k8s/media/LLM_API_KEY`. **CPU, not the GPU:** host01's RTX 3050 Ti has 4 GB; the 4B model at Q4
+(2.5 GB) plus KV cache and CUDA context would use most of it and leave no clear headroom for
+Jellyfin's NVENC/NVDEC and tone mapping. On CPU it takes ~95 s per batch of 12 (prompt 54 tok/s,
+generation 6.4 tok/s with 3 threads), fine for a nightly batch. **Jellyfin always wins:** the LXC
+has `cpuunits 50` (Jellyfin: the default 100), `cpulimit 3`, 4 of the 8 threads, 6 GiB RAM, no
+swap; llama-server runs at nice 10 with `MemoryMax=5G` and unloads the model after 15 idle
+minutes. The LXC is backed up nightly by vzdump like every guest (PBS deduplicates the model).
+
+**Changing the model:** set `llm_server_model_file`, `_repo`, `_revision`, `_sha256` (Hugging Face:
+the file's LFS sha256) and `llm_server_model_alias` in the role defaults, `LLM_MODEL` in
+`k8s/apps/recs/recs.yaml` to the same alias, then `make llm` and push. Smaller and ~2.5× faster:
+`Qwen/Qwen3-1.7B-GGUF` `Qwen3-1.7B-Q8_0.gguf` (a hybrid thinking model; the server runs with
+`--reasoning off`). A GPU later: drop `--device none`, add the NVIDIA devices to the LXC like
+Jellyfin's, and check VRAM with transcodes running first.
+
+**Removing it:** delete `k8s/apps/recs`, its line in `k8s/apps/artzima/kustomization.yaml`,
+`k8s/apps/external/llm.yaml` (+ its kustomization line) and `k8s/secrets/media/recs.yaml`, push
+(Flux prunes them; the `recs-cache` PV and its NAS folder stay, `Retain`). Then the LXC:
+remove `llm` from `ansible/hosts.yml` (public example and `.private/site`), the resource and
+variable in `tofu/`, `make tofu-apply` (plan: 1 to destroy), the role, playbook, make target and
+`LLM_API_KEY` (manifest + Infisical). Seerr's recommendation row then shows nothing (unknown
+service = empty list).
+
 ## The NAS outlives the lab
 
 - **Storage is independent of compute.** The NAS holds persistent app data, media and

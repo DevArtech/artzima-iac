@@ -1,0 +1,59 @@
+---
+# Local LLM for the recs service (k8s/apps/recs, docs/decisions.md "Recommendations").
+# llama.cpp's own server on CPU in the `llm` LXC on host01; OpenAI-compatible API on the lab
+# LAN only, behind an API key (Infisical /k8s/media/LLM_API_KEY; recs gets it through ESO).
+
+# ---- llama.cpp: the v1.0.0 release (= build b12359, commit b1b770d90d94cad9e9ea5b993bdbc383a522fb28),
+# upstream's prebuilt CPU tarball (Ubuntu x64; picks the best ggml-cpu variant at run time,
+# e.g. icelake/AVX-512 on the i7-11370H). The sha256 is the GitHub release asset digest,
+# checked again here. Looked up 2026-11-26. To bump: the new build's tag + asset sha256.
+llm_server_llamacpp_build: b12359
+llm_server_llamacpp_sha256: 0bc1f091e8916102b6d8f2cf944233a620e90a0f856c72d0ce41150c65c2e72e
+llm_server_llamacpp_url: >-
+  https://github.com/ggml-org/llama.cpp/releases/download/{{ llm_server_llamacpp_build }}/llama-{{ llm_server_llamacpp_build }}-bin-ubuntu-x64.tar.gz
+# Shared libraries the prebuilt binaries link against (ldd), Debian 13 names.
+llm_server_packages: [libgomp1, libssl3t64, zlib1g, libzstd1, libstdc++6, ca-certificates]
+
+# ---- the model: Qwen3-4B-Instruct-2507 (non-thinking instruct, Apache-2.0), Q4_K_M GGUF
+# (2,497,281,120 bytes), from the unsloth GGUF repo at a fixed revision. sha256 = the file's
+# Hugging Face LFS oid, checked on download. Looked up 2026-11-26.
+# Changing the model: docs/decisions.md "Recommendations" (smaller: Qwen3-1.7B Q8_0).
+llm_server_model_file: Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+llm_server_model_repo: unsloth/Qwen3-4B-Instruct-2507-GGUF
+llm_server_model_revision: a06e946bb6b655725eafa393f4a9745d460374c9
+llm_server_model_sha256: 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
+llm_server_model_url: >-
+  https://huggingface.co/{{ llm_server_model_repo }}/resolve/{{ llm_server_model_revision }}/{{ llm_server_model_file }}
+# The name clients send as "model" (and /v1/models shows).
+llm_server_model_alias: qwen3-4b-instruct-2507
+
+# ---- paths and the service user
+llm_server_user: llama
+llm_server_install_dir: /opt/llama.cpp
+llm_server_model_dir: /var/lib/llama/models
+llm_server_config_dir: /etc/llama-server
+
+# ---- llama-server: listen on the LXC's lab address only (no 0.0.0.0, no public route).
+llm_server_host: "{{ lab_ip }}"
+llm_server_port: "{{ http_port | default(8080) }}"
+# 3 threads = the LXC's cpulimit (tofu var.llm_lxc): more threads than CPU quota only
+# makes the threads wait on each other.
+llm_server_threads: 3
+# One slot (recs sends one request at a time) with an 8k context: the scoring prompt
+# (taste profile + a batch of candidates) plus its JSON answer fit with room to spare.
+llm_server_ctx: 8192
+llm_server_parallel: 1
+# Unload the model after this many idle seconds (frees ~3 GB on host01 between the
+# nightly runs; the next request reloads it from the page cache in seconds). -1 = never.
+llm_server_sleep_idle_seconds: 900
+# Host-memory prompt cache (MiB). Upstream's default is 8192, which outgrew MemoryMax and got the
+# server OOM-killed during a nightly run (2026-11-26); recs reuses one prefix, 256 is plenty.
+llm_server_cache_ram_mib: 256
+llm_server_extra_args: []
+# systemd limits inside the LXC (the LXC itself is capped by OpenTofu: cores, cpulimit,
+# cpuunits, memory). Nice keeps it behind anything else in the container.
+llm_server_memory_max: 5G
+llm_server_nice: 10
+
+# The API key (one line in a root:llama 0640 file); never logged.
+llm_server_api_key: "{{ llm_api_key }}"

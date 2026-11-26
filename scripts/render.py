@@ -99,6 +99,9 @@ def render() -> str:
         # Apps outside k8s, proxied by Traefik (k8s/apps/external)
         "jellyfin_ip": h["jellyfin"]["ip"],
         "jellyfin_port": h["jellyfin"]["http_port"],
+        # The local LLM LXC (role llm_server), used by the recs service (k8s/apps/recs)
+        "llm_ip": h["llm"]["ip"],
+        "llm_port": h["llm"]["http_port"],
     }
     doc = {
         "apiVersion": "v1",

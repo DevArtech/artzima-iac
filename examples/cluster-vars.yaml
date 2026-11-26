@@ -40,3 +40,5 @@ data:
   backup_pg_retention: 30d
   jellyfin_ip: 192.0.2.130
   jellyfin_port: '8096'
+  llm_ip: 192.0.2.131
+  llm_port: '8080'

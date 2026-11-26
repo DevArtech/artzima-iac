@@ -8,6 +8,7 @@ resources:
   - ../alexandria
   - ../skyjo
   - ../media
+  - ../recs # recommendations (namespace media, cluster-internal only)
   - ../vaultwarden
   - ../paperless
   - ../backups

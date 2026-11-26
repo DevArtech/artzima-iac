@@ -561,7 +561,9 @@ requests and users come back with `seerr-db`, and the wiring Job redoes its setu
 signing in once with the Jellyfin admin login that `make jellyfin` copies to `/k8s/media/JELLYFIN_ADMIN_*`;
 log in with that login), Wizarr (nothing to click: its volume is not backed up, so it starts empty
 and the Job `wizarr-setup` sets it up again with the same Jellyfin admin login, server and libraries;
-old invites are gone, Jellyfin users are not), Backrest (`http://192.0.2.156:9898`, still paused),
+old invites are gone, Jellyfin users are not), recs (nothing to click: its cache is not backed up;
+on its first start it recomputes every user, with the `llm` LXC from `make llm`, else classic
+scores only; Seerr's recommendations are empty until then), Backrest (`http://192.0.2.156:9898`, still paused),
 the media stack's VPN check.
 
 ---
@@ -646,7 +648,7 @@ with the QDevice (one may fail). Repair the machine or replace it, then:
    make site LIMIT=<node>        # base config, joins the Proxmox cluster, storage, NUT, Tailscale
    make tofu-apply               # re-creates only the guests that lived there (plan shows exactly those)
    ```
-   For **host01** also `make lxc-devices ts-routers jellyfin`; for
+   For **host01** also `make lxc-devices ts-routers jellyfin llm`; for
    **pbs**: [backups: PBS restore](backups.md#restore-runbook-pbs-from-b2-the-pbs-box-is-lost).
 5. `make verify`.
 
@@ -709,7 +711,7 @@ Talos or Kubernetes; the apps don't notice.
    the cluster keeps its old ESO credentials until step 3.
 3. Kubernetes access comes back only with a **rebuild of the Talos VMs**, i.e. D2 (pause switches,
    Postgres recovery from B2), D10 (`make up`; `tofu-apply` first needs the old Talos, ts-router,
-   and Jellyfin guests removed in the Proxmox UI, because the new state doesn't know them),
+   Jellyfin and llm guests removed in the Proxmox UI, because the new state doesn't know them),
    then E and F. Check in the B2 web UI first that last night's uploads exist (`artzima-restic`,
    `artzima-pg` modification times), so nothing newer is lost.
 

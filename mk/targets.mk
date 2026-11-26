@@ -52,7 +52,7 @@ endef
 .PHONY: help deps render answers answer-server clean-answers \
         preflight bootstrap up verify gen-secrets ids-init ids-plan ids-apply \
         site common network cluster pbs storage nut nut-check tailscale host-prep \
-        proxmox-api lxc-devices ts-routers jellyfin firewalla-plan firewalla-apply \
+        proxmox-api lxc-devices ts-routers jellyfin llm firewalla-plan firewalla-apply \
         tofu-init tofu-plan tofu-apply tofu-destroy tofu-state-backup talos-env flux-bootstrap eso-bootstrap \
         cf-init cf-plan cf-apply b2-init b2-plan b2-apply pbs-offsite nas-backup nas-folders media-adopt emergency-kit dr-volsync-restore dr-pdf dr-tools dr-secrets-from-cluster hooks check-public answer-check secrets-check secrets-folders secrets-migrate-k8s \
         lint lint-yaml lint-ansible lint-tofu lint-k8s lint-flux lint-python lint-images
@@ -96,7 +96,7 @@ bootstrap: ## PHASE: folders, generated secrets, then every DERIVED credential (
 	$(MAKE) --no-print-directory cf-apply
 	@echo "bootstrap done. next: USB installs (docs/OPERATOR-SETUP.md), then make preflight && make up"
 
-UP_STEPS := site tofu-apply nas-folders lxc-devices ts-routers jellyfin pbs-offsite nas-backup eso-bootstrap flux-bootstrap
+UP_STEPS := site tofu-apply nas-folders lxc-devices ts-routers jellyfin llm pbs-offsite nas-backup eso-bootstrap flux-bootstrap
 up: ## PHASE: hosts -> VMs/LXCs/Talos -> devices -> off-site -> ESO -> Flux (preflight first; each step confirms)
 	$(PY) scripts/preflight.py
 	@for t in $(UP_STEPS); do echo; echo "=== make $$t"; $(MAKE) --no-print-directory $$t || exit 1; done
@@ -126,7 +126,7 @@ clean-answers: ## Delete install webhook reports (install/answers/installed)
 # ---------------------------------------------------------------- 2. ansible
 site: ## Whole bare-metal bring-up (all playbooks in order; lists tasks, asks "yes")
 	$(call ansible_apply,site)
-common network cluster pbs storage nut tailscale host-prep proxmox-api lxc-devices ts-routers jellyfin: ## Run one playbook (e.g. make nut LIMIT=host01)
+common network cluster pbs storage nut tailscale host-prep proxmox-api lxc-devices ts-routers jellyfin llm: ## Run one playbook (e.g. make nut LIMIT=host01; make llm = the recs LLM LXC)
 	$(call ansible_apply,$@)
 nut-check: ## Only the NUT killpower checks (read-only)
 	$(PLAYBOOK) playbooks/nut.yml --limit host01 --tags nut_check $(ANSIBLE_ARGS)
@@ -257,7 +257,9 @@ lint-python: ## Byte-compile the Python helpers + render check
 	@for f in scripts/*.sh install/*.sh; do test -x $$f || { echo "not executable: $$f (chmod +x)"; exit 1; }; done
 	$(PY) -m py_compile images/skyjo/artzima_serve.py images/skyjo/check_weights.py k8s/apps/media/wiring/wire.py k8s/apps/media/wiring/seed.py \
 	  k8s/apps/media/sabnzbd/clamav-scan.py \
-	  k8s/apps/monitoring/grafana-admin/sync.py
+	  k8s/apps/monitoring/grafana-admin/sync.py \
+	  k8s/apps/recs/app/recs_core.py k8s/apps/recs/app/recs_server.py
+	$(PY) -I k8s/apps/recs/tests/test_recs_core.py # recs: seeds/weights, scoring, fusion, exclusion, fallback
 lint-ansible: ## syntax-check every playbook + ansible-lint (production profile)
 	cd ansible && for p in playbooks/*.yml; do ansible-playbook --syntax-check $$p >/dev/null || exit 1; echo "syntax ok: $$p"; done
 	cd ansible && ansible-lint

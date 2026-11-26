@@ -13,9 +13,10 @@ from USB installs through to running apps:
 |---|---|---|
 | OS install (Proxmox VE ×4, PBS ×1) | Proxmox automated installer + answer server | [`install/`](install/README.md) |
 | Host config, cluster, QDevice, storage, backups, UPS, Tailscale, API token | Ansible | `ansible/` |
-| VMs/LXCs: Talos ×3, Jellyfin, Tailscale routers ×2; Talos bootstrap | OpenTofu (bpg/proxmox, siderolabs/talos) | `tofu/` |
+| VMs/LXCs: Talos ×3, Jellyfin, the local LLM (recs), Tailscale routers ×2; Talos bootstrap | OpenTofu (bpg/proxmox, siderolabs/talos) | `tofu/` |
 | Kubernetes platform and apps | Flux + Helm | `k8s/` |
 | Media stack: Prowlarr, Sonarr, Radarr, Lidarr, Bazarr, qBittorrent (only via Surfshark, gluetun sidecar), SABnzbd (Usenet: UsenetServer + NZBGeek), Seerr, Recyclarr; wired to the Jellyfin LXC | Flux + app-template, one idempotent wiring Job | `k8s/apps/media/` ([below](#media-stack)) |
+| Recommendations per Jellyfin user (`recs`, cluster-internal, shown by Seerr): classic TMDb candidates from what you watch, favourite, **request** and watchlist, rated by a **local LLM** (llama.cpp + Qwen3-4B on CPU, `llm` LXC on host01), fused | Flux (Deployment + nightly CronJob), OpenTofu + Ansible (`make llm`) | `k8s/apps/recs/`, `ansible/roles/llm_server/` ([decisions](docs/decisions.md#recommendations-classic--local-ai-fused-2026-11-26)) |
 | Paperless-ngx (**tailnet only**: `http://paperless`) with Valkey, Tika, Gotenberg, CNPG Postgres; nightly `document_exporter` | Flux + app-template, CNPG, CronJob | `k8s/apps/paperless/` ([manual steps §13](docs/manual-steps.md#13-paperless-ngx)) |
 | Off-site backups to Backblaze B2: buckets + scoped keys (OpenTofu), Postgres WAL/base (CNPG Barman Cloud plugin), volumes (VolSync restic), PBS (S3 datastore), NAS media + personal shares (Backrest/restic **on the NAS**) | OpenTofu, Flux, Ansible | `tofu/backblaze/`, `k8s/apps/backups/`, [`docs/backups.md`](docs/backups.md) |
 | Vaultwarden (`vault.<domain>`, never behind Access; `/admin` tailnet-only) on its own CNPG Postgres, nightly snapshot + encrypted NAS backup | Flux + app-template, CNPG, CronJob | `k8s/apps/vaultwarden/` ([manual steps §12](docs/manual-steps.md#12-vaultwarden)) |
@@ -89,7 +90,7 @@ UPS wiring and the physical topology are private. The CI inventory is fictional.
 ```
 install/      answer-file renderer, answer server (stdlib), first-boot hook, ISO prep
 ansible/      hosts.yml, group_vars/, roles/, playbooks/ (site.yml runs them in order)
-tofu/         Talos VMs + bootstrap, Jellyfin LXC, ts-router LXCs
+tofu/         Talos VMs + bootstrap, Jellyfin LXC, llm LXC, ts-router LXCs
               tofu/cloudflare (tunnel, DNS, Access), tofu/backblaze (B2 buckets + scoped keys),
               tofu/bootstrap (Tailscale auth keys + the ESO identity, derived from root credentials)
 k8s/          clusters/artzima (Flux entry), infrastructure/ (incl. external-secrets), apps/,
@@ -152,7 +153,7 @@ the Infisical key names) and waits for `yes` (`AUTO_APPROVE=1` = no questions).
 |---|---|---|
 | 0 | `preflight` | **Refuses** unless every `by: operator` key exists in Infisical (names only), every Proxmox/PBS host answers on SSH with the inventory MAC and install-disk serial, and the NAS exports `/volume1/Artzima`. Read-only. `PREFLIGHT_ARGS=--accounts-only` = only Infisical |
 | 1 | `bootstrap` | Infisical folders; `gen-secrets` (every missing random secret, straight into Infisical); `ids-apply` (Tailscale auth keys + the read-only ESO identity); `b2-apply` (buckets, a backup key and a maintenance key per bucket); `cf-apply` (tunnel, DNS, Access, tunnel token). Doesn't touch the lab |
-| 2 | `up` | `preflight`, then `site` (all host playbooks: common, network, cluster + QDevice, PBS (writes `PBS_FINGERPRINT`), storage, NUT, Tailscale, GPU, Proxmox API tokens) → `tofu-apply` (Talos VMs, Jellyfin LXC, ts-routers; kubeconfig into `tofu/out/`) → `lxc-devices` → `ts-routers` → `jellyfin` → `pbs-offsite` → `nas-backup` → `eso-bootstrap` → `flux-bootstrap` |
+| 2 | `up` | `preflight`, then `site` (all host playbooks: common, network, cluster + QDevice, PBS (writes `PBS_FINGERPRINT`), storage, NUT, Tailscale, GPU, Proxmox API tokens) → `tofu-apply` (Talos VMs, Jellyfin + llm LXCs, ts-routers; kubeconfig into `tofu/out/`) → `lxc-devices` → `ts-routers` → `jellyfin` → `llm` → `pbs-offsite` → `nas-backup` → `eso-bootstrap` → `flux-bootstrap` |
 | 3 | `verify` | Read-only report: nodes, Flux Kustomizations + HelmReleases, ExternalSecrets, PVCs, certificates, CNPG + VolSync backups < 26 h, last restore self-checks, every public URL |
 
 Before phase 2 the machines are installed from USB (`make answers`, `install/prepare-iso.sh`,
@@ -454,6 +455,7 @@ itself always runs untagged; install on a native/untagged port.
 | Off-site backups (looked up 2026-11-23) | Backrest `ghcr.io/garethgeorge/backrest:v1.14.1` (on the NAS), Backblaze/b2 provider = 0.14.1, CNPG plugin-barman-cloud chart 0.9.0 (plugin v0.16.0), VolSync chart 0.17.0, PBS ≥ 4.2 for S3 datastores |
 | Vaultwarden (looked up 2026-11-23) | `vaultwarden/server:1.37.5`, CNPG Postgres `ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie`, backup job `postgres:18.7-trixie` (pg_dump 18 + gpg) |
 | Media stack (looked up 2026-11-23) | Prowlarr `ghcr.io/home-operations/prowlarr:3.0.2.5780`, Lidarr `…/lidarr:3.1.6.5078` (upstream stable 3.1.6.5079; 3.2 is pre-release), Sonarr `…/sonarr:4.0.20.3012` (last v4 build of that image), Radarr `…/radarr:7.0.3.10918`, Bazarr `…/bazarr:1.6.2`, qBittorrent `…/qbittorrent:5.3.0`, SABnzbd `…/sabnzbd:5.1.3` (2026-11-24; 5.2.0 is RC), ClamAV `clamav/clamav:1.5.5` (2026-11-24), gluetun `qmcgaw/gluetun:v3.41.3`, Seerr `ghcr.io/seerr-team/seerr:v3.5.2`, Recyclarr `ghcr.io/recyclarr/recyclarr:8.8.1`, FlareSolverr `ghcr.io/flaresolverr/flaresolverr:v3.5.2` (suspended), wiring/seed `python:3.14.10-alpine3.24` |
+| Recommendations (looked up 2026-11-26) | llama.cpp **v1.0.0** (build b12359, `llama-b12359-bin-ubuntu-x64.tar.gz`, sha256 `0bc1f091…`), model `unsloth/Qwen3-4B-Instruct-2507-GGUF` `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (revision `a06e946b…`, sha256 `3605803b…`; full pins in `ansible/roles/llm_server/defaults/main.yml`), recs `python:3.14.10-alpine3.24` (stdlib only) |
 
 ## CI / lint
 

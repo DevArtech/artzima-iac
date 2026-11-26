@@ -128,6 +128,11 @@ doesn't; resolved alerts send a short note). HQ is on the tailnet only, so:
 | **Media library** (`/volume1/Artzima/data/media`: rips, downloads) | the NAS | bucket **nas**: restic by **Backrest on the NAS** (plans `media-daily`, `media-weekly-full`) | 01:00 daily, Sun 03:00 `--force` (NAS local time) | 7 daily, 4 weekly, 12 monthly; monthly `check --read-data-subset=5%` |
 | **Personal files** (the NAS's other shares, outside the lab; read-only) | the NAS | bucket **nas**: Backrest plan `personal-daily` | 00:30 daily | same |
 
+**Not backed up on purpose:** the `recs-cache` volume (recommendation results and cached TMDb
+details, rebuilt by the next refresh; [decisions](decisions.md#recommendations-classic--local-ai-fused-2026-11-26)).
+The `llm` LXC is an ordinary guest in the vzdump job (PBS deduplicates its 2.5 GB model after the
+first night); it is also fully rebuilt by `make tofu-apply llm`.
+
 Schedules and retention are variables in `backups.yml`. Restic and VolSync times are **UTC**
 (VolSync's cron), and sources that start in the same hour are staggered by 7 minutes.
 

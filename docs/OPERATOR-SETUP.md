@@ -330,7 +330,8 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] `make up`. It runs, each after showing its plan/task list and your `yes`:
   `site` (hosts: base, network, cluster + QDevice, PBS, storage, UPS, Tailscale, GPU, API tokens;
   writes `PBS_FINGERPRINT` and the Proxmox tokens into Infisical) → `tofu-apply` (VMs/LXCs, Talos)
-  → `lxc-devices` → `ts-routers` → `jellyfin` → `pbs-offsite` → `nas-backup` (asks for the NAS
+  → `lxc-devices` → `ts-routers` → `jellyfin` → `llm` (the recommendations' local LLM: llama.cpp + a
+  2.5 GB model, sha256-checked) → `pbs-offsite` → `nas-backup` (asks for the NAS
   sudo password) → `eso-bootstrap` → `flux-bootstrap`. If one step fails, fix it and re-run
   `make up` (everything is idempotent), or run the failed step alone (`make <step>`).
 - [ ] **Right after the first successful `make up`: set `pbs_datastore_format_disk: false` again**

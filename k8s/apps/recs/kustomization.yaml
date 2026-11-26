@@ -1,0 +1,20 @@
+---
+# recs: personal film/TV recommendations per Jellyfin user, classic (TMDb similar/recommended
+# titles of what you watch, favourite, request and watchlist) + AI (the local LLM on host01
+# rates every candidate), mixed by fusion scoring. Cluster-internal only (ClusterIP; NOT in
+# /apps.yaml). Seerr shows the results. Design: docs/decisions.md "Recommendations";
+# tests: k8s/apps/recs/tests (make lint). Namespace media: it reads the media APIs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - recs.yaml
+generatorOptions:
+  labels:
+    app.kubernetes.io/part-of: media
+configMapGenerator:
+  # Name gets a content hash: a code change rolls the Deployment.
+  - name: recs-app
+    namespace: media
+    files:
+      - app/recs_core.py
+      - app/recs_server.py

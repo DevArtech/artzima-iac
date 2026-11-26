@@ -44,8 +44,12 @@ locals {
     ip = local.ip["jellyfin"], vmid = local.inv.appliances.hosts.jellyfin.host_index
   })
 
+  llm = merge(local.inv.appliances.hosts.llm, {
+    ip = local.ip["llm"], vmid = local.inv.appliances.hosts.llm.host_index
+  })
+
   # Nodes that need the Debian LXC template.
-  lxc_nodes = toset(concat([local.jellyfin.proxmox_node], [for r in local.ts_routers : r.proxmox_node]))
+  lxc_nodes = toset(concat([local.jellyfin.proxmox_node, local.llm.proxmox_node], [for r in local.ts_routers : r.proxmox_node]))
 
   # Root SSH public keys: personal, so not in git. Infisical /settings/ADMIN_SSH_KEYS
   # (one key per line). Public keys: they may appear in state and plans.

@@ -1,0 +1,214 @@
+---
+# Cache of the recs service: per-user results (served after a restart) and TMDb details
+# fetched through Seerr. Regenerable, so not backed up (docs/backups.md). JSON files, no
+# SQLite (NFSv3 locking, docs/decisions.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recs-cache
+  namespace: media
+  labels:
+    app.kubernetes.io/name: recs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: nfs-artnas
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recs
+  namespace: media
+  labels:
+    app.kubernetes.io/name: recs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO cache volume; one worker owns the LLM slot
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: recs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recs
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: recs
+          image: docker.io/library/python:3.14.10-alpine3.24
+          command: ["python3", "-I", "-u", "/app/recs_server.py"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: JELLYFIN_URL # the LXC on host01, via its selector-less Service
+              value: http://jellyfin.external.svc.cluster.local
+            - name: SEERR_URL
+              value: http://seerr.media.svc.cluster.local:5055
+            - name: RADARR_URL
+              value: http://radarr.media.svc.cluster.local:7878
+            - name: SONARR_URL
+              value: http://sonarr.media.svc.cluster.local:8989
+            # The local LLM (llama.cpp, LXC `llm` on host01; ansible/roles/llm_server). Empty
+            # LLM_URL = classic scores only. If it is down, a run falls back to classic too.
+            - name: LLM_URL
+              value: http://llm.external.svc.cluster.local
+            - name: LLM_MODEL
+              value: qwen3-4b-instruct-2507
+            - name: RECS_LLM_BATCH # candidates per scoring request
+              value: "12"
+            - name: RECS_LLM_TIMEOUT_SECONDS
+              value: "900"
+            # Fusion: final = W_CLASSIC x classic + W_AI x ai. Every other weight
+            # (recs_core.DEFAULTS) can be set the same way: RECS_<NAME>.
+            - name: RECS_W_CLASSIC
+              value: "0.5"
+            - name: RECS_W_AI
+              value: "0.5"
+            # First start: compute users without cached results right away.
+            - name: RECS_REFRESH_ON_START
+              value: missing
+          envFrom:
+            - secretRef:
+                name: recs # JELLYFIN/SEERR/RADARR/SONARR_API_KEY, LLM_API_KEY (Infisical /k8s/media)
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: app
+          configMap:
+            name: recs-app
+        - name: cache
+          persistentVolumeClaim:
+            claimName: recs-cache
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+# Cluster-internal only: Seerr calls http://recs.media.svc.cluster.local:8080. Not in
+# /apps.yaml, no IngressRoute, no Tailscale annotation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: recs
+  namespace: media
+  labels:
+    app.kubernetes.io/name: recs
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: recs
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+# Nightly refresh of every user: POST /v1/refresh?wait=1 and wait until it is done, so the
+# Job's duration is the run time (kubectl -n media get jobs -l app.kubernetes.io/name=recs-refresh).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recs-refresh
+  namespace: media
+  labels:
+    app.kubernetes.io/name: recs-refresh
+spec:
+  schedule: "30 3 * * *"
+  timeZone: ${timezone}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recs-refresh
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 18000 # 5 h
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: recs-refresh
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: refresh
+              image: docker.io/library/python:3.14.10-alpine3.24
+              command:
+                - python3
+                - -I
+                - -c
+                - |
+                  import json, sys, time, urllib.request
+                  t = time.time()
+                  req = urllib.request.Request("http://recs.media.svc.cluster.local:8080/v1/refresh?wait=1", method="POST")
+                  res = json.load(urllib.request.urlopen(req, timeout=17000))
+                  users = (res.get("result") or {}).get("users") or {}
+                  print(json.dumps(res, indent=1))
+                  print("refresh of %d user(s) took %.0f s" % (len(users), time.time() - t))
+                  sys.exit(1 if not users or any("error" in u for u in users.values()) else 0)
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi

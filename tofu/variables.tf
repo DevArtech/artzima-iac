@@ -116,6 +116,27 @@ variable "jellyfin_lxc" {
   }
 }
 
+# Local LLM (k8s/apps/recs): 4B model at Q4 on CPU. The weights (~2.5 GB) are mmapped,
+# plus the KV cache (ctx 8192 x 2 slots) and the compute buffers: 6 GiB is ample.
+# host01 has 8 threads; Jellyfin has 4 cores and twice the cpuunits weight, and
+# cpu_limit caps the LLM at 3 CPUs' worth of time even when host01 is idle.
+variable "llm_lxc" {
+  type = object({
+    cores     = number
+    cpu_limit = number
+    cpu_units = number
+    memory_mb = number
+    disk_gb   = number
+  })
+  default = {
+    cores     = 4
+    cpu_limit = 3
+    cpu_units = 50
+    memory_mb = 6144
+    disk_gb   = 16
+  }
+}
+
 variable "ts_router_lxc" {
   type = object({
     cores     = number

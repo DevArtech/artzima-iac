@@ -1,0 +1,43 @@
+# Managed by Ansible (role llm_server). llama.cpp {{ llm_server_llamacpp_build }}, model {{ llm_server_model_file }}.
+[Unit]
+Description=llama.cpp server ({{ llm_server_model_alias }}, CPU) for the recs service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User={{ llm_server_user }}
+Group={{ llm_server_user }}
+Environment=LD_LIBRARY_PATH={{ llm_server_install_dir }}/current
+ExecStart={{ llm_server_install_dir }}/current/llama-server \
+  --model {{ llm_server_model_dir }}/{{ llm_server_model_file }} \
+  --alias {{ llm_server_model_alias }} \
+  --host {{ llm_server_host }} --port {{ llm_server_port }} \
+  --api-key-file {{ llm_server_config_dir }}/api-keys \
+  --device none --threads {{ llm_server_threads }} --threads-batch {{ llm_server_threads }} \
+  --ctx-size {{ llm_server_ctx }} --parallel {{ llm_server_parallel }} \
+  --reasoning off --no-webui --no-slots --offline --cache-ram {{ llm_server_cache_ram_mib }} \
+  --sleep-idle-seconds {{ llm_server_sleep_idle_seconds }}{% for a in llm_server_extra_args %} {{ a }}{% endfor %}
+
+Restart=on-failure
+RestartSec=10
+Nice={{ llm_server_nice }}
+MemoryMax={{ llm_server_memory_max }}
+# Hardening: read-only system, no new privileges, nothing but the network and its files.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadOnlyPaths={{ llm_server_model_dir }} {{ llm_server_install_dir }} {{ llm_server_config_dir }}
+
+[Install]
+WantedBy=multi-user.target

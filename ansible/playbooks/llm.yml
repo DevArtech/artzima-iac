@@ -1,0 +1,17 @@
+---
+# Inside the `llm` LXC (Debian 13, host01, created by `make tofu-apply`): llama.cpp's
+# server on CPU with a pinned small Qwen3 GGUF, for the recs service (k8s/apps/recs).
+# LAN-only (listens on the LXC's lab address), API key from Infisical /k8s/media/LLM_API_KEY.
+- name: Bootstrap python3 in fresh Debian LXCs
+  hosts: llm
+  gather_facts: false
+  tasks:
+    - name: Install python3 if missing
+      ansible.builtin.raw: test -x /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+      register: lxc_py
+      changed_when: "'Setting up python3' in lxc_py.stdout"
+
+- name: Local LLM (llama.cpp server)
+  hosts: llm
+  roles:
+    - llm_server

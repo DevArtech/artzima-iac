@@ -1,0 +1,36 @@
+---
+# The local LLM (llama.cpp server, CPU) runs in an LXC on host01, outside Kubernetes
+# (ansible/roles/llm_server, `make llm`). Only the recs service (k8s/apps/recs) calls it,
+# through this selector-less Service + EndpointSlice at the LXC's lab IP (cluster-vars,
+# i.e. ansible/hosts.yml). Cluster-internal: NOT in /apps.yaml, no route, no tailnet name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm
+  namespace: external
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: ${llm_port}
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: llm-1
+  namespace: external
+  labels:
+    kubernetes.io/service-name: llm
+    endpointslice.kubernetes.io/managed-by: flux.artzima
+addressType: IPv4
+ports:
+  - name: http
+    port: ${llm_port}
+    protocol: TCP
+endpoints:
+  - addresses:
+      - ${llm_ip}
+    conditions:
+      ready: true
