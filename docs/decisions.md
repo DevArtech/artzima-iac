@@ -561,8 +561,11 @@ X" / "Because X is on your watchlist"). **If the LLM is down or times out, the r
 
 **Running it:** results are cached per user on a small PVC (`recs-cache`, JSON, regenerable, not
 backed up) and served from there. CronJob `recs-refresh` recomputes every user at 03:30 and its
-Job lasts as long as the run (measured 2026-11-26: see the README). On demand:
-`kubectl -n media exec deploy/recs -- wget -qO- --post-data= http://localhost:8080/v1/refresh/<jellyfinUserId>`
+Job lasts as long as the run. **Measured 2026-11-26** (one user, 58 seeds, 127 candidates, 11
+batches): **18 min** (1087 s) with the model, of which 1080 s are LLM time; **6.4 s** classic only.
+It grows roughly linearly with users (lower `RECS_MAX_CANDIDATES` to cap it). On demand:
+`kubectl -n media exec deploy/recs -- wget -qO- --post-data= http://127.0.0.1:8080/v1/refresh/<jellyfinUserId>`; every user now:
+`kubectl -n media create job recs-refresh-now --from=cronjob/recs-refresh`
 (`?wait=1` blocks). Per-item component scores, seeds, profile and run stats:
 `GET /v1/recs/<jellyfinUserId>/debug`; last runs: `GET /v1/status`. All cluster-internal only.
 
@@ -576,7 +579,8 @@ Jellyfin's NVENC/NVDEC and tone mapping. On CPU it takes ~95 s per batch of 12 (
 generation 6.4 tok/s with 3 threads), fine for a nightly batch. **Jellyfin always wins:** the LXC
 has `cpuunits 50` (Jellyfin: the default 100), `cpulimit 3`, 4 of the 8 threads, 6 GiB RAM, no
 swap; llama-server runs at nice 10 with `MemoryMax=5G` and unloads the model after 15 idle
-minutes. The LXC is backed up nightly by vzdump like every guest (PBS deduplicates the model).
+minutes; its host-memory prompt cache is capped (`--cache-ram 256`: upstream's 8 GiB default got it
+OOM-killed in the first test run). The LXC is backed up nightly by vzdump like every guest (PBS deduplicates the model).
 
 **Changing the model:** set `llm_server_model_file`, `_repo`, `_revision`, `_sha256` (Hugging Face:
 the file's LFS sha256) and `llm_server_model_alias` in the role defaults, `LLM_MODEL` in
