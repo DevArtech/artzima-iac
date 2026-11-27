@@ -1,0 +1,119 @@
+# One-off build of /cache/models/recs-mf-v2.rmf (MF factors + content map) on the recs-cache
+# volume. NOT in any kustomization, so Flux never applies or reruns it: apply by hand, once
+# (again only when a new MovieLens release appears or the hyperparameters change). The
+# ConfigMap carries the build script and recs_core.py (the content features come from it, so
+# the map matches what recs computes). From the repo root:
+#
+#   kubectl -n media create configmap recs-mf-build \
+#     --from-file=k8s/apps/recs/mf-build/build_rmf2.py --from-file=k8s/apps/recs/app/recs_core.py
+#   kubectl -n media apply -f k8s/apps/recs/mf-build/job.yaml
+#   kubectl -n media logs -f job/recs-mf-build
+#   kubectl -n media delete job/recs-mf-build configmap/recs-mf-build   # after success
+#
+# Recs picks the new file up at its next run (mtime check), no restart needed.
+# Egress: files.grouplens.org (239 MB zip, md5-checked) and PyPI (pinned wheels); Seerr in-cluster
+# (~2,400 GETs /api/v1/movie/<id>, fewer if recs already cached them). ~3-6 min, 2 CPU, < 2 GiB.
+# Licence: the output is a MovieLens transformation (research, non-commercial terms in the
+# file header); it stays on the PVC and is never committed or published.
+# Design: docs/decisions.md "Recommendations".
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recs-mf-build
+  namespace: media
+  labels:
+    app.kubernetes.io/name: recs-mf-build
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recs-mf-build
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # recs-cache is ReadWriteOnce: run on the node that has the recs pod (and the volume)
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: recs
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: build
+          image: docker.io/library/python:3.13-slim-bookworm
+          command:
+            - sh
+            - -ec
+            - >-
+              pip install --no-cache-dir --disable-pip-version-check --target /work/py
+              numpy==2.5.5 scipy==1.18.1 pandas==3.1.1 implicit==0.7.3 threadpoolctl==3.8.0 &&
+              python3 -I -u /build/build_rmf2.py
+          env:
+            - name: SEERR_URL
+              value: http://seerr.media.svc.cluster.local:5055
+            - name: SEERR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recs
+                  key: SEERR_API_KEY
+            - name: OUT
+              value: /cache/models/recs-mf-v2.rmf
+            - name: WORK
+              value: /work
+            - name: RECS_APP
+              value: /build
+            - name: PYDEPS
+              value: /work/py
+            - name: THREADS
+              value: "2"
+            - name: OPENBLAS_NUM_THREADS
+              value: "1"
+            - name: HOME
+              value: /work
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              memory: 3Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: build
+              mountPath: /build
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: build
+          configMap:
+            name: recs-mf-build
+        - name: cache
+          persistentVolumeClaim:
+            claimName: recs-cache
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

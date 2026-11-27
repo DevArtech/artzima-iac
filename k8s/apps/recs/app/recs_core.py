@@ -41,6 +41,7 @@ DEFAULTS = {
     "ABANDON_DAYS": 21.0,  # ... and not touched for this many days
     # Candidate generation
     "MAX_SEEDS": 40,  # strongest positive seeds that generate candidates
+    "LIST_PAGES": 1,  # TMDb pages (20 titles each) of recommendations + similar per seed
     "SIMILAR_FACTOR": 0.5,  # TMDb "similar" counts half as much as "recommendations"
     "MAX_CANDIDATES": 120,  # pool size the AI rates (best classic first) + the AI's own proposals
     "AI_PROPOSALS": 10,
@@ -55,6 +56,11 @@ DEFAULTS = {
     # Fusion
     "W_CLASSIC": 0.5,
     "W_AI": 0.5,
+    # Matrix factorisation (optional factors file on the cache volume, see mf_parse). 0 = off:
+    # W_MF is its weight in the fusion, CAP_MF its weight in the cap that chooses what the AI
+    # rates (promise = (today's promise + CAP_MF x (MF + prior)) / (1 + 2 x CAP_MF)).
+    "W_MF": 0.0,
+    "CAP_MF": 0.0,
     "RRF_K": 60,
     # Diversity: at most DIVERSITY_MAX titles per seed or franchise in the top DIVERSITY_TOP.
     "DIVERSITY_MAX": 3,
@@ -252,13 +258,14 @@ def affinity(profile: dict, genres: list[str], keywords: list[str], genre_share:
 
 
 # ---------------------------------------------------------------------------- candidates
-def add_candidates(pool: dict, seed: dict, results: list[dict], factor: float) -> None:
+def add_candidates(pool: dict, seed: dict, results: list[dict], factor: float, offset: int = 0) -> None:
     """Fold one TMDb recommendations/similar page of a seed into the pool.
 
     results: Seerr's TMDb list items ({"id", "mediaType", "title"/"name", ...}).
     Contribution = seed weight x factor / (1 + rank / 10): early results count more.
+    offset: rank of the page's first title (page 2 of TMDb's lists starts at 20).
     """
-    for rank, r in enumerate(results):
+    for rank, r in enumerate(results, offset):
         mt = r.get("mediaType")
         if mt not in ("movie", "tv") or not isinstance(r.get("id"), int) or r.get("adult"):
             continue
@@ -279,14 +286,17 @@ def new_candidate(key, r: dict) -> dict:
         "genreIds": list(r.get("genreIds") or []), "genres": [], "keywords": [],
         "voteAverage": float(r.get("voteAverage") or 0.0), "voteCount": int(r.get("voteCount") or 0),
         "popularity": float(r.get("popularity") or 0.0), "overview": r.get("overview") or "",
-        "collection": None, "seedScore": 0.0, "seeds": {}, "source": "classic",
+        "language": r.get("originalLanguage") or "", "collection": None, "seedScore": 0.0, "seeds": {}, "source": "classic",
     }
 
 
-def cap_pool(pool: dict, seeds: dict, limit: int, cfg: dict) -> dict:
+def cap_pool(pool: dict, seeds: dict, limit: int, cfg: dict, mf: dict | None = None) -> dict:
     """Keep the `limit` most promising candidates (seed score + a little rating prior), split
     between films and series by their share of the positive seed weight (at least 25% each
-    when both have seeds), so a film-heavy history still leaves room for series."""
+    when both have seeds), so a film-heavy history still leaves room for series.
+
+    mf: {key: 0-1} MF percentile (mf_percentiles). With CAP_MF > 0 the promise becomes
+    (today's promise, min-max per media type, + CAP_MF x (mf + prior)) / (1 + 2 x CAP_MF)."""
     weight = {"movie": 0.0, "tv": 0.0}
     for s in seeds.values():
         if s["weight"] > 0:
@@ -298,6 +308,17 @@ def cap_pool(pool: dict, seeds: dict, limit: int, cfg: dict) -> dict:
 
     def promise(c):
         return c["seedScore"] + 0.2 * prior(c["voteAverage"], c["voteCount"], cfg, c["popularity"])
+
+    cm = float(cfg.get("CAP_MF", 0.0))
+    if mf is not None and cm > 0:
+        base = {}
+        for mt in ("movie", "tv"):
+            base.update(minmax({k: promise(c) for k, c in pool.items() if k[0] == mt}))
+        mixed = {k: (base[k] + cm * (mf.get(k, 0.5) + prior(c["voteAverage"], c["voteCount"], cfg, c["popularity"])))
+                 / (1.0 + 2.0 * cm) for k, c in pool.items()}
+
+        def promise(c):  # noqa: F811 (the MF-aware promise replaces today's)
+            return mixed[c["key"]]
 
     out: dict = {}
     for mt in ("movie", "tv"):
@@ -538,13 +559,17 @@ def ranks(values: dict) -> dict:
     return {k: i + 1 for i, k in enumerate(order)}
 
 
-def fuse(classic: dict, ai: dict | None, cfg: dict) -> dict:
+def fuse(classic: dict, ai: dict | None, cfg: dict, mf: dict | None = None) -> dict:
     """final = w_classic x classic + w_ai x ai, with reciprocal-rank fusion as the tie-break.
 
     classic: {key: 0-1}; ai: {key: 0-1} or None (LLM down: final = classic only). A
     candidate the AI did not rate (failed batch) falls back to its classic score.
-    Returns {key: {"final", "rrf", "classicRank", "aiRank"}}.
+    mf: {key: 0-1} for EVERY candidate (mf_percentiles: neutral 0.5 without factors) or None;
+    with W_MF > 0 it is a third term of the weighted mean. mf=None or W_MF=0: exactly as before.
+    Returns {key: {"final", "rrf", "classicRank", "aiRank"(, "mfRank")}}.
     """
+    if mf is not None and float(cfg.get("W_MF", 0.0)) > 0:
+        return _fuse3(classic, ai, mf, cfg)
     wc, wa = float(cfg["W_CLASSIC"]), float(cfg["W_AI"])
     if wc + wa <= 0:
         wc, wa = 1.0, 0.0
@@ -557,6 +582,25 @@ def fuse(classic: dict, ai: dict | None, cfg: dict) -> dict:
         final = c if a is None else (wc * c + wa * a) / (wc + wa)
         rrf = 1.0 / (k + c_rank[key]) + (1.0 / (k + a_rank[key]) if key in a_rank else 0.0)
         out[key] = {"final": final, "rrf": rrf, "classicRank": c_rank[key], "aiRank": a_rank.get(key)}
+    return out
+
+
+def _fuse3(classic: dict, ai: dict | None, mf: dict, cfg: dict) -> dict:
+    wc, wa, wm = float(cfg["W_CLASSIC"]), float(cfg["W_AI"]), float(cfg["W_MF"])
+    c_rank, m_rank = ranks(classic), ranks({k: mf.get(k, 0.5) for k in classic})
+    a_rank = ranks(ai) if ai else {}
+    k = float(cfg["RRF_K"])
+    out = {}
+    for key, c in classic.items():
+        a = ai.get(key) if ai else None
+        m = mf.get(key, 0.5)
+        num, den = wc * c + wm * m, wc + wm
+        if a is not None:
+            num, den = num + wa * a, den + wa
+        final = num / den if den > 0 else c
+        rrf = 1.0 / (k + c_rank[key]) + 1.0 / (k + m_rank[key]) + (1.0 / (k + a_rank[key]) if key in a_rank else 0.0)
+        out[key] = {"final": final, "rrf": rrf, "classicRank": c_rank[key], "aiRank": a_rank.get(key),
+                    "mfRank": m_rank[key]}
     return out
 
 
@@ -659,3 +703,238 @@ def proposal_messages(profile_txt: str, n: int, avoid: list[str]) -> list[dict]:
         "release. Do not suggest any of these: " + ("; ".join(avoid[:60]) or "(none)") + "."
     )
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+
+
+# ---------------------------------------------------------------------------- matrix factorisation
+# Optional, offline-built factors file (RMF2) on the cache volume: implicit-ALS item factors
+# learned from MovieLens 32M (films up to Oct 2023) plus a ridge map from TMDb content to the
+# same factor space, so newer films and series get predicted factors. Everything below is
+# stdlib: parsing, the user fold-in, the scores. Licence: see the file header (MovieLens terms).
+MF_STOP = frozenset("""a an the and or of to in on for with by from at as is are was were be been being his her
+their its they them he she it this that these those who whom which what when where while after before
+into out over under up down about against between through during than then so but not no nor only
+own same too very can will just one two three new must has have had do does did make makes made get
+gets find finds take takes must also more most other some such any each all both few many much
+life world young man woman men women years year time story film movie series""".split())
+MF_GENRE_IDS = {28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
+                18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+                9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller",
+                10752: "War", 37: "Western", 10759: "Action & Adventure", 10762: "Kids", 10763: "News",
+                10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"}
+MF_CREW_JOBS = ("Director", "Screenplay", "Writer", "Original Music Composer", "Characters", "Novel")
+
+
+def mf_parse(blob: bytes) -> dict:
+    """RMF2 bytes -> model {"n", "f", "reg", "alpha", "row" {tmdb: i}, "imdb" {imdb: i}, "Y", "G",
+    "maps" {"full"|"lite": {"vocab" {name: j}, "idf", "gw", "mu", "W"}}}. ValueError if malformed."""
+    import array
+    import struct
+    import sys
+    if blob[:4] != b"RMF2" or len(blob) < 8:
+        raise ValueError("not an RMF2 factors file")
+    (hl,) = struct.unpack("<I", blob[4:8])
+    head = json.loads(blob[8:8 + hl])
+    pos, arrs = 8 + hl, {}
+    for name, code, count in head["blocks"]:
+        a = array.array(code)
+        size = a.itemsize * count
+        a.frombytes(blob[pos:pos + size])
+        if len(a) != count:
+            raise ValueError("truncated factors file")
+        if sys.byteorder != "little":
+            a.byteswap()
+        arrs[name] = a
+        pos += size
+    n, f = head["n"], head["f"]
+    maps = {}
+    for tag, m in head["maps"].items():
+        maps[tag] = {"vocab": {v: j for j, v in enumerate(m["vocab"])}, "idf": m["idf"], "gw": m["gw"],
+                     "mu": list(arrs[tag + ".mu"]), "W": arrs[tag + ".W"]}
+    return {"n": n, "f": f, "reg": float(head["reg"]), "alpha": float(head["alpha"]),
+            "source": head.get("source"), "built": head.get("built"),
+            "row": {int(t): i for i, t in enumerate(arrs["tmdb"])},
+            "imdb": {int(t): i for i, t in enumerate(arrs["imdb"]) if t > 0},
+            "Y": arrs["Y"], "G": arrs["G"], "maps": maps}
+
+
+def _mf_words(text) -> list[str]:
+    return [w for w in re.findall(r"[a-z][a-z'-]{2,}", (text or "").lower()) if w not in MF_STOP]
+
+
+def _mf_year_bin(y):
+    for hi, name in ((1969, "-69"), (1979, "70s"), (1989, "80s"), (1999, "90s"), (2004, "00a"), (2009, "00b"),
+                     (2014, "10a"), (2019, "10b")):
+        if y <= hi:
+            return name
+    return "20s"
+
+
+def mf_raw_features(d: dict, media: str, lite: bool = False) -> dict:
+    """{group: {feature: value}} of a title. d: Seerr details, or (lite) a candidate / list
+    item: genre ids, date or year, votes, language, overview (what exists before details)."""
+    f: dict = {g: {} for g in ("g", "y", "n", "l", "k", "c", "d", "pc", "col", "ov")}
+    if d.get("genres") and isinstance(d["genres"][0], dict):
+        names = [g.get("name") for g in d["genres"] if g.get("name")]
+    else:
+        names = [MF_GENRE_IDS.get(i) for i in d.get("genreIds") or [] if MF_GENRE_IDS.get(i)]
+    for g in norm_genres(names):
+        f["g"]["g:" + g] = 1.0
+    f["g"]["media:" + media] = 1.0
+    date = str(d.get("releaseDate") or d.get("firstAirDate") or d.get("year") or "")
+    if date[:4].isdigit():
+        f["y"]["y:" + _mf_year_bin(int(date[:4]))] = 1.0
+    vc, va = float(d.get("voteCount") or 0), float(d.get("voteAverage") or 0)
+    f["n"]["n:votes"] = math.log1p(vc) / 10.0
+    f["n"]["n:rating"] = (va - 6.5) / 1.5 if vc > 0 else 0.0
+    f["n"]["n:bias"] = 1.0
+    lang = d.get("originalLanguage") or d.get("language")
+    if lang:
+        f["l"]["l:" + lang] = 1.0
+    for w in set(_mf_words(d.get("overview"))):
+        f["ov"]["ov:" + w] = 1.0
+    if lite:
+        return f
+    for k in d.get("keywords") or []:
+        if isinstance(k, dict) and k.get("id") is not None:
+            f["k"]["k:%s" % k["id"]] = 1.0
+    cr = d.get("credits") or {}
+    for c in (cr.get("cast") or [])[:8]:
+        o = c.get("order") if c.get("order") is not None else 0
+        f["c"]["p:%s" % c.get("id")] = 1.0 / (1.0 + 0.25 * o)
+    for c in cr.get("crew") or []:
+        if c.get("job") in MF_CREW_JOBS:
+            f["d"]["p:%s" % c.get("id")] = 1.0
+    for c in d.get("createdBy") or []:
+        f["d"]["p:%s" % c.get("id")] = 1.0
+    for c in (d.get("productionCompanies") or [])[:5]:
+        f["pc"]["pc:%s" % c.get("id")] = 1.0
+    for c in (d.get("networks") or [])[:3]:
+        f["pc"]["nw:%s" % c.get("id")] = 1.0
+    col = d.get("collection") or {}
+    if isinstance(col, dict) and col.get("id"):
+        f["col"]["col:%s" % col["id"]] = 1.0
+    return f
+
+
+def _mf_vectorise(mp: dict, raw: dict) -> list:
+    """[(feature index, value)]: known features only, idf-weighted, L2 per group x group weight."""
+    out = []
+    for g, feats in raw.items():
+        vals = [(mp["vocab"][n], v * mp["idf"].get(n, 1.0)) for n, v in feats.items() if n in mp["vocab"]]
+        if g == "n":
+            out += [(j, mp["gw"][g] * v) for j, v in vals]
+            continue
+        nrm = math.sqrt(sum(v * v for _, v in vals))
+        if nrm > 0:
+            out += [(j, mp["gw"][g] * v / nrm) for j, v in vals]
+    return out
+
+
+def mf_row(model: dict, key, imdb=None):
+    """Row of a film MovieLens knows (TMDb id, else the IMDb id 'tt123'), or None."""
+    if key[0] != "movie":
+        return None
+    r = model["row"].get(key[1])
+    if r is None and isinstance(imdb, str) and imdb.startswith("tt") and imdb[2:].isdigit():
+        r = model["imdb"].get(int(imdb[2:]))
+    return r
+
+
+def mf_item_vector(model: dict, key, raw_full: dict | None, imdb=None):
+    """(factors, source): 'real' (MovieLens), 'pred' (content map on details), or (None, None)."""
+    f = model["f"]
+    r = mf_row(model, key, imdb)
+    if r is not None:
+        return list(model["Y"][r * f:(r + 1) * f]), "real"
+    if not raw_full:
+        return None, None
+    mp = model["maps"]["full"]
+    W, vec = mp["W"], list(mp["mu"])
+    for j, x in _mf_vectorise(mp, raw_full):
+        row = W[j * f:(j + 1) * f]
+        for i in range(f):
+            vec[i] += x * row[i]
+    return vec, "pred"
+
+
+def _cholesky_solve(A: list, b: list) -> list:
+    n = len(b)
+    L = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        Li = L[i]
+        for j in range(i + 1):
+            Lj = L[j]
+            s = A[i][j] - sum(Li[k] * Lj[k] for k in range(j))
+            Li[j] = math.sqrt(s) if i == j else s / Lj[j]
+    y = [0.0] * n
+    for i in range(n):
+        y[i] = (b[i] - sum(L[i][k] * y[k] for k in range(i))) / L[i][i]
+    x = [0.0] * n
+    for i in reversed(range(n)):
+        x[i] = (y[i] - sum(L[k][i] * x[k] for k in range(i + 1, n))) / L[i][i]
+    return x
+
+
+def mf_user_vector(model: dict, rows: list) -> list | None:
+    """iALS fold-in. rows: [(factors, seed weight > 0)]; confidence 1 + alpha x weight.
+    u = (G + sum (c - 1) y y^T + reg I)^-1 sum c y. None without rows."""
+    if not rows:
+        return None
+    f, G, alpha = model["f"], model["G"], model["alpha"]
+    A = [[G[i * f + j] for j in range(f)] for i in range(f)]
+    b = [0.0] * f
+    for y, w in rows:
+        c = 1.0 + alpha * w
+        for i in range(f):
+            yi = y[i]
+            b[i] += c * yi
+            Ai, kk = A[i], (c - 1.0) * yi
+            for j in range(f):
+                Ai[j] += kk * y[j]
+    for i in range(f):
+        A[i][i] += model["reg"]
+    return _cholesky_solve(A, b)
+
+
+def mf_scorer(model: dict, u: list) -> dict:
+    """Per-user precomputation: u . W_j for every content feature j (both maps) and u . mu, so a
+    predicted score costs one pass over the title's features."""
+    f = model["f"]
+    sc = {"u": u, "maps": {}}
+    for tag, mp in model["maps"].items():
+        W = mp["W"]
+        p = len(W) // f
+        proj = [sum(a * b for a, b in zip(u, W[j * f:(j + 1) * f])) for j in range(p)]
+        sc["maps"][tag] = (sum(a * b for a, b in zip(u, mp["mu"])), proj)
+    return sc
+
+
+def mf_score(model: dict, sc: dict, key, raw: dict | None, lite: bool, imdb=None):
+    """(score, source) of one candidate: real factors if MovieLens knows the film, else the
+    content map (lite before details, full after); (None, None) without data."""
+    f = model["f"]
+    r = mf_row(model, key, imdb)
+    if r is not None:
+        return sum(a * b for a, b in zip(sc["u"], model["Y"][r * f:(r + 1) * f])), "real"
+    if not raw:
+        return None, None
+    tag = "lite" if lite else "full"
+    base, proj = sc["maps"][tag]
+    return base + sum(x * proj[j] for j, x in _mf_vectorise(model["maps"][tag], raw)), ("lite" if lite else "pred")
+
+
+def mf_percentiles(raw: dict, keys) -> dict:
+    """{key: 0-1} for every key: percentile rank within (media type, real vs predicted factors),
+    so predicted titles neither crowd out nor trail the MovieLens ones and series keep their
+    share; 0.5 (neutral) without a score. raw: {key: (score, source)}."""
+    groups: dict = {}
+    for k in keys:
+        s = raw.get(k)
+        if s and s[0] is not None:
+            groups.setdefault((k[0], s[1] == "real"), []).append(k)
+    out = {}
+    for ks in groups.values():
+        ks.sort(key=lambda k: (raw[k][0], str(k)))
+        for i, k in enumerate(ks):
+            out[k] = i / max(1, len(ks) - 1)
+    return {k: out.get(k, 0.5) for k in keys}

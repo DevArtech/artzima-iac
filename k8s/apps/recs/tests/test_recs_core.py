@@ -289,5 +289,163 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("Severance", txt)
 
 
+# ---------------------------------------------------------------------------- MF (optional)
+def tiny_model(f=3):
+    """A hand-made RMF2 model: 4 films x 3 factors, a 1-feature-per-genre content map."""
+    return core.mf_parse(tiny_blob(f))
+
+
+def tiny_blob(f=3):
+    """The RMF2 bytes behind tiny_model."""
+    import array
+    import struct
+    Y = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0]
+    G = [0.0] * (f * f)
+    for r in range(4):
+        for i in range(f):
+            for j in range(f):
+                G[i * f + j] += Y[r * f + i] * Y[r * f + j]
+    vocab = ["g:Action", "g:Drama", "n:bias"]
+    W = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    maps = {t: {"p": 3, "vocab": vocab, "idf": {}, "gw": {"g": 1.0, "y": 1.0, "n": 1.0, "l": 1.0, "k": 1.0, "c": 1.0,
+                                                           "d": 1.0, "pc": 1.0, "col": 1.0, "ov": 1.0}} for t in ("full", "lite")}
+    blocks = [["tmdb", "q", 4], ["imdb", "q", 4], ["Y", "f", 12], ["G", "f", 9]]
+    payload = array.array("q", [10, 11, 12, 13]).tobytes() + array.array("q", [100, 0, 0, 0]).tobytes() \
+        + array.array("f", Y).tobytes() + array.array("f", G).tobytes()
+    for t in ("full", "lite"):
+        blocks += [[t + ".mu", "f", 3], [t + ".W", "f", 9]]
+        payload += array.array("f", [0.0, 0.0, 0.1]).tobytes() + array.array("f", W).tobytes()
+    head = json.dumps({"n": 4, "f": f, "reg": 1.0, "alpha": 10.0, "maps": maps, "blocks": blocks}).encode()
+    return b"RMF2" + struct.pack("<I", len(head)) + head + payload
+
+
+class Mf(unittest.TestCase):
+    def test_parse_and_lookup(self):
+        m = tiny_model()
+        self.assertEqual(m["row"][12], 2)
+        self.assertEqual(core.mf_row(m, ("movie", 99), "tt100"), 0)  # IMDb fallback
+        self.assertIsNone(core.mf_row(m, ("tv", 10)))
+        with self.assertRaises(ValueError):
+            core.mf_parse(b"XXXX")
+
+    def test_fold_in_closed_form(self):
+        """u = (G + (c-1) y y^T + reg I)^-1 c y for one seed with weight 1 (alpha 10): y = e1."""
+        m = tiny_model()
+        u = core.mf_user_vector(m, [([1.0, 0.0, 0.0], 1.0)])
+        # G = diag(1.25, 1.25, 1) + offdiag 0.25 (rows 0,1); A00 = 1.25 + 10 + 1
+        A = [[12.25, 0.25, 0.0], [0.25, 2.25, 0.0], [0.0, 0.0, 2.0]]
+        b = [11.0, 0.0, 0.0]
+        x = core._cholesky_solve(A, b)
+        for a, e in zip(u, x):
+            self.assertAlmostEqual(a, e, places=5)
+        self.assertGreater(u[0], 0.8)
+        self.assertIsNone(core.mf_user_vector(m, []))
+
+    def test_predicted_and_real_scores(self):
+        m = tiny_model()
+        sc = core.mf_scorer(m, [1.0, 0.0, 0.0])
+        s, src = core.mf_score(m, sc, ("movie", 10), None, lite=False)
+        self.assertEqual((round(s, 5), src), (1.0, "real"))
+        raw = core.mf_raw_features({"genres": [{"id": 28, "name": "Action"}], "voteCount": 0}, "movie")
+        s, src = core.mf_score(m, sc, ("movie", 999), raw, lite=False)
+        self.assertEqual(src, "pred")
+        self.assertGreater(s, 0.5)
+        vec, src = core.mf_item_vector(m, ("movie", 999), raw)
+        self.assertEqual(src, "pred")
+        self.assertAlmostEqual(sum(a * b for a, b in zip(vec, [1.0, 0.0, 0.0])), s, places=5)
+        self.assertEqual(core.mf_score(m, sc, ("tv", 5), None, lite=True), (None, None))
+
+    def test_percentiles_per_media_and_source(self):
+        raw = {("movie", 1): (3.0, "real"), ("movie", 2): (1.0, "real"), ("movie", 3): (9.0, "pred"),
+               ("tv", 1): (0.1, "pred"), ("tv", 2): (0.2, "pred")}
+        keys = list(raw) + [("tv", 3)]
+        p = core.mf_percentiles(raw, keys)
+        self.assertEqual(p[("movie", 1)], 1.0)
+        self.assertEqual(p[("movie", 2)], 0.0)
+        self.assertEqual(p[("movie", 3)], 0.0)  # alone in its group: never ahead of the real ones by default
+        self.assertEqual((p[("tv", 1)], p[("tv", 2)]), (0.0, 1.0))
+        self.assertEqual(p[("tv", 3)], 0.5)  # no score: neutral
+
+    def test_fuse_unchanged_without_mf(self):
+        classic = {("movie", 1): 0.9, ("movie", 2): 0.4, ("tv", 3): 0.6}
+        ai = {("movie", 1): 0.2, ("tv", 3): 0.8}
+        base = core.fuse(classic, ai, CFG)
+        self.assertEqual(core.fuse(classic, ai, CFG, None), base)
+        self.assertEqual(core.fuse(classic, ai, CFG, {k: 1.0 for k in classic}), base)  # W_MF = 0
+
+    def test_fuse_with_mf(self):
+        cfg = dict(CFG, W_CLASSIC=0.4, W_AI=0.4, W_MF=0.2)
+        classic = {("movie", 1): 1.0, ("movie", 2): 0.0}
+        out = core.fuse(classic, {("movie", 1): 0.0}, cfg, {("movie", 1): 1.0, ("movie", 2): 0.5})
+        self.assertAlmostEqual(out[("movie", 1)]["final"], (0.4 + 0.2) / 1.0)
+        self.assertAlmostEqual(out[("movie", 2)]["final"], 0.1 / 0.6)  # AI missing: dropped, MF kept
+        self.assertEqual(out[("movie", 1)]["mfRank"], 1)
+
+    def test_cap_unchanged_without_cap_mf(self):
+        pool = {("movie", i): cand(("movie", i), score=i / 10) for i in range(10)}
+        seeds = {("movie", 99): {"key": ("movie", 99), "weight": 1.0}}
+        base = core.cap_pool(pool, seeds, 3, CFG)
+        self.assertEqual(core.cap_pool(pool, seeds, 3, CFG, {k: 1.0 for k in pool}), base)
+        mf = {k: (1.0 if k == ("movie", 0) else 0.0) for k in pool}
+        got = core.cap_pool(pool, seeds, 3, dict(CFG, CAP_MF=1.0), mf)
+        self.assertIn(("movie", 0), got)  # weakest seed score, best MF: now rated by the AI
+
+    def test_page_offset(self):
+        pool = {}
+        s = {"key": ("movie", 1), "weight": 1.0}
+        core.add_candidates(pool, s, [{"id": 5, "mediaType": "movie"}], 1.0, offset=20)
+        self.assertAlmostEqual(pool[("movie", 5)]["seedScore"], 1.0 / 3.0)
+
+
+class MfFile(unittest.TestCase):
+    """recs_server.MfModel: the factors file is optional; missing or broken = MF off, never fatal."""
+
+    def setUp(self):
+        import contextlib
+        import io
+        import tempfile
+        import recs_server  # stdlib only; no environment needed at import
+        self.MfModel = recs_server.MfModel
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = pathlib.Path(self.dir.name) / "models" / "recs-mf-v2.rmf"
+        self.out = io.StringIO()  # MfModel logs to stdout
+        quiet = contextlib.redirect_stdout(self.out)
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    def test_missing_file_is_off(self):
+        self.assertIsNone(self.MfModel(self.path).get())
+
+    def test_broken_file_is_off_and_logged(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes(b"RMF2\xff\xff")
+        self.assertIsNone(self.MfModel(self.path).get())
+        self.assertIn("MF off", self.out.getvalue())
+
+    def test_load_then_file_removed(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes(tiny_blob())
+        mm = self.MfModel(self.path)
+        self.assertEqual(mm.get()["n"], 4)
+        self.assertIs(mm.get(), mm.get())  # cached until the mtime changes
+        self.path.unlink()
+        self.assertIsNone(mm.get())
+
+    def test_pipeline_without_mf_is_todays(self):
+        """No factors (mf=None, as the server passes when the file is missing): with the deployed
+        weights 0.4/0.4/0.2 the fusion is the plain classic/AI mean, the cap today's."""
+        cfg = dict(CFG, W_CLASSIC=0.4, W_AI=0.4, W_MF=0.2, CAP_MF=1.0)
+        classic = {("movie", 1): 0.9, ("movie", 2): 0.4, ("tv", 3): 0.6}
+        ai = {("movie", 1): 0.2, ("tv", 3): 0.8}
+        out = core.fuse(classic, ai, cfg, None)
+        self.assertAlmostEqual(out[("movie", 1)]["final"], 0.55)
+        self.assertAlmostEqual(out[("movie", 2)]["final"], 0.4)  # AI missing: classic alone
+        self.assertNotIn("mfRank", out[("movie", 1)])
+        pool = {("movie", i): cand(("movie", i), score=i / 10) for i in range(10)}
+        seeds = {("movie", 99): {"key": ("movie", 99), "weight": 1.0}}
+        self.assertEqual(core.cap_pool(pool, seeds, 3, cfg, None), core.cap_pool(pool, seeds, 3, CFG))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

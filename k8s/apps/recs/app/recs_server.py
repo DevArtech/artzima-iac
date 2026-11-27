@@ -40,9 +40,12 @@ import recs_core as core  # noqa: E402
 CACHE = pathlib.Path(os.environ.get("RECS_CACHE_DIR", "/cache"))
 DETAILS_TTL = float(os.environ.get("RECS_DETAILS_TTL_DAYS", "7")) * 86400
 LISTS_TTL = float(os.environ.get("RECS_LISTS_TTL_DAYS", "3")) * 86400
+MF_SHADOW = os.environ.get("RECS_MF_SHADOW", "") in ("1", "true")  # compute MF for /debug even at W_MF = 0
 HTTP_TIMEOUT = float(os.environ.get("RECS_HTTP_TIMEOUT_SECONDS", "60"))
 LLM_TIMEOUT = float(os.environ.get("RECS_LLM_TIMEOUT_SECONDS", "900"))
 LLM_BATCH = int(os.environ.get("RECS_LLM_BATCH", "12"))
+# Optional MF factors file (built offline, see recs_core "matrix factorisation"); missing = MF off.
+MF_FILE = pathlib.Path(os.environ.get("RECS_MF_FILE", str(CACHE / "models" / "recs-mf-v2.rmf")))
 # A Jellyfin user id: 32 hex digits, or the dashed GUID form (fullmatch: no anchors needed;
 # no dollar signs in this file, Flux substitutes the ConfigMap).
 UID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
@@ -263,12 +266,15 @@ class Seerr:
             "voteAverage": float(d.get("voteAverage") or 0.0), "voteCount": int(d.get("voteCount") or 0),
             "popularity": float(d.get("popularity") or 0.0), "overview": d.get("overview") or "",
             "tvdbId": (d.get("externalIds") or {}).get("tvdbId"), "adult": bool(d.get("adult")),
+            "imdbId": d.get("imdbId") or (d.get("externalIds") or {}).get("imdbId"),
+            "mfRaw": mf_features(d, mt),
         }
 
-    def related(self, key, kind: str) -> list[dict]:
+    def related(self, key, kind: str, page: int = 1) -> list[dict]:
         mt, tid = key
+        name = f"{mt}-{tid}-{kind}.json" if page == 1 else f"{mt}-{tid}-{kind}-p{page}.json"
         try:
-            d = self._cached(f"{mt}-{tid}-{kind}.json", LISTS_TTL, f"/api/v1/{mt}/{tid}/{kind}?page=1")
+            d = self._cached(name, LISTS_TTL, f"/api/v1/{mt}/{tid}/{kind}?page={page}")
         except RuntimeError as e:
             log("related failed", key=f"{mt}/{tid}", kind=kind, error=e)
             return []
@@ -310,6 +316,41 @@ class Llm:
         return content, time.monotonic() - t, usage
 
 
+# ---------------------------------------------------------------------------- MF
+def mf_features(d: dict, mt: str):
+    """MF content features of a details response; None (title gets no predicted factors) on
+    odd data, so MF can never break details."""
+    try:
+        return core.mf_raw_features(d, mt)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class MfModel:
+    """The factors file, (re)loaded when its mtime changes. Any problem: MF off, never fatal."""
+
+    def __init__(self, path: pathlib.Path):
+        self.path, self.mtime, self.model = path, None, None
+
+    def get(self):
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            self.model = self.mtime = None
+            return None
+        if mtime != self.mtime:
+            self.mtime = mtime
+            try:
+                t = time.monotonic()
+                self.model = core.mf_parse(self.path.read_bytes())
+                log("mf factors loaded", path=self.path, items=self.model["n"], built=self.model.get("built"),
+                    seconds=round(time.monotonic() - t, 2))
+            except Exception as e:  # noqa: BLE001 (any broken file: MF off, the service runs on)
+                log("mf factors unusable, MF off", path=self.path, error=f"{type(e).__name__}: {e}"[:200])
+                self.model = None
+        return self.model
+
+
 # ---------------------------------------------------------------------------- the pipeline
 class Engine:
     def __init__(self):
@@ -324,6 +365,7 @@ class Engine:
                           os.environ["SONARR_API_KEY"])
         llm_url = os.environ.get("LLM_URL", "")
         self.llm = Llm(llm_url, os.environ.get("LLM_API_KEY", ""), os.environ.get("LLM_MODEL", "local")) if llm_url else None
+        self.mf = MfModel(MF_FILE)
 
     # shared data of one run (all users) -------------------------------------------------
     def shared(self) -> dict:
@@ -363,17 +405,52 @@ class Engine:
         # what never comes back: watched/owned/queued, requested by anyone, disliked, own seeds
         excluded = set(sh["owned"]) | sh["requested"] | set(seeds)
 
+        # MF user vector: positive film seeds (MovieLens factors, else predicted from content)
+        mf_model = self.mf.get() if (cfg["W_MF"] > 0 or cfg["CAP_MF"] > 0 or MF_SHADOW) else None
+        mf_sc, mf_stats = None, {"loaded": mf_model is not None}
+        t_mf = time.monotonic()
+        if mf_model is not None:
+            try:
+                rows, srcs = [], {"real": 0, "pred": 0}
+                for k, s in seeds.items():
+                    d = details.get(k)
+                    if s["weight"] <= 0 or k[0] != "movie" or not d:
+                        continue
+                    vec, src = core.mf_item_vector(mf_model, k, d.get("mfRaw"), d.get("imdbId"))
+                    if vec is not None:
+                        rows.append((vec, s["weight"]))
+                        srcs[src] += 1
+                u = core.mf_user_vector(mf_model, rows)
+                mf_sc = core.mf_scorer(mf_model, u) if u is not None else None
+                mf_stats.update(seeds=srcs, seconds=round(time.monotonic() - t_mf, 2))
+            except Exception as e:  # noqa: BLE001 (MF is optional: off for this run, never fatal)
+                mf_sc = None
+                mf_stats["error"] = f"{type(e).__name__}: {e}"[:200]
+                log("mf user vector failed, MF off", user=uid, error=mf_stats["error"])
+
         # 2. classic candidates: TMDb recommendations + similar of the strongest seeds
         pool: dict = {}
         top = core.positive_seeds(seeds, int(cfg["MAX_SEEDS"]))
         for s in top:
-            core.add_candidates(pool, s, self.seerr.related(s["key"], "recommendations"), 1.0)
-            core.add_candidates(pool, s, self.seerr.related(s["key"], "similar"), cfg["SIMILAR_FACTOR"])
+            for page in range(1, int(cfg["LIST_PAGES"]) + 1):
+                off = 20 * (page - 1)
+                core.add_candidates(pool, s, self.seerr.related(s["key"], "recommendations", page), 1.0, off)
+                core.add_candidates(pool, s, self.seerr.related(s["key"], "similar", page), cfg["SIMILAR_FACTOR"], off)
         pool = core.exclude(pool, excluded)
         stats["classicCandidates"] = len(pool)
 
-        # cap what the AI rates: the most promising per media type (before details: cheap)
-        pool = core.cap_pool(pool, seeds, int(cfg["MAX_CANDIDATES"]), cfg)
+        # cap what the AI rates: the most promising per media type (before details: cheap; MF
+        # from the list data only: real factors or the lite content map)
+        mf_cap = None
+        if mf_sc is not None and cfg["CAP_MF"] > 0:
+            try:
+                raw = {k: core.mf_score(mf_model, mf_sc, k, core.mf_raw_features(c, k[0], lite=True), lite=True)
+                       for k, c in pool.items()}
+                mf_cap = core.mf_percentiles(raw, list(pool))
+            except Exception as e:  # noqa: BLE001
+                mf_stats["error"] = f"{type(e).__name__}: {e}"[:200]
+                log("mf cap scores failed, today's cap", user=uid, error=mf_stats["error"])
+        pool = core.cap_pool(pool, seeds, int(cfg["MAX_CANDIDATES"]), cfg, mf_cap)
 
         # 3. AI-proposed titles (resolved through TMDb search; unresolvable ones dropped)
         profile_txt = core.profile_text(profile, seeds)
@@ -420,7 +497,7 @@ class Engine:
                 del pool[key]
                 continue
             c = pool[key]
-            c.update({k: d[k] for k in ("genres", "keywords", "collection", "overview")})
+            c.update({k: d[k] for k in ("genres", "keywords", "collection", "overview", "imdbId", "mfRaw")})
             c["title"], c["year"] = d["title"], d["year"] or c["year"]
             if d["voteCount"]:
                 c.update(voteAverage=d["voteAverage"], voteCount=d["voteCount"], popularity=d["popularity"])
@@ -480,8 +557,22 @@ class Engine:
             log("fusion: classic only", user=uid, reason=llm_state["error"] or "no AI scores")
         stats["llm"] = {**llm_state, "rated": len(ai_raw), "seconds": round(llm_state["seconds"], 1)}
 
-        # 7. fusion + diversity
-        fused = core.fuse(classic, ai, cfg)
+        # 7. MF score (full content map now that details are known), fusion + diversity
+        mf, mf_raw = None, {}
+        if mf_sc is not None:
+            try:
+                mf_raw = {k: core.mf_score(mf_model, mf_sc, k, c.get("mfRaw"), lite=False, imdb=c.get("imdbId"))
+                          for k, c in pool.items()}
+                mf = core.mf_percentiles(mf_raw, list(pool))
+                mf_stats["sources"] = {str(s): sum(1 for v in mf_raw.values() if v[1] == s)
+                                       for s in ("real", "pred", None)}
+                mf_stats["seconds"] = round(time.monotonic() - t_mf, 2)
+            except Exception as e:  # noqa: BLE001
+                mf, mf_raw = None, {}
+                mf_stats["error"] = f"{type(e).__name__}: {e}"[:200]
+                log("mf scores failed, fusion without MF", user=uid, error=mf_stats["error"])
+        stats["mf"] = mf_stats
+        fused = core.fuse(classic, ai, cfg, mf)
         keys = core.order(fused)
         groups = {k: core.diversity_groups(pool[k], seeds) for k in keys}
         keys = core.diversify(keys, groups, int(cfg["DIVERSITY_MAX"]), int(cfg["DIVERSITY_TOP"]))[:int(cfg["KEEP"])]
@@ -497,6 +588,8 @@ class Engine:
                 "source": c["source"], "final": round(f["final"], 4), "rrf": round(f["rrf"], 5),
                 "classic": round(comp["classic"], 4), "ai": None if not ai or k not in ai else round(ai[k], 4),
                 "aiRaw": ai_raw.get(k), "classicRank": f["classicRank"], "aiRank": f["aiRank"],
+                "mf": None if mf is None else round(mf[k], 4), "mfSource": (mf_raw.get(k) or (None, None))[1],
+                "mfRank": f.get("mfRank"),
                 "components": {n: (None if comp[n] is None else round(comp[n], 4))
                                for n in ("seed", "frequency", "affinity", "prior", "raw")},
                 "seeds": len(c["seeds"]), "bestSeed": bs and {"title": bs["title"], "kind": bs["kind"]},
@@ -662,7 +755,8 @@ def main():
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.daemon_threads = True
     log("recs listening", port=port, llm="on" if engine.llm else "off",
-        w_classic=engine.cfg["W_CLASSIC"], w_ai=engine.cfg["W_AI"])
+        w_classic=engine.cfg["W_CLASSIC"], w_ai=engine.cfg["W_AI"], w_mf=engine.cfg["W_MF"],
+        cap_mf=engine.cfg["CAP_MF"], mf_file="present" if MF_FILE.exists() else "missing (MF off)")
     srv.serve_forever()
 
 

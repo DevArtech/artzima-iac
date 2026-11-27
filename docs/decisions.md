@@ -499,12 +499,13 @@ same files. Steps: [manual steps §10](manual-steps.md#10-media-stack-arr--qbitt
   + year). Everything else is listed for a manual Library Import, because a wrong match is worse
   than a manual step. Removing the tag releases a title.
 
-## Recommendations: classic + local AI, fused (2026-11-26)
+## Recommendations: classic + local AI + matrix factorisation, fused (2026-11-26)
 
 `recs` (`k8s/apps/recs`, namespace `media`) recommends films and series per Jellyfin user; Seerr
 displays them. It combines SuggestArr's idea (what you watch → TMDb's similar/recommended titles)
-with Recommendarr's (an AI that reasons over your taste) and **mixes both scores**, so neither
-side decides alone. Everything runs in the lab: the AI is a small local model on host01, not the
+with Recommendarr's (an AI that reasons over your taste) and **mixes their scores** with a third,
+smaller one, matrix factorisation (MF: what people with a similar history liked, learned offline
+from MovieLens), so no side decides alone. Everything runs in the lab: the AI is a small local model on host01, not the
 DGX Spark or the HQ PC, and nothing is published.
 
 ```mermaid
@@ -512,7 +513,8 @@ flowchart LR
   jf["Jellyfin (LXC)<br/>plays, favourites, ratings"] --> recs
   seerr["Seerr<br/>users, OWN requests, watchlist,<br/>TMDb via its API"] --> recs
   arr["Radarr / Sonarr<br/>library + queue"] --> recs
-  recs["recs (media ns, ClusterIP :8080)<br/>seeds → candidates → classic + AI → fusion"] -- "JSON-schema prompts" --> llm["llm LXC on host01<br/>llama.cpp, Qwen3-4B Q4, CPU"]
+  recs["recs (media ns, ClusterIP :8080)<br/>seeds → candidates → classic + AI + MF → fusion"] -- "JSON-schema prompts" --> llm["llm LXC on host01<br/>llama.cpp, Qwen3-4B Q4, CPU"]
+  pvc[("recs-cache PVC<br/>results, TMDb cache,<br/>models/recs-mf-v2.rmf")] --- recs
   seerrpatch["Seerr (patched UI)"] -- "GET /v1/recs/{jellyfinUserId}" --> recs
   cron["CronJob recs-refresh 03:30"] -- "POST /v1/refresh" --> recs
 ```
@@ -533,13 +535,18 @@ flowchart LR
 Watches decay with a 180-day half-life, never below 35 %. Jellyfin's `Filters=Dislikes` is not
 used: on Jellyfin 12 it matched every item; recs reads `UserData.Likes` itself.
 
-**Candidates** (shared by both sides): page 1 of TMDb *recommendations* and *similar* (×0.5) of
-the 40 strongest seeds, through Seerr's TMDb proxy (no TMDb key of our own), plus up to 10 titles
+**Candidates** (shared by all sides): page 1 of TMDb *recommendations* and *similar* (×0.5) of
+every positive seed (`RECS_MAX_SEEDS` 200; it was the 40 strongest, which left the TV watchlist
+seeds without lists; `RECS_LIST_PAGES=2` adds page 2, off), through Seerr's TMDb proxy (no TMDb key of our own), plus up to 10 titles
 the model proposes by name + year, resolved with Seerr's search (same type, title match, year ±1;
 unresolvable ones are dropped). **Excluded:** anything in Jellyfin, Radarr or Sonarr (owned or
 queued), anything anyone requested (Seerr requests and media status), the user's own seeds
 (watched, requested, watchlisted) and dislikes. The 120 most promising candidates go on, split
-between films and series by their share of the seed weight (at least 25 % each).
+between films and series by their share of the seed weight (at least 25 % each). "Promising" was
+seed score + 0.2 × prior, which favours what many seeds point at; **with MF it is
+(that, min-max per media type, + MF + prior) / 3** (`RECS_CAP_MF` 1; MF here comes from the list
+data alone, see below). Offline this kept 12-16 of 42 hidden favourites in the 120 instead of
+9-10, at no extra LLM time (still 120 candidates).
 
 **Classic score (0-1):** 0.45 × seed strength (seed weight × recency, earlier TMDb ranks count
 more, summed over seeds) + 0.15 × frequency (how many seeds point at it) + 0.25 × genre/keyword
@@ -552,12 +559,51 @@ one-line reason, constrained by a JSON schema (llama.cpp `response_format: json_
 ids as an `enum`, integer scores 0-10). Answers are validated again (unknown or repeated ids,
 non-numeric or out-of-range scores are dropped), then min-max per user.
 
-**Fusion:** `final = 0.5 × classic + 0.5 × ai` (`RECS_W_CLASSIC`, `RECS_W_AI`); ties (3 decimals)
-are broken by reciprocal-rank fusion of the two rankings (k = 60). Diversity: at most 3 titles
+**MF score (0-1):** implicit ALS (128 factors, λ 1, α 10) on MovieLens 32M ratings ≥ 3.5★
+(17,268 films, up to Oct 2023), plus a ridge map from TMDb content (genres, year, votes and
+rating, language, keywords, cast, director/writers/creators, companies/networks, collection,
+overview words) to the same factors, so **films MovieLens doesn't know (anything after 2023) and
+series get predicted factors** (cold start). A **lite** map uses only what a TMDb list item
+carries, for the cap. Per user: the positive film seeds (real factors, else predicted) are folded
+in (the iALS user solve, confidence 1 + 10 × seed weight), every candidate is scored, and scores
+become **percentiles within (media type, real vs predicted factors)**, so predicted titles neither
+crowd out nor trail the MovieLens ones and series keep their share; no data = neutral 0.5. All
+stdlib (`array`, `struct`): the image stays `python:alpine`; < 1 s and ~45 MB per run. Offline on
+the operator's seeds MF ranked hidden favourites far better than classic deep in the pool (sign
+tests p < 0.005) and new films became rankable (median rank 102 vs 938), but the visible top 20
+gained only within noise (10 vs 7 of 42 hits), hence the low weight. Debiasing (MF minus
+popularity) was worse on every offline split and is not used.
+
+**Fusion:** `final = (0.4 × classic + 0.4 × ai + 0.2 × mf) / (weights present)` (`RECS_W_CLASSIC`,
+`RECS_W_AI`, `RECS_W_MF`): a candidate the AI did not rate drops the AI term, and with the LLM down
+classic : MF is 2 : 1. Ties (3 decimals) are broken by reciprocal-rank fusion of the rankings
+(k = 60). Diversity: at most 3 titles
 per seed or franchise (TMDb collection, or a shared-universe keyword like the MCU) in the top 20.
 The reason shown is the model's, else a template ("Because you watched X" / "Because you requested
 X" / "Because X is on your watchlist"). **If the LLM is down or times out, the run is classic only**
 (logged as `fusion: classic only`, `mode: classic-only` in the debug output) and everything still works.
+**Without the MF file** (missing, unreadable or truncated) MF is off: logged once
+(`mf factors unusable, MF off`, or `mf_file=missing (MF off)` at start), `stats.mf.loaded: false`,
+and the fusion is classic + AI alone (the two weights renormalise). An MF error during a run turns
+MF off for that run only.
+
+**The MF file and its licence:** `/cache/models/recs-mf-v2.rmf` on `recs-cache` (17.9 MB: item
+factors with TMDb and IMDb ids, Gram matrix, both content maps). Recs reloads it when its mtime
+changes. It is a transformation of MovieLens 32M, whose licence (GroupLens, University of
+Minnesota) grants **research, non-commercial use, no endorsement, redistribution only under the
+same terms**. A private household recommender is non-commercial but only arguably "research", a
+grey zone the operator accepted (for certainty, ask GroupLens). So **the file and
+anything derived from MovieLens is never committed** (this repo is public) or published; the
+header carries the licence. It is regenerable, so it isn't backed up. **Rebuild** (only for a new
+MovieLens release or new hyperparameters, no nightly training): the one-off Job in
+`k8s/apps/recs/mf-build/` (not in any kustomization; steps in `job.yaml`): it downloads the zip
+(md5-checked), trains (~25 s, 1.3 GB), reads ~2,500 TMDb details through Seerr and writes the file
+atomically after re-reading it with the stdlib parser. The first file was built offline the same
+way and copied in with `kubectl cp` (to `.tmp`, then `mv`). **Off switch:** `RECS_W_MF` and
+`RECS_CAP_MF` "0", `RECS_W_CLASSIC`/`RECS_W_AI` "0.5" (or delete the file). Every MF value is in
+`/debug` (`mf`, `mfSource` real/pred/lite, `mfRank`, `stats.mf`); keep `W_MF` only if, after
+4-8 weeks, what the household goes on to watch or request ranks higher under the MF-fused order
+than under classic + AI (≥ 20 titles).
 
 **Running it:** results are cached per user on a small PVC (`recs-cache`, JSON, regenerable, not
 backed up) and served from there. CronJob `recs-refresh` recomputes every user at 03:30 and its

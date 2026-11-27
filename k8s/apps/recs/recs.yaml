@@ -73,12 +73,24 @@ spec:
               value: "12"
             - name: RECS_LLM_TIMEOUT_SECONDS
               value: "900"
-            # Fusion: final = W_CLASSIC x classic + W_AI x ai. Every other weight
-            # (recs_core.DEFAULTS) can be set the same way: RECS_<NAME>.
+            # Fusion: final = (W_CLASSIC x classic + W_AI x ai + W_MF x mf) / (weights present).
+            # Every other weight (recs_core.DEFAULTS) can be set the same way: RECS_<NAME>.
+            # MF needs /cache/models/recs-mf-v2.rmf (k8s/apps/recs/mf-build; MovieLens licence, never
+            # in git); without it MF is off and these weights act as before. Rollback: W_MF and
+            # CAP_MF to "0" (W_CLASSIC/W_AI back to 0.5), MAX_SEEDS 40.
             - name: RECS_W_CLASSIC
-              value: "0.5"
+              value: "0.4"
             - name: RECS_W_AI
-              value: "0.5"
+              value: "0.4"
+            - name: RECS_W_MF
+              value: "0.2"
+            # The cap (which 120 candidates the AI rates) also uses MF + the TMDb prior
+            - name: RECS_CAP_MF
+              value: "1"
+            # Candidates from every positive seed (not only the 40 strongest). Optional, later:
+            # RECS_LIST_PAGES "2" (TMDb page 2: more candidates reach the AI, 2x list calls).
+            - name: RECS_MAX_SEEDS
+              value: "200"
             # First start: compute users without cached results right away.
             - name: RECS_REFRESH_ON_START
               value: missing

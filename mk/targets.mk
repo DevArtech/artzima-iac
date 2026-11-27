@@ -258,7 +258,7 @@ lint-python: ## Byte-compile the Python helpers + render check
 	$(PY) -m py_compile images/skyjo/artzima_serve.py images/skyjo/check_weights.py k8s/apps/media/wiring/wire.py k8s/apps/media/wiring/seed.py \
 	  k8s/apps/media/sabnzbd/clamav-scan.py \
 	  k8s/apps/monitoring/grafana-admin/sync.py \
-	  k8s/apps/recs/app/recs_core.py k8s/apps/recs/app/recs_server.py
+	  k8s/apps/recs/app/recs_core.py k8s/apps/recs/app/recs_server.py k8s/apps/recs/mf-build/build_rmf2.py
 	$(PY) -I k8s/apps/recs/tests/test_recs_core.py # recs: seeds/weights, scoring, fusion, exclusion, fallback
 lint-ansible: ## syntax-check every playbook + ansible-lint (production profile)
 	cd ansible && for p in playbooks/*.yml; do ansible-playbook --syntax-check $$p >/dev/null || exit 1; echo "syntax ok: $$p"; done
