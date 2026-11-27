@@ -1,18 +1,32 @@
 #!/bin/sh
 # Managed by Ansible (role nas_backup). forget + prune of the NAS restic repository with
-# the MAINTENANCE key (Backrest itself only adds snapshots). A failure is posted to the
-# alert webhook (if set). Runs from crond in the restic-maint container.
+# the MAINTENANCE key (Backrest itself only adds snapshots). A failure is posted to HQ through
+# the cluster's nas-alert-relay (ALERT_URL, if set) in HQ's JSON format; the next pass resolves
+# it (HQ only tells a resolve whose failure it told). Runs from crond in the restic-maint container.
+#   maint.sh            the weekly run (crontab)
+#   maint.sh --test     only post a test alert (firing, then resolved): no restic at all
 set -u
+
+alert() { # $1 = firing|resolved, $2 = summary
+  [ -n "$ALERT_URL" ] || return 0
+  wget -q -T 20 -O /dev/null --header 'Content-Type: application/json' \
+    --post-data "{\"source\":\"restic-maint\",\"name\":\"NAS backup retention (forget/prune) failed\",\"key\":\"forget-prune\",\"severity\":\"warning\",\"status\":\"$1\",\"labels\":{\"instance\":\"artnas\"},\"summary\":\"$2\"}" \
+    "$ALERT_URL" || echo "alert webhook unreachable"
+}
+
+if [ "${1:-}" = "--test" ]; then
+  alert firing "TEST from restic-maint --test (no restic ran): ignore"
+  alert resolved ""
+  exit 0
+fi
+
 echo "$(date -u '+%F %T') forget + prune: start"
 if restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" \
      --prune --max-unused 10%; then
   echo "$(date -u '+%F %T') RESULT: PASS"
+  alert resolved ""
 else
   echo "$(date -u '+%F %T') RESULT: FAIL"
-  if [ -n "$ALERT_URL" ]; then
-    wget -q -O /dev/null --header 'Content-Type: application/json' \
-      --post-data '{"source":"artnas/restic-maint","status":"FAIL","message":"NAS backup retention (forget/prune) failed: docker logs restic-maint"}' \
-      "$ALERT_URL" || echo "alert webhook unreachable"
-  fi
+  alert firing "restic forget/prune exited non-zero: docker logs {{ nas_backup_project }}-maint on the NAS"
   exit 1
 fi

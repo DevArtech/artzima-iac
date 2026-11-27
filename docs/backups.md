@@ -92,9 +92,20 @@ doesn't; resolved alerts send a short note). HQ is on the tailnet only, so:
   force-sync the ExternalSecrets (`alert-webhook` in monitoring, `cluster-secret-vars` in flux-system).
 - Flux health reaches HQ through Alertmanager (`FluxResourceNotReady`), so Flux has no own Provider.
 - Info-level alerts go nowhere (route `severity =~ "info|none"` -> null), on purpose.
-- **Not wired yet:** Backrest and `restic-maint` on the NAS. They post from the NAS, which is not on the
-  tailnet and cannot use the cluster's egress, so they don't reach HQ. Their failures still show as
-  missed-backup alerts in Alertmanager where a metric exists.
+- **Backrest and `restic-maint` on the NAS** (since 2026-11-27): the NAS is not on the tailnet, so
+  it posts to `k8s/apps/nas-alert-relay`, a small nginx in `monitoring` that only forwards
+  `POST /hooks/lab/*` to `hq-egress`. Its Service answers on the **k8s API VIP, port 4800, lab LAN
+  only** (`externalIPs`: kube-proxy DNATs it on whichever node holds the VIP; in nftables mode a
+  NodePort would answer on the node IPs only, not on the VIP). No route, tunnel or tailnet name. The
+  NAS uses the same `/hooks/lab/<token>` path as `WEBHOOK_URL`; the role builds it (`nas_backup_alert_url`),
+  so there's no second secret. The relay never logs the URI (the token is in it): the access log
+  holds only the method, its own status and HQ's (`up=`). `kubectl -n monitoring logs
+  deploy/nas-alert-relay` shows it; `up=401` means a wrong token, and `502` means HQ or hq-egress
+  is unreachable. Formats, keys and the test: [NAS alerts](#alerts-failures-and-missed-runs).
+  Kubernetes marks `externalIPs` as deprecated, but kube-proxy still implements it. If a future
+  version drops it, use a LoadBalancer IP (MetalLB L2) on the lab LAN instead. Remove: delete
+  `k8s/apps/nas-alert-relay/` and its line in `k8s/apps/artzima/kustomization.yaml`; the NAS
+  alerts then stop arriving.
 
 | Alert | Fires when |
 |---|---|
@@ -432,11 +443,24 @@ but plans or repos edited in the UI are overwritten by the next `make nas-backup
 
 #### Alerts: failures and missed runs
 
-- **Failures and errors:** every backup error or warning and every check failure, from any plan,
-  is sent to THE alert URL (`/k8s/alerts/WEBHOOK_URL`, shared with Alertmanager). The role hands it
-  to Backrest as a **Shoutrrr** generic webhook (`generic+https://…`; Backrest 1.14 has no working
-  plain webhook action). The `backrest-maint` container posts a small JSON to the same URL when
-  forget/prune fails. Empty = no alerts. After changing the URL, re-run `make nas-backup`.
+- **Failures and errors:** every backup error or warning and every check, prune or forget failure,
+  from any plan, goes to Headquarters through the cluster's **nas-alert-relay** (the NAS is not on
+  the tailnet; see [Alerts](#alerts)). The role derives the NAS's URL from THE alert URL
+  (`/k8s/alerts/WEBHOOK_URL`): `http://<k8s API VIP>:4800` plus the same `/hooks/lab/<token>` path.
+  It hands that URL to Backrest as a **Shoutrrr** generic webhook (`generic+http://…`; Backrest 1.14
+  has no plain webhook action), with a body template in HQ's JSON format (`nas_backup_alert_template_*`
+  in the role's defaults). The next successful run of the same plan (or check) sends `resolved`.
+  The `backrest-maint` container posts the same format when forget/prune fails, and `resolved` after
+  a good pass. Empty URL = no alerts. After changing the URL, re-run `make nas-backup`.
+- **Test it:** `make nas-backup ANSIBLE_ARGS="-e nas_backup_alert_test=true"` adds plan
+  `alert-test` (never scheduled; its path doesn't exist). *Backup now* on it fails at once (Backrest
+  refuses the missing path, so restic never runs) and HQ shows *Lab alert: NAS backup snapshot
+  error: alert-test*. Then run `make nas-backup` without the flag to remove the plan. That test can
+  never succeed, so resolve it by hand: POST
+  `{"source":"backrest","name":"x","status":"resolved","key":"plan:alert-test"}` to the same URL,
+  or let HQ forget it after 7 days. restic-maint: `sudo docker exec backrest-maint /maint/maint.sh
+  --test` sends a firing and then a resolved alert, with no restic run. Both
+  apply steps restart Backrest, which interrupts a running backup; restic resumes on the next run.
 - **Missed runs:** a backup that never starts sends no error, so only a **dead-man's switch** catches
   it. The free [healthchecks.io](https://healthchecks.io) does this.
   1. Create a project and copy its **ping key**.

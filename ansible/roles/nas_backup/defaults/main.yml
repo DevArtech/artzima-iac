@@ -14,6 +14,34 @@ nas_backup_repo_uri: "s3:https://{{ b2_s3_endpoint }}/{{ b2_bucket_nas }}/restic
 # healthchecks.io: one check per plan, auto-created from the ping key (slug URLs).
 nas_backup_hc_slug_prefix: artzima-nas-
 
+# Alerts to Headquarters (HQ). The NAS is not on the tailnet, so it posts to the cluster's
+# nas-alert-relay (k8s/apps/nas-alert-relay) at the k8s API VIP on the lab LAN, which forwards
+# to HQ through hq-egress. The path (/hooks/lab/<token>) is taken from the alert endpoint
+# (Infisical /k8s/alerts/WEBHOOK_URL), so the token stays in one place. Port = the relay
+# Service's port. Empty WEBHOOK_URL = no alert hooks.
+nas_backup_alert_relay_port: 4800
+nas_backup_alert_url: >-
+  {{ '' if (alert_webhook_url | trim) == '' else
+     'http://' ~ k8s_api_vip ~ ':' ~ nas_backup_alert_relay_port ~ (alert_webhook_url | trim | urlsplit('path')) }}
+# Backrest hook bodies in HQ's {source, name, severity, status, key, summary, labels} format
+# (Go templates, Backrest's HookVars: not Jinja, hence !unsafe). One key per plan (or per repo
+# operation), so the success of the next run resolves the alert in HQ; HQ tells a resolve only
+# if it told the failure, so successes cost nothing.
+nas_backup_alert_template_firing: !unsafe >-
+  {"source":"backrest","severity":"warning","status":"firing",
+  "name":"NAS backup {{ .EventName .Event }}: {{ if .Plan }}{{ .Plan.Id }}{{ else }}{{ .Repo.Id }}{{ end }}",
+  "key":"{{ if .Plan }}plan:{{ .Plan.Id }}{{ else }}repo:{{ .Repo.Id }}:{{ .EventName .Event }}{{ end }}",
+  "labels":{"instance":"artnas","task":{{ .JsonMarshal .Task }}},
+  "summary":{{ .JsonMarshal .Error }}}
+nas_backup_alert_template_resolved: !unsafe >-
+  {"source":"backrest","severity":"info","status":"resolved",
+  "name":"NAS backup ok: {{ if .Plan }}{{ .Plan.Id }}{{ else }}{{ .Repo.Id }}{{ end }}",
+  "key":"{{ if .Plan }}plan:{{ .Plan.Id }}{{ else }}repo:{{ .Repo.Id }}:check error{{ end }}"}
+# Test the whole path (docs/backups.md "Alerts"): true adds plan "alert-test" (never scheduled,
+# its path doesn't exist); "Backup now" on it in the Backrest UI fails and alerts HQ. Run
+# `make nas-backup` again without it to remove the plan. restic-maint: /maint/maint.sh --test.
+nas_backup_alert_test: false
+
 # OpenTofu state, off the workstation: `make tofu-state-backup` (after every tofu apply) copies the
 # ENCRYPTED state files here over SSH as the NAS login user; plan lab-state-daily sends them to B2.
 # Outside the root-only Backrest folder so that user can write it; Backrest reads it read-only.

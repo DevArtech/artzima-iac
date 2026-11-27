@@ -591,6 +591,10 @@ make verify
       `"initialized":true`); Jellyfin libraries scanned.
 - [ ] **Public routes:** `https://<app>.<domain>` loads for every `/apps.yaml` entry; `https://vault.<domain>/admin` → 403.
 - [ ] **Tailnet:** `http://paperless`, `http://vault-admin/admin`, the Backrest UI reachable; subnet routes approved.
+- [ ] **NAS alerts reach HQ:** `monitoring/nas-alert-relay` Running (Flux brings it back; the NAS posts to it
+      at the k8s API VIP, so nothing on the NAS changes). Test: `sudo docker exec backrest-maint /maint/maint.sh --test`
+      on the NAS → HQ shows a firing and a resolved *NAS backup retention* alert ([backups](backups.md#alerts-failures-and-missed-runs)).
+      While the lab is down, Backrest's failure alerts are lost (healthchecks.io still sees missed runs).
 
 ### F3. Self-checks once, by hand
 

@@ -864,8 +864,13 @@ Details, schedules and restore runbooks: [backups](backups.md).
     `/volume1/Artzima/backrest`, and restores go to its `restore/` folder; copying files back is a
     human decision.
   - **Missed runs** are caught by healthchecks.io (a dead-man's switch, one check per plan), and
-    errors by a Shoutrrr URL. Backrest 1.14's generic webhook action has no handler, so the future
-    Headquarters endpoint is used through Shoutrrr's `generic+https://…`.
+    errors by a Shoutrrr URL. Backrest 1.14 has no plain webhook action, so Headquarters is reached
+    through Shoutrrr's `generic+http://…` with a body template in HQ's JSON format. The NAS is not
+    on the tailnet: since 2026-11-27 it posts to `k8s/apps/nas-alert-relay`, an nginx on the k8s API
+    VIP (lab LAN only, `externalIPs`) that forwards to HQ through `hq-egress`. Chosen over putting
+    Tailscale on the NAS (UGOS changes, one more device key) and over a public route (the token
+    would be the only guard). Cost: NAS failure alerts need the cluster up; healthchecks.io covers
+    missed runs either way.
   - **The migration is manual and verified first:** upload to completion, `restic check`, test
     restores, and only then retire the UGOS job and delete its B2 data. The temporary double
     storage cost is accepted. `existing` (the UGOS job) and `off` stay as options.

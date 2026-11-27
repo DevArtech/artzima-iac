@@ -398,8 +398,8 @@ every machine keeps its last octet ([addresses](addresses.md)). Details and the 
 - [ ] **Backrest on the NAS:** <http://192.0.2.156:9898>, user `admin` / `/operator/BACKREST_PASSWORD`.
   When the first **full** upload has finished and a test restore worked: **review any existing backup-provider transition** ([backups](backups.md#backup-provider-transition)).
 - [ ] **Alerts:** when Headquarters has its endpoint, put the https URL into
-  `/k8s/alerts/WEBHOOK_URL`, then `make nas-backup` (Backrest picks it up; Alertmanager within the
-  hour). Until then alerts only show in Alertmanager/Grafana and `make verify`.
+  `/k8s/alerts/WEBHOOK_URL`, then `make nas-backup` (Backrest and restic-maint pick up its path, via
+  `nas-alert-relay`; Alertmanager within the hour). Until then alerts only show in Alertmanager/Grafana and `make verify`.
   Optional dead-man switch for the NAS: a healthchecks.io ping URL in `/ansible/NAS_BACKUP_HEALTHCHECKS_URL`.
 - [ ] **Renovate:** install the Renovate GitHub App on the repo (<https://github.com/apps/renovate>);
   in *Settings → Branches* protect `main`: require the `ci / lint` check, allow auto-merge.

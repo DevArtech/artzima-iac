@@ -167,7 +167,7 @@ creates it (recipe from the manifest). Otherwise the named `make` step writes it
 | `/ansible/NAS_RESTIC_PASSWORD` | base64:48: the NAS restic repo. **Keep a copy outside the lab** | gen | Backrest + `restic-maint` on the NAS |
 | `/ansible/NAS_BACKREST_USER`, `NAS_BACKREST_PASSWORD_BCRYPT` | `admin`; base64(bcrypt) of `/operator/BACKREST_PASSWORD` | gen | Backrest `auth` |
 | `/ansible/NAS_BACKUP_HEALTHCHECKS_URL` | optional dead-man switch `https://hc-ping.com/<ping-key>`; **empty** = off | gen (empty), you | Backrest plan hooks |
-| `/k8s/alerts/WEBHOOK_URL` | THE alert endpoint (https; Headquarters later); **empty** = alerts are not sent yet | gen (empty), you | ESO → `monitoring/alert-webhook` (Alertmanager); Backrest hooks (`generic+…`) and the NAS `restic-maint` |
+| `/k8s/alerts/WEBHOOK_URL` | THE alert endpoint (https; Headquarters later); **empty** = alerts are not sent yet | gen (empty), you | ESO → `monitoring/alert-webhook` (Alertmanager); Ansible derives the NAS's URL from its path (same token, host = `nas-alert-relay` on the k8s API VIP) for Backrest hooks (`generic+http://…`) and `restic-maint` |
 | `/operator/VAULTWARDEN_ADMIN_PASSWORD`, `/operator/BACKREST_PASSWORD` | logins for **you** (password manager) | gen | nothing (their hashes are) |
 | `/operator/JELLYFIN_ADMIN_USER`, `JELLYFIN_ADMIN_PASSWORD` | `devartech`, base64:24: Jellyfin's admin login for **you** | gen | `make jellyfin` (first-run wizard, then its API session) |
 | `/k8s/vaultwarden/ADMIN_TOKEN` | Argon2id PHC hash (m=65540, t=3, p=4) of `/operator/VAULTWARDEN_ADMIN_PASSWORD` | gen | ESO → `vaultwarden/vaultwarden` |

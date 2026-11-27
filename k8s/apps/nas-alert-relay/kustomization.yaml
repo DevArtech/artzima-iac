@@ -1,0 +1,24 @@
+---
+# nas-alert-relay: the NAS's way to Headquarters (HQ). Backrest and restic-maint run on the
+# UGREEN NAS, which is not on the tailnet, so they can't use hq-egress (k8s/apps/monitoring)
+# directly. This nginx forwards POST /hooks/lab/<token> from the lab LAN to hq-egress, nothing
+# else. Reachable only at the k8s API VIP on the lab LAN (Service externalIPs, port 4800): no
+# route, no tunnel, no tailnet name. The token stays HQ's (the NAS sends the same path).
+# docs/backups.md "Alerts". Remove: drop this folder and its line in ../artzima/kustomization.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - relay.yaml
+generatorOptions:
+  labels:
+    app.kubernetes.io/name: nas-alert-relay
+configMapGenerator:
+  # Name gets a content hash: a config change rolls the Deployment.
+  - name: nas-alert-relay
+    files:
+      - default.conf
+    options:
+      annotations:
+        # nginx's own $variables, not Flux substitutions
+        kustomize.toolkit.fluxcd.io/substitute: disabled

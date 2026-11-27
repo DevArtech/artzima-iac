@@ -38,14 +38,21 @@
     # (forget + prune) runs in the separate maintenance container with the maintenance key.
     nas_backup_retention:
       policyKeepAll: true
-    # Failures/errors of any operation -> THE alert endpoint (Infisical /k8s/alerts/
-    # WEBHOOK_URL, same as Alertmanager) as a Shoutrrr generic webhook, if set.
+    # Failures/errors of any operation -> HQ through the cluster's nas-alert-relay (nas_backup_alert_url,
+    # defaults/main.yml) as a Shoutrrr generic webhook in HQ's JSON format; the next success
+    # of the same plan (or check) resolves it. Nothing if WEBHOOK_URL is empty.
     nas_backup_alert_hooks: >-
-      {{ [] if (alert_webhook_url | trim) == '' else [{
-           'conditions': ['CONDITION_ANY_ERROR', 'CONDITION_SNAPSHOT_ERROR', 'CONDITION_SNAPSHOT_WARNING',
-                          'CONDITION_CHECK_ERROR'],
-           'onError': 'ON_ERROR_IGNORE',
-           'actionShoutrrr': {'shoutrrrUrl': 'generic+' ~ (alert_webhook_url | trim)}}] }}
+      {{ [] if nas_backup_alert_url == '' else [
+           {'conditions': ['CONDITION_SNAPSHOT_ERROR', 'CONDITION_SNAPSHOT_WARNING', 'CONDITION_CHECK_ERROR',
+                           'CONDITION_PRUNE_ERROR', 'CONDITION_FORGET_ERROR', 'CONDITION_ANY_ERROR'],
+            'onError': 'ON_ERROR_IGNORE',
+            'actionShoutrrr': {'shoutrrrUrl': 'generic+' ~ nas_backup_alert_url, 'template': nas_backup_alert_template_firing}},
+           {'conditions': ['CONDITION_SNAPSHOT_SUCCESS', 'CONDITION_CHECK_SUCCESS'],
+            'onError': 'ON_ERROR_IGNORE',
+            'actionShoutrrr': {'shoutrrrUrl': 'generic+' ~ nas_backup_alert_url, 'template': nas_backup_alert_template_resolved}}] }}
+    # Plan alert-test (only with nas_backup_alert_test, defaults/main.yml): never scheduled, its
+    # path doesn't exist, so "Backup now" fails before restic writes anything and fires the
+    # alert hooks. No healthchecks.io check for it.
     nas_backup_plan_defs: >-
       {{ [
            {'id': 'media-daily', 'paths': ['/userdata/media'], 'cron': nas_backup_media_daily_cron, 'flags': []},
@@ -54,7 +61,10 @@
            {'id': 'lab-state-daily', 'paths': ['/userdata/lab-state'], 'cron': nas_backup_lab_state_cron, 'flags': []},
          ] + ([] if nas_personal_shares | length == 0 else [
            {'id': 'personal-daily', 'paths': nas_personal_shares | map(attribute='name') | map('regex_replace', '^', '/userdata/') | list,
-            'cron': nas_backup_personal_cron, 'flags': []}]) }}
+            'cron': nas_backup_personal_cron, 'flags': []}])
+         + ([] if not (nas_backup_alert_test | bool) else [
+           {'id': 'alert-test', 'paths': ['/userdata/alert-test-does-not-exist'], 'cron': none, 'flags': [],
+            'test': true}]) }}
 
 - name: Build the plans (each pings its own healthchecks.io check, if a ping key is set)
   ansible.builtin.set_fact:
@@ -63,11 +73,11 @@
            'id': item.id,
            'repo': nas_backup_repo_id,
            'paths': item.paths,
-           'schedule': {'disabled': true} if (nas_backup_paused | bool) else {'cron': item.cron, 'clock': 'CLOCK_LOCAL'},
+           'schedule': {'disabled': true} if (nas_backup_paused | bool) or item.test | default(false) else {'cron': item.cron, 'clock': 'CLOCK_LOCAL'},
            'retention': nas_backup_retention,
            'backup_flags': item.flags,
            'excludes': nas_backup_excludes | default([]),
-           'hooks': [] if (nas_backup_healthchecks_url | trim) == '' else [{
+           'hooks': [] if (nas_backup_healthchecks_url | trim) == '' or item.test | default(false) else [{
              'conditions': ['CONDITION_SNAPSHOT_START', 'CONDITION_SNAPSHOT_SUCCESS', 'CONDITION_SNAPSHOT_ERROR'],
              'onError': 'ON_ERROR_IGNORE',
              'actionHealthchecks': {'webhookUrl': (nas_backup_healthchecks_url | trim | regex_replace('/+$', ''))
@@ -206,14 +216,20 @@
       register: nas_backup_up
       changed_when: nas_backup_up.stderr is search('Creat|Recreat|Start')
 
+    # Per container: `up` may (re)create only one of them (e.g. restic-maint for a changed env
+    # file); the other still needs a restart to load its changed files.
     - name: Restart Backrest to load a changed config
       ansible.builtin.command: docker compose -f {{ nas_backup_root }}/compose.yaml restart backrest
-      when: nas_backup_applied is changed and nas_backup_up is not changed
+      when:
+        - nas_backup_applied is changed
+        - nas_backup_up.stderr is not search('Container ' ~ nas_backup_project ~ '\s+(Creat|Recreat|Start)')
       changed_when: true
 
     - name: Restart the maintenance container to load changed files
       ansible.builtin.command: docker compose -f {{ nas_backup_root }}/compose.yaml restart restic-maint
-      when: nas_backup_maint_files is changed and nas_backup_up is not changed
+      when:
+        - nas_backup_maint_files is changed
+        - nas_backup_up.stderr is not search('Container ' ~ nas_backup_project ~ '-maint\s+(Creat|Recreat|Start)')
       changed_when: true
 
     # Optional hard schedule window: restart the container at this hour, which stops a
