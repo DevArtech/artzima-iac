@@ -44,3 +44,8 @@ configMapGenerator:
     namespace: media
     files:
       - sabnzbd/clamav-scan.py
+  - name: bazarr-accountless-provider
+    namespace: media
+    files:
+      - bazarr/a4k_accountless.py
+      - bazarr/LICENSE.a4kSubtitles

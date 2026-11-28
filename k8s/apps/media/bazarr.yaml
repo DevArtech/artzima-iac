@@ -28,6 +28,8 @@ spec:
       retries: 3
   values:
     defaultPodOptions:
+      annotations:
+        checksum/a4k-provider: "346196855401c7c84c21e4999c3382e183972c2d16f7bb8acd17f9883c2c2d46"
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
@@ -130,6 +132,18 @@ spec:
           bazarr:
             seed-config:
               - path: /scripts
+                readOnly: true
+      accountless-provider:
+        type: configMap
+        name: bazarr-accountless-provider
+        advancedMounts:
+          bazarr:
+            app:
+              - path: /app/bin/custom_libs/subliminal_patch/providers/a4k_accountless.py
+                subPath: a4k_accountless.py
+                readOnly: true
+              - path: /app/bin/custom_libs/subliminal_patch/providers/LICENSE.a4kSubtitles
+                subPath: LICENSE.a4kSubtitles
                 readOnly: true
       tmp:
         type: emptyDir

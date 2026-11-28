@@ -259,6 +259,7 @@ lint-python: ## Byte-compile the Python helpers + render check
 	  k8s/apps/media/sabnzbd/clamav-scan.py \
 	  k8s/apps/monitoring/grafana-admin/sync.py \
 	  k8s/apps/recs/app/recs_core.py k8s/apps/recs/app/recs_server.py k8s/apps/recs/mf-build/build_rmf2.py
+	$(PY) -m py_compile k8s/apps/media/bazarr/a4k_accountless.py k8s/apps/media/bazarr/test_a4k_accountless.py
 	$(PY) -I k8s/apps/recs/tests/test_recs_core.py # recs: seeds/weights, scoring, fusion, exclusion, fallback
 lint-ansible: ## syntax-check every playbook + ansible-lint (production profile)
 	cd ansible && for p in playbooks/*.yml; do ansible-playbook --syntax-check $$p >/dev/null || exit 1; echo "syntax ok: $$p"; done
